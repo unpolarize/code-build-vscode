@@ -37,6 +37,8 @@ export type WebviewToHost =
   | { type: 'pickBackend'; backend: BackendId }
   | { type: 'newSession'; backend?: BackendId }
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
+  | { type: 'openDiff'; path: string; oldText: string; newText: string }
+  | { type: 'revealLocation'; path: string; line?: number }
   | { type: 'openInCoderSessions' };
 
 // ---- Host -> Webview events ----

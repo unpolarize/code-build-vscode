@@ -64,14 +64,19 @@ export class ClaudeNormalizer {
           content: { type: 'text', text: String(block.thinking ?? '') }
         });
       } else if (t === 'tool_use') {
+        const name = String(block.name ?? 'tool');
+        const input = (block.input ?? {}) as Record<string, unknown>;
+        const diff = synthesizeDiff(name, input);
         out.push({
           kind: 'tool_call',
           toolCall: {
             toolCallId: String(block.id),
-            title: String(block.name ?? 'tool'),
-            kind: classifyTool(String(block.name ?? '')),
+            title: name,
+            kind: classifyTool(name),
             status: 'in_progress',
-            rawInput: block.input
+            rawInput: block.input,
+            content: diff ? [diff] : undefined,
+            locations: typeof input.file_path === 'string' ? [{ path: input.file_path }] : undefined
           }
         });
       }
@@ -124,6 +129,20 @@ export class ClaudeNormalizer {
     );
     return JSON.stringify({ type: 'user', message: { role: 'user', content } });
   }
+}
+
+/** Build a diff content block from an edit/write tool's input, when recognizable. */
+function synthesizeDiff(name: string, input: Record<string, unknown>): ContentBlock | undefined {
+  const path = typeof input.file_path === 'string' ? input.file_path : undefined;
+  if (!path) return undefined;
+  const n = name.toLowerCase();
+  if (n === 'edit' && typeof input.old_string === 'string' && typeof input.new_string === 'string') {
+    return { type: 'diff', path, oldText: input.old_string, newText: input.new_string };
+  }
+  if (n === 'write' && typeof input.content === 'string') {
+    return { type: 'diff', path, oldText: '', newText: input.content };
+  }
+  return undefined;
 }
 
 function classifyTool(name: string): string {

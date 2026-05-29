@@ -39,7 +39,7 @@ test('tool_call_update carries status only when present', () => {
   }
 });
 
-test('tool content array (content + diff) extracted to text blocks', () => {
+test('tool content array yields a text block and a structured diff block', () => {
   const out = normalizeAcpUpdate({
     sessionUpdate: 'tool_call',
     toolCallId: 'tc2',
@@ -51,9 +51,9 @@ test('tool content array (content + diff) extracted to text blocks', () => {
   } as never);
   assert.ok(out[0].kind === 'tool_call');
   if (out[0].kind === 'tool_call') {
-    const texts = (out[0].toolCall.content ?? []).map((c) => (c.type === 'text' ? c.text : ''));
-    assert.equal(texts[0], 'output');
-    assert.match(texts[1], /a\.ts/);
+    const blocks = out[0].toolCall.content ?? [];
+    assert.deepEqual(blocks[0], { type: 'text', text: 'output' });
+    assert.deepEqual(blocks[1], { type: 'diff', path: 'a.ts', oldText: 'x', newText: 'y' });
   }
 });
 

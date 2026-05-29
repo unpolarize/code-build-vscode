@@ -151,6 +151,52 @@ body {
   max-height: 280px;
 }
 
+/* Diffs */
+.diff {
+  margin: 6px 0;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  overflow: hidden;
+}
+.diff-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+}
+.diff-path {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+.diff-open {
+  padding: 1px 8px;
+  font-size: 0.8em;
+}
+.diff-body {
+  margin: 0;
+  padding: 6px 8px;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  overflow-x: auto;
+  max-height: 320px;
+}
+.diff-add {
+  background: rgba(63, 185, 80, 0.15);
+  color: var(--vscode-testing-iconPassed, #3fb950);
+  white-space: pre;
+}
+.diff-del {
+  background: rgba(248, 81, 73, 0.12);
+  color: var(--vscode-errorForeground, #f85149);
+  white-space: pre;
+}
+.tool-loc {
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+
 /* Permission prompt */
 .permission {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));

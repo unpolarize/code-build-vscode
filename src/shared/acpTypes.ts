@@ -10,7 +10,8 @@ export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'bypass';
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'resource_link'; uri: string; name?: string }
-  | { type: 'image'; mimeType: string; data: string };
+  | { type: 'image'; mimeType: string; data: string }
+  | { type: 'diff'; path: string; oldText: string; newText: string };
 
 export type ToolCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 

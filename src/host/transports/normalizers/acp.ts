@@ -94,8 +94,10 @@ function extractToolContent(u: AcpUpdate): ContentBlock[] {
         out.push(toBlock(it.content as AcpContentBlock));
       } else if (it.type === 'diff') {
         out.push({
-          type: 'text',
-          text: `--- ${it.path}\n${String(it.oldText ?? '')}\n+++\n${String(it.newText ?? '')}`
+          type: 'diff',
+          path: String(it.path ?? ''),
+          oldText: String(it.oldText ?? ''),
+          newText: String(it.newText ?? '')
         });
       }
     }

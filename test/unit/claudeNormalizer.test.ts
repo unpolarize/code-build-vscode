@@ -34,6 +34,29 @@ test('tool_use -> tool_call in_progress with classified kind', () => {
   assert.equal(tc.toolCall.status, 'in_progress');
 });
 
+test('Edit tool_use synthesizes a diff block and location', () => {
+  const n = new ClaudeNormalizer();
+  const out = n.parseLine({
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'e1',
+          name: 'Edit',
+          input: { file_path: '/repo/a.ts', old_string: 'foo', new_string: 'bar' }
+        }
+      ]
+    }
+  } as never);
+  const tc = out.find((u) => u.kind === 'tool_call');
+  assert.ok(tc && tc.kind === 'tool_call');
+  assert.deepEqual(tc.toolCall.content, [
+    { type: 'diff', path: '/repo/a.ts', oldText: 'foo', newText: 'bar' }
+  ]);
+  assert.deepEqual(tc.toolCall.locations, [{ path: '/repo/a.ts' }]);
+});
+
 test('tool_result -> tool_call_update completed', () => {
   const n = new ClaudeNormalizer();
   const out = n.parseLine({

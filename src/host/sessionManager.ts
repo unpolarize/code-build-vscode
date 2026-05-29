@@ -6,6 +6,7 @@ import { ChatPanel } from './panel';
 import { detectAll } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
+import { EditorTools } from './editorBridge/editorTools';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -15,6 +16,7 @@ export class SessionManager {
   private session?: AgentSession;
   private meta?: SessionMeta;
   private unsubscribe?: () => void;
+  private readonly editor = new EditorTools();
 
   constructor(
     private readonly panel: ChatPanel,
@@ -64,6 +66,12 @@ export class SessionManager {
         break;
       case 'respondPermission':
         this.session?.respondPermission(msg.requestId, msg.outcome);
+        break;
+      case 'openDiff':
+        await this.editor.openDiff(msg.path, msg.oldText, msg.newText);
+        break;
+      case 'revealLocation':
+        await this.editor.revealLocation(msg.path, msg.line);
         break;
       case 'openInCoderSessions':
         if (this.meta) {
