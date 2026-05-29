@@ -22,6 +22,24 @@
     "onWebviewPanel:codeBuild.chat"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "codeBuild",
+          "title": "Code Build",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "codeBuild": [
+        {
+          "id": "codeBuild.sidebar",
+          "name": "Chat",
+          "type": "webview"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "codeBuild.newConversation",

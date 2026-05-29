@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
-import { ChatPanel, CHAT_VIEW_TYPE } from './host/panel';
+import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID } from './host/panel';
 import { SessionManager } from './host/sessionManager';
+import { ChatViewProvider } from './host/chatViewProvider';
 
 export function activate(context: vscode.ExtensionContext): void {
   const managers = new Set<SessionManager>();
@@ -37,6 +38,15 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codeBuild.openInCoderSessions', async (sessionId?: string) => {
       await openInCoderSessions(sessionId);
     })
+  );
+
+  // Sidebar surface: same React bundle, hosted in the activity-bar view.
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      CHAT_SIDEBAR_ID,
+      new ChatViewProvider(context.extensionUri, context),
+      { webviewOptions: { retainContextWhenHidden: true } }
+    )
   );
 
   // Restore chat panels after reload / window-move (webview is re-created on move).

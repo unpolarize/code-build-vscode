@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import type { BackendId, PermissionMode } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, WebviewToHost } from '../shared/protocol';
-import { ChatPanel } from './panel';
+import type { ChatSurface } from './webviewHtml';
 import { detectAll } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
@@ -21,7 +21,7 @@ export class SessionManager {
   private readonly store = new SessionStore();
 
   constructor(
-    private readonly panel: ChatPanel,
+    private readonly panel: ChatSurface,
     private readonly context: vscode.ExtensionContext
   ) {
     this.panel.onMessage((msg) => void this.handle(msg));
@@ -133,7 +133,7 @@ export class SessionManager {
       createdAt: Date.now()
     };
     this.store.createSession(this.meta);
-    this.panel.setTitle(this.meta.title);
+    this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     await this.session.start({ cwd: this.cwd, mode });
   }

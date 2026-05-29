@@ -1,18 +1,31 @@
 import { useEffect, useRef, useState } from 'react';
 
+interface SlashCommand {
+  name: string;
+  description?: string;
+}
+
 interface Props {
   busy: boolean;
+  commands: SlashCommand[];
   onSend: (text: string) => void;
   onCancel: () => void;
 }
 
-export function Composer({ busy, onSend, onCancel }: Props) {
+export function Composer({ busy, commands, onSend, onCancel }: Props) {
   const [text, setText] = useState('');
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     ref.current?.focus();
   }, []);
+
+  // Show matching slash commands when the input is a bare "/command" prefix.
+  const slashMatch = /^\/(\S*)$/.exec(text);
+  const suggestions =
+    slashMatch && commands.length
+      ? commands.filter((c) => c.name.startsWith(slashMatch[1]))
+      : [];
 
   function submit() {
     const t = text.trim();
@@ -30,6 +43,23 @@ export function Composer({ busy, onSend, onCancel }: Props) {
 
   return (
     <div className="composer">
+      {suggestions.length > 0 && (
+        <div className="slash-menu">
+          {suggestions.map((c) => (
+            <div
+              key={c.name}
+              className="slash-item"
+              onClick={() => {
+                setText(`/${c.name} `);
+                ref.current?.focus();
+              }}
+            >
+              <span className="slash-name">/{c.name}</span>
+              {c.description && <span className="slash-desc">{c.description}</span>}
+            </div>
+          ))}
+        </div>
+      )}
       <textarea
         ref={ref}
         value={text}

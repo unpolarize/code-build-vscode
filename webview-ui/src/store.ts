@@ -24,6 +24,7 @@ export interface ChatState {
   busy: boolean;
   permission: PendingPermission | null;
   usage: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
+  commands: { name: string; description?: string }[];
 }
 
 export const initialState: ChatState = {
@@ -34,7 +35,8 @@ export const initialState: ChatState = {
   items: [],
   busy: false,
   permission: null,
-  usage: null
+  usage: null,
+  commands: []
 };
 
 let seq = 0;
@@ -106,6 +108,8 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
     case 'plan':
       items.push({ kind: 'plan', id: nextId(), entries: u.entries });
       return { ...state, items };
+    case 'available_commands_update':
+      return { ...state, commands: u.commands };
     case 'usage':
       return { ...state, usage: { ...state.usage, ...u.usage } };
     case 'result':

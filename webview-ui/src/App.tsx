@@ -62,7 +62,12 @@ export function App() {
       {state.permission && (
         <PermissionPrompt permission={state.permission} onRespond={onRespond} />
       )}
-      <Composer busy={state.busy} onSend={onSend} onCancel={() => post({ type: 'cancel' })} />
+      <Composer
+        busy={state.busy}
+        commands={state.commands}
+        onSend={onSend}
+        onCancel={() => post({ type: 'cancel' })}
+      />
     </div>
   );
 }
