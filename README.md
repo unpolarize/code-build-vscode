@@ -51,17 +51,77 @@ Webview (React + Vite)  ──typed postMessage──▶  Extension Host
 Spawn args are centralized in `src/host/backendRegistry.ts` so CLI flag drift lives in
 one place.
 
+## Requirements
+
+- **Node.js ≥ 18** and **npm** (built with Node 24 / npm 11).
+- **VS Code ≥ 1.90** with the `code` CLI on your PATH
+  (in VS Code: *Cmd/Ctrl+Shift+P → "Shell Command: Install 'code' command in PATH"*).
+- At least one backend CLI installed and logged in — you only need the ones you plan to
+  use:
+  - **Claude Code** — `claude` ([install](https://code.claude.com/docs))
+  - **Grok** — `grok` (xAI Grok Build)
+  - **Codex** — `codex` (OpenAI Codex CLI)
+  - **opencode** / **Cline** — `opencode` / `cline` (any ACP agent)
+
+  Code Build auto-detects which are present (via `which`) and disables the rest in the
+  backend picker. Set explicit paths with the `codeBuild.binPaths` setting if a CLI isn't
+  on PATH.
+
+## Install
+
+### Option A — build, package, and install a VSIX (recommended)
+
+```bash
+git clone https://github.com/zhirafovod/code-build-vscode.git
+cd code-build-vscode
+
+npm install              # install dependencies
+npm run build            # build the webview (vite) + host (esbuild) into dist/
+npm run package          # produce code-build-vscode-0.0.1.vsix
+npm run install-extension   # = code --install-extension <the .vsix> --force
+```
+
+Then reload VS Code (*Cmd/Ctrl+Shift+P → "Developer: Reload Window"*). You'll see a
+**Code Build** icon in the Activity Bar.
+
+> Prefer the GUI? After `npm run package`, open the Extensions view
+> (*Cmd/Ctrl+Shift+X*) → *…* menu → **Install from VSIX…** → pick
+> `code-build-vscode-0.0.1.vsix`.
+
+To uninstall: `code --uninstall-extension zhirafovod.code-build-vscode`.
+
+### Option B — run from source (Extension Development Host)
+
+```bash
+npm install
+npm run build
+```
+
+Open the folder in VS Code and press **F5** (*Run → Start Debugging*). A second
+"Extension Development Host" window launches with Code Build loaded — handy for
+iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on change.
+
+## Usage
+
+1. Click the **Code Build** icon in the Activity Bar for the sidebar chat, **or** run
+   **Code Build: New Conversation** (`Cmd/Ctrl+N`) to open a chat as an editor tab.
+2. Pick a backend (Claude / Grok / Codex / …) and a permission mode in the header.
+3. Type a request and press **Enter**. Type `/` to see backend slash commands.
+4. **Open in New Window**: use VS Code's *Move Editor into New Window* on the chat tab,
+   or the **Code Build: Open in New Window** command.
+
+Sessions are persisted under `~/.codebuild/` and exported in a Coder-Sessions-readable
+JSONL format.
+
 ## Develop
 
 ```bash
 npm install
 npm run build        # build:webview (vite) + build:host (esbuild)
-npm run typecheck
+npm run typecheck    # host + webview type-check
 npm run test:unit    # node:test unit suite
+npm run watch:host & npm run watch:webview   # rebuild on change (use with F5)
 ```
-
-Press F5 in VS Code to launch the Extension Development Host, then run
-**Code Build: New Conversation** or open the **Code Build** sidebar.
 
 ### Manual integration checks (need the real CLIs installed + logged in)
 
