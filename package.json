@@ -1,0 +1,123 @@
+{
+  "name": "code-build-vscode",
+  "displayName": "Code Build",
+  "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
+  "version": "0.0.1",
+  "publisher": "zhirafovod",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhirafovod/code-build-vscode.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Programming Languages"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onWebviewPanel:codeBuild.chat"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codeBuild.newConversation",
+        "title": "Code Build: New Conversation",
+        "icon": "$(add)"
+      },
+      {
+        "command": "codeBuild.openInNewTab",
+        "title": "Code Build: Open in New Tab"
+      },
+      {
+        "command": "codeBuild.openInNewWindow",
+        "title": "Code Build: Open in New Window"
+      },
+      {
+        "command": "codeBuild.focusInput",
+        "title": "Code Build: Focus Input"
+      },
+      {
+        "command": "codeBuild.openInCoderSessions",
+        "title": "Code Build: Open Session in Coder Sessions"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "codeBuild.newConversation",
+        "key": "cmd+n",
+        "mac": "cmd+n",
+        "win": "ctrl+n",
+        "when": "activeWebviewPanelId == codeBuild.chat"
+      },
+      {
+        "command": "codeBuild.openInNewTab",
+        "key": "cmd+shift+escape",
+        "mac": "cmd+shift+escape",
+        "win": "ctrl+shift+escape"
+      },
+      {
+        "command": "codeBuild.focusInput",
+        "key": "cmd+escape",
+        "mac": "cmd+escape",
+        "win": "ctrl+escape",
+        "when": "activeWebviewPanelId == codeBuild.chat"
+      }
+    ],
+    "configuration": {
+      "title": "Code Build",
+      "properties": {
+        "codeBuild.defaultBackend": {
+          "type": "string",
+          "enum": ["claude", "grok", "codex", "opencode", "cline"],
+          "default": "claude",
+          "description": "Default agentic CLI backend for new conversations."
+        },
+        "codeBuild.initialPermissionMode": {
+          "type": "string",
+          "enum": ["default", "plan", "acceptEdits", "bypass"],
+          "default": "default",
+          "description": "Initial permission mode for new conversations."
+        },
+        "codeBuild.allowDangerouslySkipPermissions": {
+          "type": "boolean",
+          "default": false,
+          "description": "Permit the 'bypass' permission mode. Security-sensitive; off by default."
+        },
+        "codeBuild.binPaths": {
+          "type": "object",
+          "default": {},
+          "description": "Optional explicit paths to backend CLIs, keyed by backend id (claude, grok, codex, opencode, cline)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "npm run build:webview && npm run build:host",
+    "build:host": "node esbuild.js",
+    "build:webview": "vite build",
+    "watch:host": "node esbuild.js --watch",
+    "watch:webview": "vite build --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
+    "test:unit": "node --test --import tsx test/unit/*.test.ts",
+    "vscode:prepublish": "npm run build"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.90.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "esbuild": "^0.21.5",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.0",
+    "vite": "^5.3.0"
+  }
+}
