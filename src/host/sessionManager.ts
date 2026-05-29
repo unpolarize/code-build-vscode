@@ -7,6 +7,7 @@ import { detectAll } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
+import { SessionStore } from './persistence/store';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -17,6 +18,7 @@ export class SessionManager {
   private meta?: SessionMeta;
   private unsubscribe?: () => void;
   private readonly editor = new EditorTools();
+  private readonly store = new SessionStore();
 
   constructor(
     private readonly panel: ChatPanel,
@@ -47,6 +49,9 @@ export class SessionManager {
       case 'prompt':
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
+        for (const b of msg.blocks) {
+          if (b.type === 'text') this.store.appendUserText(this.meta!.id, b.text);
+        }
         try {
           await this.session!.prompt(msg.blocks);
         } catch (err) {
@@ -112,6 +117,7 @@ export class SessionManager {
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.unsubscribe = this.session.onEvent((update) => {
+      this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
@@ -126,6 +132,7 @@ export class SessionManager {
       cwd: this.cwd,
       createdAt: Date.now()
     };
+    this.store.createSession(this.meta);
     this.panel.setTitle(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     await this.session.start({ cwd: this.cwd, mode });

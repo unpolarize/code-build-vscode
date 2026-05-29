@@ -4,7 +4,7 @@ import type { BackendId, PermissionMode } from '../shared/acpTypes';
 
 const pexecFile = promisify(execFile);
 
-export type TransportKind = 'stream-json' | 'acp';
+export type TransportKind = 'stream-json' | 'acp' | 'exec-json';
 
 export interface BackendSpec {
   id: BackendId;
@@ -50,10 +50,11 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     id: 'codex',
     label: 'Codex',
     bin: 'codex',
-    transport: 'stream-json',
-    buildArgs: ({ mode }) => {
-      const args = ['exec', '--json'];
-      args.push('--sandbox', codexSandbox(mode));
+    transport: 'exec-json',
+    // The prompt is appended by CodexTransport at spawn time (spawn-per-prompt model).
+    buildArgs: ({ mode, model }) => {
+      const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', codexSandbox(mode)];
+      if (model) args.push('--model', model);
       return args;
     }
   },
