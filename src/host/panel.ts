@@ -30,7 +30,8 @@ export class ChatPanel implements ChatSurface {
     const panel = vscode.window.createWebviewPanel(
       CHAT_VIEW_TYPE,
       'Code Build',
-      column ?? vscode.ViewColumn.Beside,
+      // Open as a tab in the active editor group by default (not a split/Beside).
+      column ?? vscode.ViewColumn.Active,
       { ...webviewOptions(extensionUri), retainContextWhenHidden: true }
     );
     return new ChatPanel(panel, extensionUri);

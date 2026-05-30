@@ -25,7 +25,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeBuild.newConversation', () => openChat()),
     vscode.commands.registerCommand('codeBuild.openInNewTab', () =>
-      openChat(vscode.ViewColumn.Beside)
+      openChat(vscode.ViewColumn.Active)
     ),
     vscode.commands.registerCommand('codeBuild.openInNewWindow', async () => {
       openChat(vscode.ViewColumn.Active);
@@ -98,9 +98,10 @@ export function activate(context: vscode.ExtensionContext): void {
     const ext = vscode.extensions.getExtension('zhirafovod.code-build-vscode');
     if (!ext) return;
 
-    const panel = ChatPanel.create(ext.extensionUri, vscode.ViewColumn.Beside);
+    const panel = ChatPanel.create(ext.extensionUri, vscode.ViewColumn.Active);
     const mgr = attach(panel);
-    await mgr.loadExistingSession(picked.meta.id);
+    // Defer load until the webview is mounted (avoids dropping historyLoaded).
+    mgr.queueResume(picked.meta.id);
   }
 }
 

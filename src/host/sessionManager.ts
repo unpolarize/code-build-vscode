@@ -20,6 +20,8 @@ export class SessionManager {
   private meta?: SessionMeta;
   private unsubscribe?: () => void;
   private titled = false;
+  private pendingResumeId?: string;
+  private webviewReady = false;
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
 
@@ -41,7 +43,15 @@ export class SessionManager {
   private async handle(msg: WebviewToHost): Promise<void> {
     switch (msg.type) {
       case 'ready':
+        this.webviewReady = true;
         await this.hydrate();
+        // If a resume was queued before the webview mounted, run it now so the
+        // historyLoaded message isn't dropped (the React app only listens after mount).
+        if (this.pendingResumeId) {
+          const id = this.pendingResumeId;
+          this.pendingResumeId = undefined;
+          await this.loadExistingSession(id);
+        }
         break;
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
@@ -130,7 +140,8 @@ export class SessionManager {
     // we don't already have a live session.
     const autoStart = this.config.get<boolean>('autoStartSession', true);
     const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
-    if (autoStart && !this.session && defaultAvailable) {
+    // Don't auto-start a blank session if we're about to resume a previous one.
+    if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId) {
       await this.openSession(defaultBackend);
     }
   }
@@ -183,6 +194,20 @@ export class SessionManager {
       this.panel.post({ type: 'sessionMeta', session: this.meta });
     }
     this.session?.setMode(mode);
+  }
+
+  /**
+   * Queue a session to resume once the webview signals 'ready'. Used when opening
+   * history into a brand-new panel whose React app hasn't mounted yet — posting
+   * historyLoaded before mount would be dropped. If the webview is already ready
+   * (e.g. resuming into the current panel), load immediately.
+   */
+  queueResume(id: string): void {
+    if (this.webviewReady) {
+      void this.loadExistingSession(id);
+    } else {
+      this.pendingResumeId = id;
+    }
   }
 
   /** On the first user prompt: index the session in history and derive a title from it. */
