@@ -1,4 +1,4 @@
-import type { SessionUpdate, ToolCall } from '../../src/shared/acpTypes';
+import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTypes';
 import type { HostToWebview, HydrateState, SessionMeta } from '../../src/shared/protocol';
 import { diffStats } from './diff';
 
@@ -25,7 +25,10 @@ export interface ChatState {
   items: ChatItem[];
   busy: boolean;
   permission: PendingPermission | null;
-  usage: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
+  usage: UsageInfo | null;
+  /** Per-model usage breakdown — populated from `usage_breakdown` updates.
+   * Drives the expanded tooltip in the header. */
+  usageBreakdown: UsageInfo[];
   commands: { name: string; description?: string }[];
   fileSuggestions: Array<{ path: string; label?: string }>;
   sessions: SessionMeta[];
@@ -40,6 +43,7 @@ export const initialState: ChatState = {
   busy: false,
   permission: null,
   usage: null,
+  usageBreakdown: [],
   commands: [],
   fileSuggestions: [],
   sessions: []
@@ -70,14 +74,22 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return applyUpdate(state, msg.update);
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
-    case 'historyLoaded':
-      // Replay a previous transcript into the local ChatItem list + update meta
+    case 'historyLoaded': {
+      // Replay a previous transcript into the local ChatItem list + update
+      // meta. Usage events bundled in the records (sent at the end by
+      // external transcript loaders) are extracted here so the header's
+      // cost display + per-model tooltip reflect the imported session's
+      // lifetime spend immediately on open.
+      const { usage, usageBreakdown } = extractUsageFromRecords(msg.records);
       return {
         ...state,
         session: msg.meta,
         items: replayRecordsToItems(msg.records),
+        usage: usage ?? null,
+        usageBreakdown,
         busy: false
       };
+    }
     default:
       return state;
   }
@@ -131,6 +143,13 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       return { ...state, commands: u.commands };
     case 'usage':
       return { ...state, usage: { ...state.usage, ...u.usage } };
+    case 'usage_breakdown':
+      // Imported transcript replays send a single breakdown that REPLACES
+      // (not patches) state.usageBreakdown — the new array IS the full set.
+      // Live sessions don't currently emit this; when they do we'll need to
+      // decide whether to accumulate per-turn entries or sum into per-model
+      // slots. Replace is the correct semantics for the import case today.
+      return { ...state, usageBreakdown: u.entries };
     case 'result': {
       const files = collectModifiedFiles(items);
       if (files.length) {
@@ -195,6 +214,23 @@ function collectModifiedFiles(items: ChatItem[]): { path: string; added: number;
 }
 
 /** Convert stored transcript records (from SessionStore.load) into the UI ChatItem list. */
+/** Pull usage info out of a historyLoaded records[] payload. The transcript
+ * loader appends a final `usage_breakdown` (per-model array) + `usage`
+ * (totals) so this function just looks for the last occurrence of each. */
+function extractUsageFromRecords(
+  records: Array<{ type: string; text?: string; update?: any }>
+): { usage?: UsageInfo; usageBreakdown: UsageInfo[] } {
+  let usage: UsageInfo | undefined;
+  let usageBreakdown: UsageInfo[] = [];
+  for (const rec of records) {
+    if (rec.type !== 'update' || !rec.update) continue;
+    const u = rec.update;
+    if (u.kind === 'usage' && u.usage) usage = u.usage;
+    else if (u.kind === 'usage_breakdown' && Array.isArray(u.entries)) usageBreakdown = u.entries;
+  }
+  return { usage, usageBreakdown };
+}
+
 function replayRecordsToItems(records: Array<{ type: string; text?: string; update?: any }>): ChatItem[] {
   const items: ChatItem[] = [];
   for (const rec of records) {

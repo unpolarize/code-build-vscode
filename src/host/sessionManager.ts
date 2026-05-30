@@ -10,6 +10,13 @@ import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { SessionStore } from './persistence/store';
+import {
+  claudeJsonlPathFor,
+  grokChatPathFor,
+  loadClaudeHistory,
+  loadGrokHistory
+} from './persistence/externalReplay';
+import { listAllSessions } from './persistence/externalSources';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -116,11 +123,26 @@ export class SessionManager {
       case 'openInNewWindow':
         await vscode.commands.executeCommand('codeBuild.openInNewWindow');
         break;
-      case 'listSessions':
-        this.panel.post({ type: 'sessionsList', sessions: this.store.list().slice(0, 100) });
+      case 'listSessions': {
+        // Merge local ~/.codebuild rows with claude (~/.claude/projects) and
+        // grok (~/.grok/sessions). listAllSessions already sorts newest-first
+        // by mtime which is "last response from agent" for upstream transcripts
+        // (the CLI bumps the JSONL on every assistant write) and last-write
+        // for local ones.
+        const merged = listAllSessions(this.store.list()).slice(0, 300);
+        this.panel.post({ type: 'sessionsList', sessions: merged });
         break;
+      }
       case 'resumeSession':
-        await this.loadExistingSession(msg.id);
+        if (msg.source && (msg.source === 'claude' || msg.source === 'grok') && msg.cwd) {
+          await this.openExternalSession({
+            source: msg.source,
+            sessionId: msg.id,
+            cwd: msg.cwd
+          });
+        } else {
+          await this.loadExistingSession(msg.id);
+        }
         break;
     }
   }
@@ -281,10 +303,38 @@ export class SessionManager {
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
 
+    // Replay the upstream transcript into the webview before spawning the
+    // backend so the user lands on the existing conversation rather than a
+    // blank chat. For claude this is read from
+    // ~/.claude/projects/<dash-encoded-cwd>/<id>.jsonl; for grok from
+    // ~/.grok/sessions/<urlencoded-cwd>/<id>/chat_history.jsonl.
+    // Both paths are deterministic given (cwd, sessionId).
+    const replay =
+      args.source === 'claude'
+        ? loadClaudeHistory(claudeJsonlPathFor(args.cwd, args.sessionId))
+        : args.source === 'grok'
+          ? loadGrokHistory(grokChatPathFor(args.cwd, args.sessionId))
+          : null;
+    if (replay) {
+      this.panel.post({ type: 'historyLoaded', meta: this.meta, records: replay.records });
+    } else {
+      // Best-effort: surface the missing-transcript condition in the chat so
+      // the user understands why an external resume produced a blank panel.
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: id,
+        update: {
+          kind: 'error',
+          message: `Could not read ${args.source} transcript for session ${args.sessionId.slice(0, 8)}. Starting fresh.`
+        }
+      });
+    }
+
     // Spawn the agent with the upstream session id. The claude transport
-    // already threads resumeId → `--resume <id>`. The grok ACP transport
-    // doesn't support resume yet (no external CLI flag) — it'll just start
-    // a new ACP session in the right cwd.
+    // already threads resumeId → `--resume <id>` so the CLI picks up where
+    // it left off. The grok ACP transport doesn't support resume yet (no
+    // external CLI flag) — it'll just start a new ACP session in the right
+    // cwd; the loaded transcript above still gives the user the context.
     await this.session.start({ cwd: args.cwd, mode, resumeId: args.sessionId });
   }
 

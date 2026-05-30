@@ -19,7 +19,7 @@ function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
   if (action.kind === 'sendUser') return appendUser(state, action.text);
   if (action.kind === 'clearPermission') return { ...state, permission: null };
-  if (action.kind === 'clearItems') return { ...state, items: [], usage: null };
+  if (action.kind === 'clearItems') return { ...state, items: [], usage: null, usageBreakdown: [] };
   return state;
 }
 
@@ -86,9 +86,15 @@ export function App() {
     post({ type: 'getFileSuggestions', query });
   }
 
-  function onResumeSession(id: string) {
+  function onResumeSession(id: string, source?: 'codebuild' | 'claude' | 'grok', cwd?: string) {
     dispatch({ kind: 'clearItems' });
-    post({ type: 'resumeSession', id });
+    // Forward source + cwd when the picked row is an upstream session — the
+    // host needs both to locate the transcript and spawn the right backend.
+    if (source && source !== 'codebuild' && cwd) {
+      post({ type: 'resumeSession', id, source, cwd });
+    } else {
+      post({ type: 'resumeSession', id });
+    }
   }
 
   return (

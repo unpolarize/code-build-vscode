@@ -62,7 +62,11 @@ export type WebviewToHost =
   | { type: 'openInNewWindow' }
   | { type: 'getFileSuggestions'; query: string }
   | { type: 'listSessions' }
-  | { type: 'resumeSession'; id: string };
+  /** Resume a session by id. When `source` is set to 'claude' or 'grok',
+   * the host loads the upstream transcript (cwd is required to locate it)
+   * instead of looking in the local ~/.codebuild store. Older callers that
+   * only send `id` continue to work and are treated as local. */
+  | { type: 'resumeSession'; id: string; source?: SessionSource; cwd?: string };
 
 // ---- Host -> Webview events ----
 export type HostToWebview =

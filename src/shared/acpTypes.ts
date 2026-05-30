@@ -35,8 +35,21 @@ export interface PlanEntry {
 export interface UsageInfo {
   inputTokens?: number;
   outputTokens?: number;
+  /** Tokens served from the model provider's prompt cache (e.g. Anthropic
+   * server-side cache). Cheaper than `inputTokens` — usually billed at ~10%. */
   cacheReadTokens?: number;
+  /** Tokens written to the model provider's prompt cache. Typically billed
+   * at a premium (~125% of input) but only paid once per cache entry. */
+  cacheCreationTokens?: number;
   costUsd?: number;
+  /** Optional model id this usage row is attributed to (e.g.
+   * `claude-opus-4-5-20251015`, `grok-build`, `llama3.2:3b`). Lets the UI
+   * group per-model breakdown when multiple models contributed turns to
+   * a single conversation (cross-tool resume, model swap, etc.). */
+  model?: string;
+  /** Where the model ran. 'remote' = cloud API with $/token cost; 'local' =
+   * laptop GPU (Ollama, transformers.js) with no cost. */
+  provider?: 'remote' | 'local';
 }
 
 /** Permission option offered by the agent (mirrors ACP request_permission options). */
@@ -65,6 +78,10 @@ export type SessionUpdate =
   | { kind: 'available_commands_update'; commands: { name: string; description?: string }[] }
   | { kind: 'current_mode_update'; mode: PermissionMode }
   | { kind: 'usage'; usage: UsageInfo }
+  /** Per-model usage breakdown — one entry per (model, provider). Aggregated
+   * totals still arrive via `usage` so the header cost display keeps working;
+   * this drives the expanded tooltip in the UI. */
+  | { kind: 'usage_breakdown'; entries: UsageInfo[] }
   | { kind: 'result'; stopReason: string; usage?: UsageInfo }
   | { kind: 'error'; message: string }
   | {
