@@ -95,13 +95,15 @@ export function Composer({
       {atSuggestions.length > 0 && (
         <div className="at-menu">
           {atSuggestions.slice(0, 12).map((f, idx) => {
-            const display = f.label || f.path;
+            const slash = f.path.lastIndexOf('/');
+            const base = slash >= 0 ? f.path.slice(slash + 1) : f.path;
+            const dir = slash >= 0 ? f.path.slice(0, slash + 1) : '';
             return (
               <div
                 key={idx}
                 className="at-item"
                 onClick={() => {
-                  // Replace the @partial with @fullpath (relative)
+                  // Insert the FULL workspace-relative path (not just the filename).
                   const before = text.slice(0, atMatch!.index);
                   const after = text.slice(atMatch!.index! + atMatch![0].length);
                   const insert = `@${f.path} `;
@@ -117,7 +119,10 @@ export function Composer({
                 }}
               >
                 <span className="at-icon">📄</span>
-                <span className="at-path">{display}</span>
+                <span className="at-path">
+                  <span className="at-base">{base}</span>
+                  {dir && <span className="at-dir">{dir}</span>}
+                </span>
               </div>
             );
           })}

@@ -1,5 +1,6 @@
 import type { SessionUpdate, ToolCall } from '../../src/shared/acpTypes';
 import type { HostToWebview, HydrateState, SessionMeta } from '../../src/shared/protocol';
+import { diffStats } from './diff';
 
 export type ChatItem =
   | { kind: 'user'; id: string; text: string }
@@ -7,6 +8,7 @@ export type ChatItem =
   | { kind: 'thought'; id: string; text: string }
   | { kind: 'tool'; id: string; tool: ToolCall }
   | { kind: 'plan'; id: string; entries: { content: string; status: string }[] }
+  | { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] }
   | { kind: 'error'; id: string; text: string };
 
 export interface PendingPermission {
@@ -129,8 +131,18 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       return { ...state, commands: u.commands };
     case 'usage':
       return { ...state, usage: { ...state.usage, ...u.usage } };
-    case 'result':
-      return { ...state, busy: false, usage: u.usage ? { ...state.usage, ...u.usage } : state.usage };
+    case 'result': {
+      const files = collectModifiedFiles(items);
+      if (files.length) {
+        items.push({ kind: 'files', id: nextId(), files });
+      }
+      return {
+        ...state,
+        items,
+        busy: false,
+        usage: u.usage ? { ...state.usage, ...u.usage } : state.usage
+      };
+    }
     case 'error':
       items.push({ kind: 'error', id: nextId(), text: u.message });
       return { ...state, items, busy: false };
@@ -150,6 +162,36 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
 
 function blockText(content: { type: string; text?: string }): string {
   return content.type === 'text' ? content.text ?? '' : '';
+}
+
+/**
+ * Scan the tool items produced in the current turn (back to the last user message)
+ * and aggregate the files they edited, with added/removed line counts from diffs.
+ */
+function collectModifiedFiles(items: ChatItem[]): { path: string; added: number; removed: number }[] {
+  const map = new Map<string, { path: string; added: number; removed: number }>();
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.kind === 'user' || it.kind === 'files') break; // turn boundary
+    if (it.kind !== 'tool') continue;
+    const diffs = (it.tool.content ?? []).filter(
+      (b): b is { type: 'diff'; path: string; oldText: string; newText: string } => b.type === 'diff'
+    );
+    for (const d of diffs) {
+      const { added, removed } = diffStats(d.oldText, d.newText);
+      const entry = map.get(d.path) ?? { path: d.path, added: 0, removed: 0 };
+      entry.added += added;
+      entry.removed += removed;
+      map.set(d.path, entry);
+    }
+    // Edit/write tools without a diff block: still record the touched path.
+    if (!diffs.length && it.tool.kind === 'edit' && it.tool.locations?.length) {
+      for (const loc of it.tool.locations) {
+        if (!map.has(loc.path)) map.set(loc.path, { path: loc.path, added: 0, removed: 0 });
+      }
+    }
+  }
+  return Array.from(map.values());
 }
 
 /** Convert stored transcript records (from SessionStore.load) into the UI ChatItem list. */

@@ -234,6 +234,28 @@ export class SessionManager {
     return s.replace(/[?*{}[\]()!]/g, (ch) => `\\${ch}`);
   }
 
+  /** Resolve an @-mention token to an absolute file path: absolute > cwd-relative
+   * > any workspace folder. Returns undefined if no existing file matches. */
+  private async resolveMentionPath(token: string, cwd: string): Promise<string | undefined> {
+    const candidates: string[] = [];
+    if (path.isAbsolute(token)) candidates.push(token);
+    else {
+      candidates.push(path.resolve(cwd, token));
+      for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        candidates.push(path.resolve(folder.uri.fsPath, token));
+      }
+    }
+    for (const candidate of candidates) {
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) return candidate;
+      } catch {
+        /* try next */
+      }
+    }
+    return undefined;
+  }
+
   /**
    * Convert user text containing @path or @browser mentions into mixed ContentBlock[]
    * with resource_link entries. Falls back to original text blocks when no mentions.
@@ -275,19 +297,12 @@ export class SessionManager {
         last = match.index + match.len;
         continue;
       }
-      // Try resolve as file (relative to cwd or absolute)
-      const candidate = path.isAbsolute(token) ? token : path.resolve(cwd, token);
-      try {
-        const stat = await fs.stat(candidate);
-        if (stat.isFile()) {
-          const uri = `file://${candidate}`;
-          const name = path.basename(candidate);
-          out.push({ type: 'resource_link', uri, name });
-          last = match.index + match.len;
-          continue;
-        }
-      } catch {
-        /* not a file, fallthrough */
+      // Resolve as a file: absolute, then cwd-relative, then any workspace folder.
+      const resolved = await this.resolveMentionPath(token, cwd);
+      if (resolved) {
+        out.push({ type: 'resource_link', uri: `file://${resolved}`, name: path.basename(resolved) });
+        last = match.index + match.len;
+        continue;
       }
       // Not resolved: keep the literal @token text
       out.push({ type: 'text', text: text.slice(match.index, match.index + match.len) });

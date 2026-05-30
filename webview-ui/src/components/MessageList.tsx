@@ -1,6 +1,8 @@
 import { useEffect, useRef } from 'react';
 import type { ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
+import { Markdown } from './Markdown';
+import { post } from '../vscodeApi';
 
 interface Props {
   items: ChatItem[];
@@ -42,18 +44,40 @@ function Item({ item }: { item: ChatItem }) {
       return (
         <div className="msg msg-assistant">
           <div className="msg-role">Agent</div>
-          <div className="msg-body">{item.text}</div>
+          <Markdown className="msg-body" text={item.text} />
         </div>
       );
     case 'thought':
       return (
         <details className="msg msg-thought">
           <summary>Thinking…</summary>
-          <div className="msg-body">{item.text}</div>
+          <Markdown className="msg-body" text={item.text} />
         </details>
       );
     case 'tool':
       return <ToolCard tool={item.tool} />;
+    case 'files':
+      return (
+        <div className="msg msg-files">
+          <div className="msg-role">Modified files ({item.files.length})</div>
+          <div className="files-list">
+            {item.files.map((f, i) => (
+              <div
+                key={i}
+                className="files-item"
+                title={f.path}
+                onClick={() => post({ type: 'revealLocation', path: f.path })}
+              >
+                <span className="files-path">{f.path}</span>
+                <span className="files-stat">
+                  {f.added > 0 && <span className="files-add">+{f.added}</span>}
+                  {f.removed > 0 && <span className="files-del">-{f.removed}</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
     case 'plan':
       return (
         <div className="msg msg-plan">

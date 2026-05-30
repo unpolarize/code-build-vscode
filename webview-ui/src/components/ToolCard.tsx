@@ -1,5 +1,6 @@
 import type { ContentBlock, ToolCall } from '../../../src/shared/acpTypes';
 import { post } from '../vscodeApi';
+import { lineDiff } from '../diff';
 
 const STATUS_ICON: Record<string, string> = {
   pending: '○',
@@ -49,38 +50,42 @@ export function ToolCard({ tool }: { tool: ToolCall }) {
 }
 
 function DiffBlock({ diff }: { diff: Extract<ContentBlock, { type: 'diff' }> }) {
-  return (
-    <div className="diff">
-      <div className="diff-head">
-        <span className="diff-path">{diff.path}</span>
-        <button
-          className="btn btn-secondary diff-open"
-          onClick={() =>
-            post({ type: 'openDiff', path: diff.path, oldText: diff.oldText, newText: diff.newText })
-          }
-        >
-          Open diff
-        </button>
-      </div>
-      <pre className="diff-body">
-        {renderUnified(diff.oldText, diff.newText)}
-      </pre>
-    </div>
-  );
-}
+  const rows = lineDiff(diff.oldText, diff.newText);
+  const added = rows.filter((r) => r.type === 'add').length;
+  const removed = rows.filter((r) => r.type === 'del').length;
+  const name = diff.path.split('/').pop() ?? diff.path;
+  // Collapse very large diffs by default (Claude-style "click to expand").
+  const big = rows.length > 40;
 
-/** Tiny line-based unified preview (full diffing handled by the native diff editor). */
-function renderUnified(oldText: string, newText: string) {
-  const oldLines = oldText ? oldText.split('\n') : [];
-  const newLines = newText ? newText.split('\n') : [];
-  const rows: { sign: string; text: string }[] = [];
-  for (const l of oldLines) rows.push({ sign: '-', text: l });
-  for (const l of newLines) rows.push({ sign: '+', text: l });
-  return rows.map((r, i) => (
-    <div key={i} className={r.sign === '+' ? 'diff-add' : 'diff-del'}>
-      {r.sign} {r.text}
-    </div>
-  ));
+  return (
+    <details className="diff" open={!big}>
+      <summary className="diff-head">
+        <span className="diff-file">{name}</span>
+        <span className="diff-stat">
+          {added > 0 && <span className="diff-add-count">+{added}</span>}
+          {removed > 0 && <span className="diff-del-count">−{removed}</span>}
+        </span>
+        <span className="diff-spacer" />
+        <span
+          className="diff-open"
+          onClick={(e) => {
+            e.preventDefault();
+            post({ type: 'openDiff', path: diff.path, oldText: diff.oldText, newText: diff.newText });
+          }}
+        >
+          Open diff ↗
+        </span>
+      </summary>
+      <pre className="diff-body">
+        {rows.map((r, i) => (
+          <div key={i} className={`diff-line diff-${r.type}`}>
+            <span className="diff-gutter">{r.type === 'add' ? '+' : r.type === 'del' ? '−' : ' '}</span>
+            <span className="diff-text">{r.text || ' '}</span>
+          </div>
+        ))}
+      </pre>
+    </details>
+  );
 }
 
 function safeStringify(v: unknown): string {
