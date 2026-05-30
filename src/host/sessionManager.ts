@@ -19,6 +19,7 @@ export class SessionManager {
   private session?: AgentSession;
   private meta?: SessionMeta;
   private unsubscribe?: () => void;
+  private titled = false;
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
 
@@ -57,7 +58,11 @@ export class SessionManager {
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
-        if (originalText) this.store.appendUserText(this.meta!.id, originalText);
+        if (originalText) {
+          // First real prompt: promote to history + derive a title from it.
+          this.commitAndTitle(originalText);
+          this.store.appendUserText(this.meta!.id, originalText);
+        }
         const blocks = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
         try {
           await this.session!.prompt(blocks);
@@ -159,11 +164,13 @@ export class SessionManager {
     this.meta = {
       id,
       backend: be,
-      title: `Code Build · ${be}`,
+      title: `New chat · ${be}`,
       mode,
       cwd: this.cwd,
       createdAt: Date.now()
     };
+    this.titled = false;
+    // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
     this.store.createSession(this.meta);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
@@ -176,6 +183,17 @@ export class SessionManager {
       this.panel.post({ type: 'sessionMeta', session: this.meta });
     }
     this.session?.setMode(mode);
+  }
+
+  /** On the first user prompt: index the session in history and derive a title from it. */
+  private commitAndTitle(firstUserText: string): void {
+    if (!this.meta || this.titled) return;
+    this.titled = true;
+    this.meta.title = deriveTitle(firstUserText);
+    this.store.commitSession(this.meta);
+    this.store.updateMeta(this.meta);
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
   }
 
   private teardownSession(): void {
@@ -345,6 +363,7 @@ export class SessionManager {
     });
 
     this.meta = loaded.meta;
+    this.titled = true; // existing session already has its title
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
 
@@ -355,4 +374,12 @@ export class SessionManager {
     const mode = this.meta.mode ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
     await this.session.start({ cwd: this.meta.cwd, mode });
   }
+}
+
+/** Make a short, human-readable session title from the first user message. */
+function deriveTitle(text: string): string {
+  const firstLine = text.trim().split('\n').find((l) => l.trim().length > 0) ?? text.trim();
+  const cleaned = firstLine.replace(/\s+/g, ' ').trim();
+  const max = 60;
+  return cleaned.length > max ? cleaned.slice(0, max - 1).trimEnd() + '…' : cleaned || 'New chat';
 }
