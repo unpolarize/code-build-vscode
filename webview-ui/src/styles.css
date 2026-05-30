@@ -234,6 +234,93 @@ body {
   flex-wrap: wrap;
 }
 
+/* Floating message navigator (prev/next user message + jump dropdown). */
+.msg-nav {
+  position: sticky;
+  bottom: 0;
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin: 0 12px 6px auto;
+  padding: 2px;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  z-index: 5;
+}
+.msg-nav-btn {
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground);
+  padding: 4px 8px;
+  font-size: 0.9em;
+  cursor: pointer;
+  border-radius: 3px;
+  font-family: inherit;
+}
+.msg-nav-btn:hover:not(:disabled) {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.msg-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.msg-nav-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8em;
+  padding: 4px 6px;
+}
+.msg-nav-list {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  z-index: 10;
+}
+.msg-nav-item {
+  display: flex;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.12));
+}
+.msg-nav-item:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.msg-nav-item-current {
+  background: var(--vscode-list-activeSelectionBackground, rgba(99, 102, 241, 0.15));
+}
+.msg-nav-idx {
+  opacity: 0.6;
+  min-width: 28px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+}
+.msg-nav-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.85em;
+}
+/* Brief highlight pulse when navigation scrolls to a message. */
+@keyframes msg-flash {
+  0% { background-color: rgba(99, 102, 241, 0.25); }
+  100% { background-color: transparent; }
+}
+.msg-highlight {
+  animation: msg-flash 1.2s ease-out;
+}
+
 /* Composer */
 .composer {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));

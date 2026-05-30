@@ -38,9 +38,10 @@ function Item({ item }: { item: ChatItem }) {
       // `**bold**`, bullet lists, fenced code, etc.) — rendering them as
       // plain text made imported grok/claude session replays look raw and
       // unreadable. Render through the same Markdown pipeline as assistant
-      // messages, plus any image attachments.
+      // messages, plus any image attachments. `data-msg-id` lets the
+      // MessageNav floating widget jump to the right bubble.
       return (
-        <div className="msg msg-user">
+        <div className="msg msg-user" data-msg-id={item.id}>
           <div className="msg-role">You</div>
           <Markdown className="msg-body" text={item.text} />
           {item.images && item.images.length > 0 && (

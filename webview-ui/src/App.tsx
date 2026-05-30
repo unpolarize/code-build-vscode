@@ -8,6 +8,7 @@ import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import { PermissionPrompt } from './components/PermissionPrompt';
+import { MessageNav } from './components/MessageNav';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
@@ -121,6 +122,7 @@ export function App() {
         onRefreshSessions={() => post({ type: 'listSessions' })}
       />
       <MessageList items={state.items} />
+      <MessageNav items={state.items} />
       {state.permission && (
         <PermissionPrompt permission={state.permission} onRespond={onRespond} />
       )}
