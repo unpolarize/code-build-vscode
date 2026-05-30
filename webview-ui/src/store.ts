@@ -26,6 +26,7 @@ export interface ChatState {
   usage: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
   commands: { name: string; description?: string }[];
   fileSuggestions: Array<{ path: string; label?: string }>;
+  sessions: SessionMeta[];
 }
 
 export const initialState: ChatState = {
@@ -38,7 +39,8 @@ export const initialState: ChatState = {
   permission: null,
   usage: null,
   commands: [],
-  fileSuggestions: []
+  fileSuggestions: [],
+  sessions: []
 };
 
 let seq = 0;
@@ -53,8 +55,11 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         hydrated: true,
         session: msg.state.session,
         backends: msg.state.backends,
-        allowBypass: msg.state.allowBypass
+        allowBypass: msg.state.allowBypass,
+        sessions: msg.state.sessions ?? []
       };
+    case 'sessionsList':
+      return { ...state, sessions: msg.sessions };
     case 'sessionMeta':
       return { ...state, session: msg.session };
     case 'busy':

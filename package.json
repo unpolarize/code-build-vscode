@@ -44,7 +44,7 @@
       {
         "command": "codeBuild.newConversation",
         "title": "Code Build: New Conversation",
-        "icon": "$(add)"
+        "icon": "$(sparkle)"
       },
       {
         "command": "codeBuild.openInNewTab",
@@ -66,7 +66,8 @@
       },
       {
         "command": "codeBuild.openPreviousSession",
-        "title": "Code Build: Open Previous Conversation..."
+        "title": "Code Build: Open Previous Conversation...",
+        "icon": "$(history)"
       }
     ],
     "keybindings": [
@@ -92,15 +93,48 @@
       }
     ],
     "menus": {
-      "webviewPanel/title": [
+      "editor/title": [
+        {
+          "command": "codeBuild.newConversation",
+          "group": "navigation@100"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "codeBuild.newConversation",
+          "group": "navigation@1",
+          "when": "view == codeBuild.sidebar"
+        },
+        {
+          "command": "codeBuild.openPreviousSession",
+          "group": "navigation@2",
+          "when": "view == codeBuild.sidebar"
+        },
         {
           "command": "codeBuild.openInNewTab",
-          "group": "navigation",
+          "group": "navigation@3",
+          "when": "view == codeBuild.sidebar"
+        }
+      ],
+      "webviewPanel/title": [
+        {
+          "command": "codeBuild.newConversation",
+          "group": "navigation@1",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        },
+        {
+          "command": "codeBuild.openPreviousSession",
+          "group": "navigation@2",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        },
+        {
+          "command": "codeBuild.openInNewTab",
+          "group": "navigation@3",
           "when": "activeWebviewPanelId == codeBuild.chat"
         },
         {
           "command": "codeBuild.openInNewWindow",
-          "group": "navigation",
+          "group": "navigation@4",
           "when": "activeWebviewPanelId == codeBuild.chat"
         }
       ]
@@ -129,6 +163,11 @@
           "type": "object",
           "default": {},
           "description": "Optional explicit paths to backend CLIs, keyed by backend id (claude, grok, codex, opencode, cline)."
+        },
+        "codeBuild.autoStartSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "Connect to the default backend as soon as a chat opens (so slash commands and the agent are ready immediately, like Claude Code). Disable to start only on first prompt."
         }
       }
     }

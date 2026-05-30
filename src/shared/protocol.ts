@@ -26,6 +26,10 @@ export interface HydrateState {
   /** Available backends detected on this machine. */
   backends: { id: BackendId; label: string; available: boolean }[];
   allowBypass: boolean;
+  /** Recent persisted sessions, newest first, for the in-chat history dropdown. */
+  sessions: SessionMeta[];
+  /** Default backend from settings. */
+  defaultBackend: BackendId;
 }
 
 // ---- Webview -> Host commands ----
@@ -42,7 +46,9 @@ export type WebviewToHost =
   | { type: 'openInCoderSessions' }
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
-  | { type: 'getFileSuggestions'; query: string };
+  | { type: 'getFileSuggestions'; query: string }
+  | { type: 'listSessions' }
+  | { type: 'resumeSession'; id: string };
 
 // ---- Host -> Webview events ----
 export type HostToWebview =
@@ -51,6 +57,7 @@ export type HostToWebview =
   | { type: 'sessionMeta'; session: SessionMeta }
   | { type: 'busy'; busy: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
+  | { type: 'sessionsList'; sessions: SessionMeta[] }
   | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {

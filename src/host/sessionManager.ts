@@ -53,7 +53,7 @@ export class SessionManager {
       case 'pickBackend':
         await this.openSession(msg.backend);
         break;
-      case 'prompt':
+      case 'prompt': {
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
@@ -69,6 +69,7 @@ export class SessionManager {
           });
         }
         break;
+      }
       case 'cancel':
         this.session?.cancel();
         this.panel.post({ type: 'busy', busy: false });
@@ -96,6 +97,12 @@ export class SessionManager {
       case 'openInNewWindow':
         await vscode.commands.executeCommand('codeBuild.openInNewWindow');
         break;
+      case 'listSessions':
+        this.panel.post({ type: 'sessionsList', sessions: this.store.list().slice(0, 100) });
+        break;
+      case 'resumeSession':
+        await this.loadExistingSession(msg.id);
+        break;
     }
   }
 
@@ -103,12 +110,24 @@ export class SessionManager {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const backends = await detectAll(overrides);
     const allowBypass = this.config.get<boolean>('allowDangerouslySkipPermissions', false);
+    const defaultBackend = this.defaultBackend();
     const state: HydrateState = {
       session: this.meta ?? null,
       backends,
-      allowBypass
+      allowBypass,
+      sessions: this.store.list().slice(0, 100),
+      defaultBackend
     };
     this.panel.post({ type: 'hydrate', state });
+
+    // Eager-start the default backend session (like Claude Code connects on open) so
+    // the agent's slash commands surface immediately — but only if it's installed and
+    // we don't already have a live session.
+    const autoStart = this.config.get<boolean>('autoStartSession', true);
+    const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
+    if (autoStart && !this.session && defaultAvailable) {
+      await this.openSession(defaultBackend);
+    }
   }
 
   private defaultBackend(): BackendId {
