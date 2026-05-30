@@ -39,14 +39,19 @@ export type WebviewToHost =
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
-  | { type: 'openInCoderSessions' };
+  | { type: 'openInCoderSessions' }
+  | { type: 'openInNewTab' }
+  | { type: 'openInNewWindow' }
+  | { type: 'getFileSuggestions'; query: string };
 
 // ---- Host -> Webview events ----
 export type HostToWebview =
   | { type: 'hydrate'; state: HydrateState }
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
   | { type: 'sessionMeta'; session: SessionMeta }
-  | { type: 'busy'; busy: boolean };
+  | { type: 'busy'; busy: boolean }
+  | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
+  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {
   return typeof msg === 'object' && msg !== null && typeof (msg as { type?: unknown }).type === 'string';

@@ -50,6 +50,10 @@ export function App() {
     dispatch({ kind: 'clearPermission' });
   }
 
+  function onRequestFileSuggestions(query: string) {
+    post({ type: 'getFileSuggestions', query });
+  }
+
   return (
     <div className="app">
       <Header
@@ -57,6 +61,8 @@ export function App() {
         onPickBackend={onPickBackend}
         onSetMode={onSetMode}
         onNewSession={() => post({ type: 'newSession' })}
+        onOpenInNewTab={() => post({ type: 'openInNewTab' })}
+        onOpenInNewWindow={() => post({ type: 'openInNewWindow' })}
       />
       <MessageList items={state.items} />
       {state.permission && (
@@ -65,8 +71,10 @@ export function App() {
       <Composer
         busy={state.busy}
         commands={state.commands}
+        fileSuggestions={state.fileSuggestions}
         onSend={onSend}
         onCancel={() => post({ type: 'cancel' })}
+        onRequestFileSuggestions={onRequestFileSuggestions}
       />
     </div>
   );

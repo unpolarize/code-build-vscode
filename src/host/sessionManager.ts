@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
-import type { BackendId, PermissionMode } from '../shared/acpTypes';
+import * as path from 'node:path';
+import * as fs from 'node:fs/promises';
+import type { BackendId, ContentBlock, PermissionMode } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, WebviewToHost } from '../shared/protocol';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll } from './backendRegistry';
@@ -40,6 +42,11 @@ export class SessionManager {
       case 'ready':
         await this.hydrate();
         break;
+      case 'getFileSuggestions': {
+        const suggestions = await this.getFileSuggestions(msg.query);
+        this.panel.post({ type: 'fileSuggestions', suggestions });
+        break;
+      }
       case 'newSession':
         await this.openSession(msg.backend);
         break;
@@ -49,11 +56,11 @@ export class SessionManager {
       case 'prompt':
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
-        for (const b of msg.blocks) {
-          if (b.type === 'text') this.store.appendUserText(this.meta!.id, b.text);
-        }
+        const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
+        if (originalText) this.store.appendUserText(this.meta!.id, originalText);
+        const blocks = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
         try {
-          await this.session!.prompt(msg.blocks);
+          await this.session!.prompt(blocks);
         } catch (err) {
           this.panel.post({
             type: 'sessionUpdate',
@@ -82,6 +89,12 @@ export class SessionManager {
         if (this.meta) {
           await vscode.commands.executeCommand('codeBuild.openInCoderSessions', this.meta.id);
         }
+        break;
+      case 'openInNewTab':
+        await vscode.commands.executeCommand('codeBuild.openInNewTab');
+        break;
+      case 'openInNewWindow':
+        await vscode.commands.executeCommand('codeBuild.openInNewWindow');
         break;
     }
   }
@@ -153,7 +166,159 @@ export class SessionManager {
     this.session = undefined;
   }
 
+  /** Workspace file search for @-mentions. Supports paths with slashes (e.g. knowledge/tech/foo.md).
+   * Strategy: glob on the last path segment (filename), then JS-filter by full relative path containing the query.
+   */
+  private async getFileSuggestions(query: string): Promise<Array<{ path: string; label?: string }>> {
+    const q = query.trim();
+    if (!q) {
+      // Broad recent-ish search when just "@"
+      try {
+        const uris = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 50);
+        return uris.slice(0, 25).map((uri) => {
+          const rel = vscode.workspace.asRelativePath(uri, false);
+          return { path: rel, label: path.basename(rel) };
+        });
+      } catch {
+        return [];
+      }
+    }
+
+    const lastSegment = q.includes('/') ? (q.split('/').pop() || q) : q;
+    const max = 60;
+    const pattern = `**/*${this.globEscape(lastSegment)}*`;
+
+    try {
+      const uris = await vscode.workspace.findFiles(pattern, '**/node_modules/**', max);
+      const results = uris.map((uri) => {
+        const rel = vscode.workspace.asRelativePath(uri, false);
+        return { path: rel, label: path.basename(rel) };
+      });
+
+      const qLower = q.toLowerCase();
+      // Keep only those whose full path matches the typed query (supports folders + partial filenames)
+      const filtered = results.filter((r) => r.path.toLowerCase().includes(qLower));
+
+      // If the typed query looks like a full path that exists exactly, make sure it surfaces even if filter was strict
+      if (filtered.length === 0) {
+        // Fallback: return the ones whose basename matches the last segment
+        return results.filter((r) => r.path.toLowerCase().endsWith(qLower) || r.label?.toLowerCase().includes(lastSegment.toLowerCase()));
+      }
+      return filtered.slice(0, 25);
+    } catch {
+      return [];
+    }
+  }
+
+  private globEscape(s: string): string {
+    // Very light escaping for common specials in a **/*...* glob fragment
+    return s.replace(/[?*{}[\]()!]/g, (ch) => `\\${ch}`);
+  }
+
+  /**
+   * Convert user text containing @path or @browser mentions into mixed ContentBlock[]
+   * with resource_link entries. Falls back to original text blocks when no mentions.
+   * This enables @-file (and @-browser) references to flow to all backends via the
+   * existing resource_link support in ACP + Claude stream-json.
+   */
+  private async enrichBlocksWithFileMentions(
+    blocks: ContentBlock[],
+    cwd: string
+  ): Promise<ContentBlock[]> {
+    const textBlock = blocks.find((b) => b.type === 'text') as
+      | { type: 'text'; text: string }
+      | undefined;
+    if (!textBlock) return blocks;
+
+    const text = textBlock.text;
+    // Match @token (paths or 'browser')
+    const mentionRe = /@([^\s"'`<>|]+)/g;
+    const matches: Array<{ index: number; len: number; token: string }> = [];
+    let m: RegExpExecArray | null;
+    while ((m = mentionRe.exec(text)) !== null) {
+      matches.push({ index: m.index, len: m[0].length, token: m[1] });
+    }
+    if (matches.length === 0) return blocks;
+
+    const out: ContentBlock[] = [];
+    let last = 0;
+    for (const match of matches) {
+      if (match.index > last) {
+        out.push({ type: 'text', text: text.slice(last, match.index) });
+      }
+      const token = match.token;
+      if (token.toLowerCase() === 'browser' || token.toLowerCase() === 'web') {
+        out.push({
+          type: 'resource_link',
+          uri: 'browser://current',
+          name: 'Current browser / web context'
+        });
+        last = match.index + match.len;
+        continue;
+      }
+      // Try resolve as file (relative to cwd or absolute)
+      const candidate = path.isAbsolute(token) ? token : path.resolve(cwd, token);
+      try {
+        const stat = await fs.stat(candidate);
+        if (stat.isFile()) {
+          const uri = `file://${candidate}`;
+          const name = path.basename(candidate);
+          out.push({ type: 'resource_link', uri, name });
+          last = match.index + match.len;
+          continue;
+        }
+      } catch {
+        /* not a file, fallthrough */
+      }
+      // Not resolved: keep the literal @token text
+      out.push({ type: 'text', text: text.slice(match.index, match.index + match.len) });
+      last = match.index + match.len;
+    }
+    if (last < text.length) {
+      out.push({ type: 'text', text: text.slice(last) });
+    }
+    return out.length ? out : blocks;
+  }
+
   dispose(): void {
     this.teardownSession();
+  }
+
+  /** Load a previous persisted session (history + live continuation). Called from the "Open Previous" command. */
+  async loadExistingSession(id: string): Promise<void> {
+    const loaded = this.store.load(id);
+    if (!loaded.meta) {
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: id,
+        update: { kind: 'error', message: `Could not load session ${id}` }
+      });
+      return;
+    }
+
+    this.teardownSession();
+
+    const be = loaded.meta.backend;
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+
+    this.session = createSession({ id, backend: be, binOverrides: overrides });
+    this.unsubscribe = this.session.onEvent((update) => {
+      this.store.appendUpdate(id, update);
+      this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      if (update.kind === 'result' || update.kind === 'error') {
+        this.panel.post({ type: 'busy', busy: false });
+      }
+    });
+
+    this.meta = loaded.meta;
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+
+    // Replay the stored transcript so the UI shows the full conversation history
+    this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
+
+    // Start a live agent session (fresh process for now; resume tokens can be added later)
+    const mode = this.meta.mode ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
+    await this.session.start({ cwd: this.meta.cwd, mode });
   }
 }

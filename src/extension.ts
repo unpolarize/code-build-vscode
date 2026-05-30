@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID } from './host/panel';
 import { SessionManager } from './host/sessionManager';
 import { ChatViewProvider } from './host/chatViewProvider';
+import { SessionStore } from './host/persistence/store';
 
 export function activate(context: vscode.ExtensionContext): void {
   const managers = new Set<SessionManager>();
@@ -37,6 +38,9 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('codeBuild.openInCoderSessions', async (sessionId?: string) => {
       await openInCoderSessions(sessionId);
+    }),
+    vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
+      await doOpenPreviousSession();
     })
   );
 
@@ -66,6 +70,38 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     })
   );
+
+  // Inner function with closure over attach() so it can create panels + managers for history
+  async function doOpenPreviousSession(): Promise<void> {
+    const store = new SessionStore();
+    const all = store.list();
+
+    if (all.length === 0) {
+      void vscode.window.showInformationMessage('No previous Code Build conversations found in ~/.codebuild');
+      return;
+    }
+
+    const items = all.map((m) => ({
+      label: m.title || `${m.backend} session`,
+      description: `${m.backend}  •  ${new Date(m.createdAt).toLocaleString()}`,
+      detail: m.cwd,
+      meta: m
+    }));
+
+    const picked = await vscode.window.showQuickPick(items, {
+      placeHolder: 'Select a previous conversation to open (filter by backend, date, or path)',
+      matchOnDescription: true,
+      matchOnDetail: true
+    });
+    if (!picked) return;
+
+    const ext = vscode.extensions.getExtension('zhirafovod.code-build-vscode');
+    if (!ext) return;
+
+    const panel = ChatPanel.create(ext.extensionUri, vscode.ViewColumn.Beside);
+    const mgr = attach(panel);
+    await mgr.loadExistingSession(picked.meta.id);
+  }
 }
 
 async function openInCoderSessions(sessionId?: string): Promise<void> {

@@ -8,9 +8,11 @@ interface Props {
   onPickBackend: (id: string) => void;
   onSetMode: (mode: PermissionMode) => void;
   onNewSession: () => void;
+  onOpenInNewTab: () => void;
+  onOpenInNewWindow: () => void;
 }
 
-export function Header({ state, onPickBackend, onSetMode, onNewSession }: Props) {
+export function Header({ state, onPickBackend, onSetMode, onNewSession, onOpenInNewTab, onOpenInNewWindow }: Props) {
   const current = state.session?.backend ?? '';
   return (
     <div className="header">
@@ -45,8 +47,31 @@ export function Header({ state, onPickBackend, onSetMode, onNewSession }: Props)
       {state.usage?.costUsd != null && (
         <span className="usage">${state.usage.costUsd.toFixed(4)}</span>
       )}
+      {state.commands.length > 0 && (
+        <span
+          className="cmd-hint"
+          title={`${state.commands.length} slash commands provided by ${current || 'current agent'}`}
+        >
+          /{state.commands.length}
+        </span>
+      )}
       <button className="btn btn-new" onClick={onNewSession} title="New conversation">
         + New
+      </button>
+
+      <button
+        className="icon-btn"
+        title="Open in new tab (⌘⇧⎋)"
+        onClick={onOpenInNewTab}
+      >
+        ⤴
+      </button>
+      <button
+        className="icon-btn"
+        title="Open in new window"
+        onClick={onOpenInNewWindow}
+      >
+        ⧉
       </button>
     </div>
   );

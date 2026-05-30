@@ -106,9 +106,18 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
 1. Click the **Code Build** icon in the Activity Bar for the sidebar chat, **or** run
    **Code Build: New Conversation** (`Cmd/Ctrl+N`) to open a chat as an editor tab.
 2. Pick a backend (Claude / Grok / Codex / …) and a permission mode in the header.
-3. Type a request and press **Enter**. Type `/` to see backend slash commands.
-4. **Open in New Window**: use VS Code's *Move Editor into New Window* on the chat tab,
-   or the **Code Build: Open in New Window** command.
+3. Type a request and press **Enter**. Type `/` to see backend-provided slash commands (per-agent).
+   Type `@` (or pick from suggestions) to reference a workspace file as context; `@browser` or
+   `@web` for browser/web context hints. File references become `resource_link` blocks (or
+   inlined content for Codex) and work across all backends.
+4. **Title bar actions** (top-right of the editor tab, exactly like Claude Code): use the split-horizontal
+   and multiple-windows icons (or the commands / keybindings) to open the chat in a new tab or new window.
+5. **Conversation history**: Run **Code Build: Open Previous Conversation...** (Command Palette). It shows a
+   filterable QuickPick of all prior sessions (grouped naturally by backend when you type the name). Selecting one
+   opens it in a new tab with the full transcript rehydrated so you can review or continue. History is stored
+   under `~/.codebuild/`.
+6. **@-mentions now support full paths**: `@knowledge/tech/knowledge-base-architecture.md` (or any subpath) works
+   for file context. `@browser` / `@web` injects a browser-context hint.
 
 Sessions are persisted under `~/.codebuild/` and exported in a Coder-Sessions-readable
 JSONL format.

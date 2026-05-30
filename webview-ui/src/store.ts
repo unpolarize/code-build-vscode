@@ -25,6 +25,7 @@ export interface ChatState {
   permission: PendingPermission | null;
   usage: { inputTokens?: number; outputTokens?: number; costUsd?: number } | null;
   commands: { name: string; description?: string }[];
+  fileSuggestions: Array<{ path: string; label?: string }>;
 }
 
 export const initialState: ChatState = {
@@ -36,7 +37,8 @@ export const initialState: ChatState = {
   busy: false,
   permission: null,
   usage: null,
-  commands: []
+  commands: [],
+  fileSuggestions: []
 };
 
 let seq = 0;
@@ -59,6 +61,16 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, busy: msg.busy };
     case 'sessionUpdate':
       return applyUpdate(state, msg.update);
+    case 'fileSuggestions':
+      return { ...state, fileSuggestions: msg.suggestions };
+    case 'historyLoaded':
+      // Replay a previous transcript into the local ChatItem list + update meta
+      return {
+        ...state,
+        session: msg.meta,
+        items: replayRecordsToItems(msg.records),
+        busy: false
+      };
     default:
       return state;
   }
@@ -133,4 +145,31 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
 
 function blockText(content: { type: string; text?: string }): string {
   return content.type === 'text' ? content.text ?? '' : '';
+}
+
+/** Convert stored transcript records (from SessionStore.load) into the UI ChatItem list. */
+function replayRecordsToItems(records: Array<{ type: string; text?: string; update?: any }>): ChatItem[] {
+  const items: ChatItem[] = [];
+  for (const rec of records) {
+    if (rec.type === 'user' && rec.text) {
+      items.push({ kind: 'user', id: nextId(), text: rec.text });
+    } else if (rec.type === 'update' && rec.update) {
+      const u = rec.update;
+      if (u.kind === 'agent_message_chunk' && u.content?.text) {
+        const last = items[items.length - 1];
+        if (last && last.kind === 'assistant') {
+          items[items.length - 1] = { ...last, text: last.text + (u.content.text || '') };
+        } else {
+          items.push({ kind: 'assistant', id: nextId(), text: u.content.text || '' });
+        }
+      } else if (u.kind === 'tool_call') {
+        items.push({ kind: 'tool', id: nextId(), tool: u.toolCall });
+      } else if (u.kind === 'plan') {
+        items.push({ kind: 'plan', id: nextId(), entries: u.entries || [] });
+      } else if (u.kind === 'error') {
+        items.push({ kind: 'error', id: nextId(), text: u.message || 'Error' });
+      }
+    }
+  }
+  return items;
 }

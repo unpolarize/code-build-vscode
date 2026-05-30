@@ -48,11 +48,13 @@
       },
       {
         "command": "codeBuild.openInNewTab",
-        "title": "Code Build: Open in New Tab"
+        "title": "Code Build: Open in New Tab",
+        "icon": "$(split-horizontal)"
       },
       {
         "command": "codeBuild.openInNewWindow",
-        "title": "Code Build: Open in New Window"
+        "title": "Code Build: Open in New Window",
+        "icon": "$(multiple-windows)"
       },
       {
         "command": "codeBuild.focusInput",
@@ -61,6 +63,10 @@
       {
         "command": "codeBuild.openInCoderSessions",
         "title": "Code Build: Open Session in Coder Sessions"
+      },
+      {
+        "command": "codeBuild.openPreviousSession",
+        "title": "Code Build: Open Previous Conversation..."
       }
     ],
     "keybindings": [
@@ -85,6 +91,20 @@
         "when": "activeWebviewPanelId == codeBuild.chat"
       }
     ],
+    "menus": {
+      "webviewPanel/title": [
+        {
+          "command": "codeBuild.openInNewTab",
+          "group": "navigation",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        },
+        {
+          "command": "codeBuild.openInNewWindow",
+          "group": "navigation",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        }
+      ]
+    },
     "configuration": {
       "title": "Code Build",
       "properties": {

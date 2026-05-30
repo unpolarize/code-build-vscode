@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as readline from 'node:readline';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import type {
   BackendId,
   ContentBlock,
@@ -35,7 +37,7 @@ export class CodexTransport extends BaseAgentSession {
   }
 
   async prompt(blocks: ContentBlock[]): Promise<void> {
-    const text = blocks.map((b) => (b.type === 'text' ? b.text : '')).join('\n').trim();
+    const text = await this.blocksToCodexPrompt(blocks, this.startOpts!.cwd);
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
     const baseArgs = spec.buildArgs({
@@ -95,6 +97,39 @@ export class CodexTransport extends BaseAgentSession {
 
   respondPermission(_requestId: string, _outcome: PermissionOutcome): void {
     // Codex exec uses sandbox policy rather than interactive prompts; nothing to do.
+  }
+
+  /**
+   * Turn mixed blocks (incl. @-resolved resource_link for files/browser) into a single
+   * text prompt suitable for codex argv. Inlines small file contents for resource_links.
+   */
+  private async blocksToCodexPrompt(blocks: ContentBlock[], cwd: string): Promise<string> {
+    const parts: string[] = [];
+    for (const b of blocks) {
+      if (b.type === 'text') {
+        parts.push(b.text);
+      } else if (b.type === 'resource_link') {
+        if (b.uri.startsWith('file://')) {
+          const filePath = b.uri.slice(7);
+          try {
+            const content = await fs.readFile(filePath, 'utf8');
+            const rel = path.relative(cwd, filePath) || path.basename(filePath);
+            parts.push(`\n\n--- Referenced file: ${rel} ---\n${content}\n--- End ${rel} ---\n`);
+          } catch {
+            parts.push(`\n[Could not read referenced file: ${b.name || b.uri}]\n`);
+          }
+        } else if (b.uri.startsWith('browser:')) {
+          parts.push(`\n[Browser context requested: ${b.name || b.uri}. Use browsing tools if available.]\n`);
+        } else {
+          parts.push(`\n[Reference: ${b.name || b.uri}]\n`);
+        }
+      } else if (b.type === 'image') {
+        parts.push(`\n[Attached image: ${b.mimeType}]\n`);
+      } else {
+        parts.push(`\n[${b.type} reference]\n`);
+      }
+    }
+    return parts.join('').trim();
   }
 
   override dispose(): void {
