@@ -2,8 +2,16 @@ import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTyp
 import type { HostToWebview, HydrateState, SessionMeta } from '../../src/shared/protocol';
 import { diffStats } from './diff';
 
+/** Image attachment shown alongside a user message — base64 payload so it
+ * survives webview reload (no temp files) and can be reused on send. */
+export interface ImageAttachment {
+  mimeType: string;
+  data: string;
+  name?: string;
+}
+
 export type ChatItem =
-  | { kind: 'user'; id: string; text: string }
+  | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
   | { kind: 'assistant'; id: string; text: string }
   | { kind: 'thought'; id: string; text: string }
   | { kind: 'tool'; id: string; tool: ToolCall }
@@ -95,9 +103,14 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
   }
 }
 
-/** Append a locally-echoed user message immediately on send. */
-export function appendUser(state: ChatState, text: string): ChatState {
-  return { ...state, items: [...state.items, { kind: 'user', id: nextId(), text }], busy: true };
+/** Append a locally-echoed user message immediately on send. Optional
+ * attachments render as image tiles below the text body. */
+export function appendUser(state: ChatState, text: string, images?: ImageAttachment[]): ChatState {
+  return {
+    ...state,
+    items: [...state.items, { kind: 'user', id: nextId(), text, images }],
+    busy: true
+  };
 }
 
 function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {

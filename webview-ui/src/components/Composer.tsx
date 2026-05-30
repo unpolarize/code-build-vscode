@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { ImageAttachment } from '../store';
 
 interface SlashCommand {
   name: string;
@@ -14,7 +15,9 @@ interface Props {
   busy: boolean;
   commands: SlashCommand[];
   fileSuggestions?: FileSuggestion[];
-  onSend: (text: string) => void;
+  /** Sends text + optional pasted-image attachments. Empty images array
+   * means a text-only message — same as before. */
+  onSend: (text: string, images: ImageAttachment[]) => void;
   onCancel: () => void;
   onRequestFileSuggestions?: (query: string) => void;
 }
@@ -28,6 +31,7 @@ export function Composer({
   onRequestFileSuggestions
 }: Props) {
   const [text, setText] = useState('');
+  const [images, setImages] = useState<ImageAttachment[]>([]);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -60,9 +64,13 @@ export function Composer({
 
   function submit() {
     const t = text.trim();
-    if (!t) return;
-    onSend(t);
+    // Allow image-only messages (some agents accept "look at this screenshot"
+    // with no accompanying text) but require something — either text or at
+    // least one image — to avoid empty sends.
+    if (!t && images.length === 0) return;
+    onSend(t, images);
     setText('');
+    setImages([]);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
@@ -70,6 +78,46 @@ export function Composer({
       e.preventDefault();
       submit();
     }
+  }
+
+  /** Cmd/Ctrl-V handler: intercept image clipboard items, convert each to
+   * base64, and attach as a tile preview. Multiple images per paste are
+   * supported. Text paste behavior is left to the browser default. */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    const imageItems: DataTransferItem[] = [];
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        imageItems.push(it);
+      }
+    }
+    if (imageItems.length === 0) return;
+
+    e.preventDefault(); // stop the browser from also pasting a binary blob string
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) continue;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = reader.result;
+        if (typeof result !== 'string') return;
+        // result is "data:image/png;base64,<...>". Strip the prefix so we
+        // ship just the base64 payload (matches the ContentBlock 'image' shape).
+        const comma = result.indexOf(',');
+        const data = comma >= 0 ? result.slice(comma + 1) : result;
+        setImages((current) => [
+          ...current,
+          { mimeType: file.type || item.type, data, name: file.name || `pasted-${current.length + 1}` }
+        ]);
+      };
+      reader.readAsDataURL(file);
+    }
+  }
+
+  function removeImage(idx: number) {
+    setImages((current) => current.filter((_, i) => i !== idx));
   }
 
   return (
@@ -132,12 +180,30 @@ export function Composer({
         </div>
       )}
 
+      {images.length > 0 && (
+        <div className="composer-attachments">
+          {images.map((img, idx) => (
+            <div key={idx} className="composer-thumb" title={img.name ?? 'pasted image'}>
+              <img src={`data:${img.mimeType};base64,${img.data}`} alt={img.name ?? ''} />
+              <button
+                className="composer-thumb-remove"
+                aria-label="Remove image"
+                onClick={() => removeImage(idx)}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <textarea
         ref={ref}
         value={text}
-        placeholder="Ask the agent to build something…  (Enter to send, Shift+Enter for newline; @file for context)"
+        placeholder="Ask the agent to build something…  (Enter to send, Shift+Enter for newline; @file for context, paste images)"
         onChange={(e) => setText(e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
         rows={3}
       />
       <div className="composer-actions">
@@ -146,7 +212,11 @@ export function Composer({
             Stop
           </button>
         ) : (
-          <button className="btn btn-send" onClick={submit} disabled={!text.trim()}>
+          <button
+            className="btn btn-send"
+            onClick={submit}
+            disabled={!text.trim() && images.length === 0}
+          >
             Send
           </button>
         )}

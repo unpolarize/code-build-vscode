@@ -34,10 +34,27 @@ export function MessageList({ items }: Props) {
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case 'user':
+      // User messages contain markdown often (the user types `## headers`,
+      // `**bold**`, bullet lists, fenced code, etc.) — rendering them as
+      // plain text made imported grok/claude session replays look raw and
+      // unreadable. Render through the same Markdown pipeline as assistant
+      // messages, plus any image attachments.
       return (
         <div className="msg msg-user">
           <div className="msg-role">You</div>
-          <div className="msg-body">{item.text}</div>
+          <Markdown className="msg-body" text={item.text} />
+          {item.images && item.images.length > 0 && (
+            <div className="msg-attachments">
+              {item.images.map((img, idx) => (
+                <img
+                  key={idx}
+                  className="msg-attachment"
+                  src={`data:${img.mimeType};base64,${img.data}`}
+                  alt={img.name ?? `pasted image ${idx + 1}`}
+                />
+              ))}
+            </div>
+          )}
         </div>
       );
     case 'assistant':

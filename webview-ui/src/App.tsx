@@ -2,7 +2,7 @@ import { useEffect, useReducer } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
 import { post } from './vscodeApi';
-import { appendUser, initialState, reduce, type ChatState } from './store';
+import { appendUser, initialState, reduce, type ChatState, type ImageAttachment } from './store';
 import { BUILTIN_COMMANDS, BUILTIN_NAMES } from './builtinCommands';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
@@ -11,13 +11,13 @@ import { PermissionPrompt } from './components/PermissionPrompt';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
-  | { kind: 'sendUser'; text: string }
+  | { kind: 'sendUser'; text: string; images?: ImageAttachment[] }
   | { kind: 'clearPermission' }
   | { kind: 'clearItems' };
 
 function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
-  if (action.kind === 'sendUser') return appendUser(state, action.text);
+  if (action.kind === 'sendUser') return appendUser(state, action.text, action.images);
   if (action.kind === 'clearPermission') return { ...state, permission: null };
   if (action.kind === 'clearItems') return { ...state, items: [], usage: null, usageBreakdown: [] };
   return state;
@@ -63,10 +63,21 @@ export function App() {
     return true;
   }
 
-  function onSend(text: string) {
-    if (handleBuiltin(text)) return;
-    dispatch({ kind: 'sendUser', text });
-    post({ type: 'prompt', blocks: [{ type: 'text', text }] });
+  function onSend(text: string, images: ImageAttachment[] = []) {
+    if (!text && images.length === 0) return;
+    if (text && handleBuiltin(text)) return;
+    dispatch({ kind: 'sendUser', text, images });
+    // Compose the ACP-shaped block list: optional text leading, then one
+    // `image` block per pasted attachment. Send-only image messages also
+    // work — agents that accept multi-modal input get exactly this shape
+    // (claude `image` content block, grok ACP `image` content block).
+    const blocks: Array<
+      | { type: 'text'; text: string }
+      | { type: 'image'; mimeType: string; data: string }
+    > = [];
+    if (text) blocks.push({ type: 'text', text });
+    for (const img of images) blocks.push({ type: 'image', mimeType: img.mimeType, data: img.data });
+    post({ type: 'prompt', blocks });
   }
 
   function onPickBackend(id: string) {
