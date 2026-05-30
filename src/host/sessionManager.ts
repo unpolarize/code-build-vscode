@@ -3,7 +3,7 @@ import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode } from '../shared/acpTypes';
-import type { HydrateState, SessionMeta, WebviewToHost } from '../shared/protocol';
+import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll } from './backendRegistry';
 import type { AgentSession } from './agentSession';
@@ -51,6 +51,10 @@ export class SessionManager {
           const id = this.pendingResumeId;
           this.pendingResumeId = undefined;
           await this.loadExistingSession(id);
+        } else if (this.pendingExternal) {
+          const ext = this.pendingExternal;
+          this.pendingExternal = undefined;
+          await this.openExternalSession(ext);
         }
         break;
       case 'getFileSuggestions': {
@@ -141,7 +145,7 @@ export class SessionManager {
     const autoStart = this.config.get<boolean>('autoStartSession', true);
     const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
     // Don't auto-start a blank session if we're about to resume a previous one.
-    if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId) {
+    if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId && !this.pendingExternal) {
       await this.openSession(defaultBackend);
     }
   }
@@ -208,6 +212,80 @@ export class SessionManager {
     } else {
       this.pendingResumeId = id;
     }
+  }
+
+  /** Same pattern as queueResume but for sessions imported from upstream CLIs
+   * (claude / grok). Defers until the webview is mounted so the
+   * sessionMeta + historyLoaded posts aren't dropped on the floor. */
+  private pendingExternal?: { source: SessionSource; sessionId: string; cwd: string; title?: string };
+  queueExternal(args: { source: SessionSource; sessionId: string; cwd: string; title?: string }): void {
+    if (this.webviewReady) {
+      void this.openExternalSession(args);
+    } else {
+      this.pendingExternal = args;
+    }
+  }
+
+  /** Resume a session that originated in an upstream CLI (claude or grok):
+   * spawn a fresh code-build session bound to the matching backend in the
+   * session's cwd, and pass `resumeId` so the CLI's own resume flag wires
+   * up the transcript (claude `--resume <id>`; grok currently doesn't expose
+   * an external resume flag so this is a fresh chat in the right place).
+   * Also write a local transcript header pointing at the external file so
+   * subsequent UI actions (close/reopen, "View conversation" cross-link)
+   * find their footing. */
+  async openExternalSession(args: {
+    source: SessionSource;
+    sessionId: string;
+    cwd: string;
+    title?: string;
+  }): Promise<void> {
+    if (args.source !== 'claude' && args.source !== 'grok') return;
+
+    this.teardownSession();
+
+    // Map source → backend. Default to claude when an unknown source slips
+    // through (defensive — we already validated above).
+    const be: BackendId = args.source === 'grok' ? 'grok' : 'claude';
+    const mode = this.config.get<PermissionMode>('initialPermissionMode', 'default');
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+
+    // Use the upstream session id as the local id. This makes
+    // back-references unambiguous (the user sees the same UUID in
+    // coder-sessions, in the CLI, and in code-build) and means a second
+    // "Open in Code Build" click on the same row doesn't pile up dupes.
+    const id = args.sessionId;
+
+    this.session = createSession({ id, backend: be, binOverrides: overrides });
+    this.unsubscribe = this.session.onEvent((update) => {
+      this.store.appendUpdate(id, update);
+      this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      if (update.kind === 'result' || update.kind === 'error') {
+        this.panel.post({ type: 'busy', busy: false });
+      }
+    });
+
+    this.meta = {
+      id,
+      backend: be,
+      title: args.title || `${be} · ${id.slice(0, 8)}`,
+      mode,
+      cwd: args.cwd,
+      createdAt: Date.now(),
+      source: args.source
+    };
+    this.titled = true; // upstream gave us the title
+
+    this.store.createSession(this.meta);
+    this.store.commitSession(this.meta);
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+
+    // Spawn the agent with the upstream session id. The claude transport
+    // already threads resumeId → `--resume <id>`. The grok ACP transport
+    // doesn't support resume yet (no external CLI flag) — it'll just start
+    // a new ACP session in the right cwd.
+    await this.session.start({ cwd: args.cwd, mode, resumeId: args.sessionId });
   }
 
   /** On the first user prompt: index the session in history and derive a title from it. */

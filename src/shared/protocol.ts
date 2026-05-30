@@ -10,6 +10,14 @@ import type {
   SessionUpdate
 } from './acpTypes';
 
+/** Which session store this row originated from. Local code-build sessions
+ * live in ~/.codebuild; external rows are surfaced from the upstream CLI's
+ * own session store (~/.claude/projects, ~/.grok/sessions) so the history
+ * picker can offer them too. Resuming an external session spawns the CLI
+ * with the appropriate `--resume <id>` flag (claude) or a fresh process
+ * (grok — no documented external resume flag yet). */
+export type SessionSource = 'codebuild' | 'claude' | 'grok';
+
 /** Metadata describing one chat session shown in the UI. */
 export interface SessionMeta {
   id: string;
@@ -18,6 +26,12 @@ export interface SessionMeta {
   mode: PermissionMode;
   cwd: string;
   createdAt: number;
+  /** Defaults to 'codebuild' for legacy rows that pre-date this field. */
+  source?: SessionSource;
+  /** For external sessions: absolute path of the upstream transcript file
+   * (claude jsonl or grok chat_history.jsonl). Lets the picker show a
+   * "Reveal in finder" affordance and lets future code peek at content. */
+  externalPath?: string;
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */

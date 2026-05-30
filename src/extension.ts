@@ -3,6 +3,8 @@ import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID } from './host/panel';
 import { SessionManager } from './host/sessionManager';
 import { ChatViewProvider } from './host/chatViewProvider';
 import { SessionStore } from './host/persistence/store';
+import { listAllSessions } from './host/persistence/externalSources';
+import type { SessionMeta, SessionSource } from './shared/protocol';
 
 export function activate(context: vscode.ExtensionContext): void {
   const managers = new Set<SessionManager>();
@@ -41,7 +43,25 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
       await doOpenPreviousSession();
-    })
+    }),
+    // Programmatic entry point for cross-extension session import — coder-sessions
+    // calls this when the user clicks "Open in Code Build" on a claude or grok
+    // session row. We spawn a fresh code-build session bound to the matching
+    // backend in the right cwd, and pass the upstream session id as `resumeId`
+    // so the CLI's own `--resume` flag does the heavy lifting (claude) or so
+    // the chat just opens cleanly (grok — no resume flag exists yet).
+    vscode.commands.registerCommand(
+      'codeBuild.openExternalSession',
+      async (args: { source: SessionSource; sessionId: string; cwd: string; title?: string }) => {
+        if (!args || !args.source || !args.sessionId || !args.cwd) {
+          void vscode.window.showWarningMessage('Code Build: openExternalSession needs {source, sessionId, cwd}.');
+          return;
+        }
+        const panel = ChatPanel.create(context.extensionUri, vscode.ViewColumn.Active);
+        const mgr = attach(panel);
+        mgr.queueExternal(args);
+      }
+    )
   );
 
   // Sidebar surface: same React bundle, hosted in the activity-bar view.
@@ -71,25 +91,38 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Inner function with closure over attach() so it can create panels + managers for history
+  // Inner function with closure over attach() so it can create panels + managers for history.
+  // Merges code-build's own sessions (~/.codebuild) with claude (~/.claude/projects) and
+  // grok (~/.grok/sessions) — each tagged with a source so the picker shows where the row
+  // came from and dispatch knows whether to re-load locally or re-spawn upstream.
   async function doOpenPreviousSession(): Promise<void> {
     const store = new SessionStore();
-    const all = store.list();
+    const local = store.list();
+    const all = listAllSessions(local);
 
     if (all.length === 0) {
-      void vscode.window.showInformationMessage('No previous Code Build conversations found in ~/.codebuild');
+      void vscode.window.showInformationMessage(
+        'No previous conversations found in ~/.codebuild, ~/.claude/projects, or ~/.grok/sessions.'
+      );
       return;
     }
 
-    const items = all.map((m) => ({
-      label: m.title || `${m.backend} session`,
-      description: `${m.backend}  •  ${new Date(m.createdAt).toLocaleString()}`,
-      detail: m.cwd,
-      meta: m
-    }));
+    // Cap to keep the picker responsive on machines with thousands of claude
+    // sessions; sorted newest-first by listAllSessions so this truncates the
+    // long tail rather than recent activity.
+    const items = all.slice(0, 500).map((m: SessionMeta) => {
+      const src = m.source ?? 'codebuild';
+      const tag = src === 'claude' ? '[CC]' : src === 'grok' ? '[GR]' : '[CB]';
+      return {
+        label: `${tag}  ${m.title || `${m.backend} session`}`,
+        description: `${m.backend}  •  ${new Date(m.createdAt).toLocaleString()}`,
+        detail: m.cwd,
+        meta: m
+      };
+    });
 
     const picked = await vscode.window.showQuickPick(items, {
-      placeHolder: 'Select a previous conversation to open (filter by backend, date, or path)',
+      placeHolder: `Select a previous conversation (${all.length} total: ~/.codebuild, ~/.claude, ~/.grok)`,
       matchOnDescription: true,
       matchOnDetail: true
     });
@@ -100,8 +133,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
     const panel = ChatPanel.create(ext.extensionUri, vscode.ViewColumn.Active);
     const mgr = attach(panel);
-    // Defer load until the webview is mounted (avoids dropping historyLoaded).
-    mgr.queueResume(picked.meta.id);
+    const src = picked.meta.source ?? 'codebuild';
+    if (src === 'codebuild') {
+      // Defer load until the webview is mounted (avoids dropping historyLoaded).
+      mgr.queueResume(picked.meta.id);
+    } else {
+      mgr.queueExternal({
+        source: src,
+        sessionId: picked.meta.id,
+        cwd: picked.meta.cwd,
+        title: picked.meta.title
+      });
+    }
   }
 }
 
