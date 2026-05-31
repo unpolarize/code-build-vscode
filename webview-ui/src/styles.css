@@ -209,6 +209,17 @@ body {
   padding: 6px 10px;
   border-radius: 4px;
 }
+/* Soft amber notice — not an error, just an informational heads-up
+ * (e.g. "session held by another panel; started fresh here"). */
+.msg-notice .msg-role {
+  color: var(--vscode-charts-orange, #fb923c);
+}
+.msg-notice .msg-body {
+  background: rgba(251, 146, 60, 0.1);
+  border-left: 3px solid var(--vscode-charts-orange, #fb923c);
+  padding: 6px 10px;
+  border-radius: 4px;
+}
 .msg-plan ol {
   margin: 4px 0;
   padding-left: 20px;

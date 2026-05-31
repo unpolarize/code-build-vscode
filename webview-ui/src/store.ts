@@ -51,6 +51,11 @@ export type ChatItem =
   | { kind: 'plan'; id: string; entries: { content: string; status: string }[] }
   | { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] }
   | { kind: 'error'; id: string; text: string }
+  /** Non-error informational banner — used for things the user should
+   * know about but that aren't failures (e.g. claude session still
+   * actively writing, falling back to a fresh chat). Renders as a soft
+   * amber notice instead of the red error styling. */
+  | { kind: 'notice'; id: string; text: string }
   /** AskUserQuestion tool call rendered as a clickable card. `answers` is
    * non-null once the user has picked something — we keep the card in the
    * timeline so the choice is part of the conversation history. */
@@ -123,6 +128,11 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
+    case 'notice': {
+      const items = state.items.slice();
+      items.push({ kind: 'notice', id: nextId(), text: msg.text });
+      return { ...state, items };
+    }
     case 'primerPrompt':
       return {
         ...state,

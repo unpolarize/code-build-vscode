@@ -576,30 +576,27 @@ export class SessionManager {
     // cwd; the loaded transcript above still gives the user the context.
     //
     // Active-session guard for claude: when the imported jsonl was touched
-    // within the last 60s the upstream CLI is presumably writing to it
-    // (the session is open in another window / panel right now), and
-    // `claude --resume <id>` will exit with code 1 ("session already in
-    // use"). Detect this case BEFORE spawning, drop the resume flag, and
-    // surface a clear warning instead. The replay above already shows the
-    // transcript so the user has the conversation context either way.
+    // within the last few seconds the upstream CLI is actively writing to it
+    // and `claude --resume <id>` will exit with code 1. Threshold is tight
+    // (3 s) so just-closed panels — which flush their final events over
+    // ~1-2 s — don't get falsely flagged. The replay above already shows
+    // the transcript so the user has context either way. Posted as a
+    // soft 'notice' (not 'error') so the message doesn't look like a
+    // failure when it's just a transient conflict.
     let resumeId: string | undefined = args.sessionId;
     if (args.source === 'claude') {
       try {
         const jsonl = claudeJsonlPathFor(args.cwd, args.sessionId);
         const st = require('node:fs').statSync(jsonl);
         const ageMs = Date.now() - st.mtimeMs;
-        if (ageMs < 60_000) {
+        if (ageMs < 3_000) {
           resumeId = undefined;
           this.panel.post({
-            type: 'sessionUpdate',
-            sessionId: id,
-            update: {
-              kind: 'error',
-              message:
-                `This Claude session is still active in another panel (jsonl modified ${Math.round(ageMs / 1000)}s ago). ` +
-                `Opening here would conflict with the running CLI, so Code Build is showing the read-only transcript ` +
-                `and starting a fresh agent in \`${args.cwd}\` instead. Close the other panel and click "Open in Code Build" again to resume.`
-            }
+            type: 'notice',
+            text:
+              `This Claude session looks like it's still active elsewhere (jsonl was written ${Math.round(ageMs / 1000)} s ago). ` +
+              `Started a fresh agent in \`${args.cwd}\` instead — the prior transcript above is read-only. ` +
+              `If you just closed the other panel, wait a moment and click "Open in Code Build" again to take it over.`
           });
         }
       } catch {

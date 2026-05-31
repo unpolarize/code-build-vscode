@@ -120,6 +120,11 @@ export type HostToWebview =
    * the answer comes back as `primerDecision`. The existing camelCase
    * fields are kept for backward-compat with prior code-build releases. */
   | { type: 'primerPrompt'; turnCount: number; fromBackend: string; toBackend: string }
+  /** Informational notice (not an error) — soft amber banner in the chat.
+   * Used when the host wants to tell the user something is unusual (e.g.
+   * a session is being held by another panel and we fell back to a fresh
+   * chat) without the red-error visual treatment. */
+  | { type: 'notice'; text: string }
   /** AskUserQuestion tool call surfaced from the agent. Each entry is one
    * pickable card with the agent's question + N options. Clicking posts
    * `askUserAnswer` which the host converts to the upstream tool_result. */

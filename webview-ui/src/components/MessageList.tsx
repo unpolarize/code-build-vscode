@@ -149,6 +149,13 @@ function Item({
           <div className="msg-body">{item.text}</div>
         </div>
       );
+    case 'notice':
+      return (
+        <div className="msg msg-notice">
+          <div className="msg-role">Notice</div>
+          <Markdown className="msg-body" text={item.text} />
+        </div>
+      );
     case 'askUser':
       return (
         <AskUserQuestionCard
