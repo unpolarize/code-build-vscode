@@ -13,7 +13,7 @@ import { PrimerBanner } from './components/PrimerBanner';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
-  | { kind: 'sendUser'; text: string; images?: ImageAttachment[] }
+  | { kind: 'sendUser'; text: string; images?: ImageAttachment[]; interjected?: boolean }
   | { kind: 'clearPermission' }
   | { kind: 'clearPrimer' }
   | { kind: 'clearItems' }
@@ -21,7 +21,8 @@ type Action =
 
 function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
-  if (action.kind === 'sendUser') return appendUser(state, action.text, action.images);
+  if (action.kind === 'sendUser')
+    return appendUser(state, action.text, action.images, action.interjected);
   if (action.kind === 'clearPermission') return { ...state, permission: null };
   if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
   if (action.kind === 'askUserAnswered')
@@ -73,7 +74,12 @@ export function App() {
   function onSend(text: string, images: ImageAttachment[] = []) {
     if (!text && images.length === 0) return;
     if (text && handleBuiltin(text)) return;
-    dispatch({ kind: 'sendUser', text, images });
+    // A send while `busy === true` is a mid-stream steer: the user intervened
+    // before the agent finished its previous turn. The host posts the prompt
+    // to the live transport immediately — claude reads it as another `user`
+    // line on stdin (queued by the CLI), grok queues at the ACP layer.
+    const interjected = state.busy === true;
+    dispatch({ kind: 'sendUser', text, images, interjected });
     // Compose the ACP-shaped block list: optional text leading, then one
     // `image` block per pasted attachment. Send-only image messages also
     // work — agents that accept multi-modal input get exactly this shape
@@ -84,7 +90,7 @@ export function App() {
     > = [];
     if (text) blocks.push({ type: 'text', text });
     for (const img of images) blocks.push({ type: 'image', mimeType: img.mimeType, data: img.data });
-    post({ type: 'prompt', blocks });
+    post({ type: 'prompt', blocks, interjected });
   }
 
   function onPickBackend(id: string) {

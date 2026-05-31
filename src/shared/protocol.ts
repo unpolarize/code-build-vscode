@@ -66,7 +66,11 @@ export interface BackendCapability {
 // ---- Webview -> Host commands ----
 export type WebviewToHost =
   | { type: 'ready' }
-  | { type: 'prompt'; blocks: ContentBlock[] }
+  /** Send a user message to the agent. `interjected: true` marks a mid-stream
+   * steer (the user sent while the agent was still generating); the host
+   * still calls `session.prompt()` immediately — claude stream-json queues
+   * the new input on stdin, grok ACP queues at the session/prompt layer. */
+  | { type: 'prompt'; blocks: ContentBlock[]; interjected?: boolean }
   | { type: 'cancel' }
   | { type: 'setMode'; mode: PermissionMode }
   | { type: 'pickBackend'; backend: BackendId }

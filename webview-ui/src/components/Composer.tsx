@@ -208,9 +208,25 @@ export function Composer({
       />
       <div className="composer-actions">
         {busy ? (
-          <button className="btn btn-cancel" onClick={onCancel}>
-            Stop
-          </button>
+          <>
+            {/* Mid-stream steer: send a new user message while the agent is
+              * still generating. Claude's stream-json input format accepts
+              * additional `user` lines on stdin; grok's ACP queues the next
+              * session/prompt at the protocol level. Either way the
+              * intervention is integrated into the agent's response without
+              * the user having to wait for the current turn to finish. */}
+            <button
+              className="btn btn-steer"
+              onClick={submit}
+              disabled={!text.trim() && images.length === 0}
+              title="Send mid-turn — the agent will pick up your steer in its next response"
+            >
+              ↗ Steer
+            </button>
+            <button className="btn btn-cancel" onClick={onCancel}>
+              Stop
+            </button>
+          </>
         ) : (
           <button
             className="btn btn-send"

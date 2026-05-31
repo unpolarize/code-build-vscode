@@ -106,15 +106,21 @@ export class SessionManager {
           blocks = [{ type: 'text', text: this.pendingPrimer }, ...blocks];
           this.pendingPrimer = undefined;
         }
-        try {
-          await this.session!.prompt(blocks);
-        } catch (err) {
+        // Fire-and-forget so the message handler can pick up the NEXT prompt
+        // immediately. This is what enables mid-stream steering — a second
+        // 'prompt' message (interjected) from the webview runs through here
+        // without waiting for the previous prompt's promise to resolve. For
+        // claude stream-json that means writing two `user` lines on stdin
+        // back-to-back (claude queues them); for grok ACP it means two
+        // overlapping session/prompt JSON-RPC calls (grok queues them at the
+        // protocol layer). Errors still surface via .catch.
+        this.session!.prompt(blocks).catch((err) => {
           this.panel.post({
             type: 'sessionUpdate',
             sessionId: this.meta!.id,
             update: { kind: 'error', message: String(err) }
           });
-        }
+        });
         break;
       }
       case 'cancel':

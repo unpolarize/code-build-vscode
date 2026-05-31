@@ -72,10 +72,15 @@ function Item({
       // plain text made imported grok/claude session replays look raw and
       // unreadable. Render through the same Markdown pipeline as assistant
       // messages, plus any image attachments. `data-msg-id` lets the
-      // MessageNav floating widget jump to the right bubble.
+      // MessageNav floating widget jump to the right bubble. The
+      // `interjected` flag marks mid-turn steers — a small badge in the
+      // role line so the user can see where they intervened.
       return (
-        <div className="msg msg-user" data-msg-id={item.id}>
-          <div className="msg-role">You</div>
+        <div className={`msg msg-user${item.interjected ? ' msg-user-interjected' : ''}`} data-msg-id={item.id}>
+          <div className="msg-role">
+            You
+            {item.interjected && <span className="msg-interjected-badge">↗ mid-turn</span>}
+          </div>
           <Markdown className="msg-body" text={item.text} />
           {item.images && item.images.length > 0 && (
             <div className="msg-attachments">

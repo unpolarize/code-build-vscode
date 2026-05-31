@@ -34,7 +34,17 @@ export interface TaskEntry {
 }
 
 export type ChatItem =
-  | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
+  | {
+      kind: 'user';
+      id: string;
+      text: string;
+      images?: ImageAttachment[];
+      /** True when the user sent this message while the agent was still
+       * generating a response — a mid-stream steer. Rendered with a small
+       * "mid-turn" badge so the conversation history shows where the user
+       * intervened. */
+      interjected?: boolean;
+    }
   | { kind: 'assistant'; id: string; text: string }
   | { kind: 'thought'; id: string; text: string }
   | { kind: 'tool'; id: string; tool: ToolCall }
@@ -186,10 +196,15 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
 
 /** Append a locally-echoed user message immediately on send. Optional
  * attachments render as image tiles below the text body. */
-export function appendUser(state: ChatState, text: string, images?: ImageAttachment[]): ChatState {
+export function appendUser(
+  state: ChatState,
+  text: string,
+  images?: ImageAttachment[],
+  interjected?: boolean
+): ChatState {
   return {
     ...state,
-    items: [...state.items, { kind: 'user', id: nextId(), text, images }],
+    items: [...state.items, { kind: 'user', id: nextId(), text, images, interjected }],
     busy: true
   };
 }

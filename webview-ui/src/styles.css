@@ -692,6 +692,31 @@ body {
   background: var(--vscode-button-secondaryBackground);
   color: var(--vscode-button-secondaryForeground);
 }
+/* Mid-stream steer button — appears alongside Stop when the agent is busy. */
+.btn-steer {
+  background: var(--vscode-charts-orange, #fb923c);
+  color: var(--vscode-editor-background, #fff);
+  margin-right: 6px;
+}
+.btn-steer:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+/* Badge on user messages sent mid-turn so the timeline shows where the
+ * user intervened. */
+.msg-interjected-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 0.7em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 3px;
+  background: rgba(251, 146, 60, 0.18);
+  color: var(--vscode-charts-orange, #fb923c);
+}
+.msg-user-interjected .msg-body {
+  border-left-color: var(--vscode-charts-orange, #fb923c);
+}
 .btn-new,
 .btn-secondary {
   background: var(--vscode-button-secondaryBackground);
