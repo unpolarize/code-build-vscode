@@ -59,10 +59,18 @@ export class StreamJsonTransport extends BaseAgentSession {
     const rl = readline.createInterface({ input: this.proc.stdout });
     rl.on('line', (line) => this.onStdoutLine(line));
 
+    // Buffer stderr so the exit handler can surface the actual error in the
+    // chat rather than the opaque "exited with code 1" the user used to see.
+    // Cap at 8 KB to avoid memory growth on a runaway log; claude's real
+    // errors are usually a single line.
+    let stderrBuf = '';
     this.proc.stderr.on('data', (buf: Buffer) => {
       const text = buf.toString();
       if (text.trim()) {
         console.error(`[code-build:${this.backend}] ${text.trim()}`);
+        if (stderrBuf.length < 8192) {
+          stderrBuf += text;
+        }
       }
     });
 
@@ -70,10 +78,33 @@ export class StreamJsonTransport extends BaseAgentSession {
       this.emit({ kind: 'error', message: `Failed to start ${bin}: ${err.message}` });
     });
 
+    const resumeIdHint = this.startOpts?.resumeId;
     this.proc.on('exit', (code) => {
       this.started = false;
       if (code && code !== 0) {
-        this.emit({ kind: 'error', message: `${bin} exited with code ${code}` });
+        const stderr = stderrBuf.trim();
+        // Friendly diagnoses for the two failure modes the user actually
+        // hits when "Open in Code Build" routes a session-resume:
+        //   1. session is already open in another window / claude panel —
+        //      claude refuses --resume on an active id (this is what
+        //      "claude exited with code 1" usually means).
+        //   2. session id was synthesised by code-build (no claude jsonl
+        //      ever existed for it) — claude emits "Session not found".
+        let hint = '';
+        if (resumeIdHint) {
+          if (/already (in use|active|open)/i.test(stderr) || /resume.*active/i.test(stderr)) {
+            hint = `\n\nThis session is already open in another claude panel — close that window first, or click "Open transcript (JSONL)" on the session row in Coder Sessions to inspect it without resuming.`;
+          } else if (/not found|no such session/i.test(stderr)) {
+            hint = `\n\nClaude couldn't locate the session by id. The upstream transcript may have been deleted or never existed.`;
+          } else {
+            hint = `\n\nResume target: \`${resumeIdHint}\` — verify the session still exists in \`~/.claude/projects/\`.`;
+          }
+        }
+        const detail = stderr ? `\n\n\`${stderr.slice(-512).replace(/`/g, "'")}\`` : '';
+        this.emit({
+          kind: 'error',
+          message: `\`${bin}\` exited with code ${code}.${hint}${detail}`
+        });
       }
     });
   }
