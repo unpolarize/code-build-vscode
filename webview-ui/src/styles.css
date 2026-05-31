@@ -274,6 +274,92 @@ body {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
 }
 
+/* AskUserQuestion card — clickable option grid + submitted summary state. */
+.msg-askuser .askuser-form,
+.msg-askuser .askuser-submitted {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.askuser-q-text {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.askuser-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.askuser-option {
+  display: block;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.08));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 4px;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  font: inherit;
+}
+.askuser-option:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.18));
+}
+.askuser-option-selected {
+  border-color: var(--vscode-focusBorder);
+  background: rgba(99, 102, 241, 0.15);
+}
+.askuser-option-label {
+  font-weight: 600;
+}
+.askuser-option-desc {
+  opacity: 0.75;
+  font-size: 0.85em;
+  margin-top: 3px;
+  line-height: 1.4;
+}
+.askuser-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.askuser-a-text {
+  opacity: 0.85;
+  padding-left: 12px;
+  font-size: 0.9em;
+}
+.askuser-q-submitted {
+  border-left: 2px solid var(--vscode-focusBorder);
+  padding-left: 10px;
+}
+
+/* TodoWrite-style task list card. */
+.msg-tasks .task-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 4px 0 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.task {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 0.9em;
+}
+.task-marker {
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+.task-completed .task-text { text-decoration: line-through; opacity: 0.55; }
+.task-in_progress .task-text { font-weight: 600; }
+.task-cancelled .task-text { text-decoration: line-through; opacity: 0.4; }
+.task-completed .task-marker { color: #4ade80; }
+.task-in_progress .task-marker { color: #fbbf24; }
+.task-cancelled .task-marker { color: #f87171; }
+
 /* "Agent is working" indicator — fills the gap between Send and first token. */
 .thinking-indicator {
   display: inline-flex;

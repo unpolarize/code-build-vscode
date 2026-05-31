@@ -92,7 +92,15 @@ export type WebviewToHost =
    * the host loads the upstream transcript (cwd is required to locate it)
    * instead of looking in the local ~/.codebuild store. Older callers that
    * only send `id` continue to work and are treated as local. */
-  | { type: 'resumeSession'; id: string; source?: SessionSource; cwd?: string };
+  | { type: 'resumeSession'; id: string; source?: SessionSource; cwd?: string }
+  /** User's response to a `primerPrompt` shown on backend swap or
+   * external-session import. 'full' = verbatim prior turns; 'summary' =
+   * user prompts + brief assistant excerpts; 'none' = drop the primer.
+   * Dismissing the banner without choosing is equivalent to 'none'. */
+  | { type: 'primerDecision'; choice: 'full' | 'summary' | 'none' }
+  /** User's click on an AskUserQuestion option card. The host translates
+   * this into the upstream tool_result the backend is waiting for. */
+  | { type: 'askUserAnswer'; toolCallId: string; answers: Record<string, string> };
 
 // ---- Host -> Webview events ----
 export type HostToWebview =
@@ -103,9 +111,31 @@ export type HostToWebview =
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
   | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
-  /** Ask the user whether to carry conversation context into a just-switched
-   * backend. The webview shows a banner with Full / Summary / Start fresh. */
-  | { type: 'primerPrompt'; turnCount: number; fromBackend: string; toBackend: string };
+  /** Backend-swap / external-session-import primer Q&A. The webview shows
+   * a 3-button banner ('Full / Summary / Start fresh') above the composer;
+   * the answer comes back as `primerDecision`. The existing camelCase
+   * fields are kept for backward-compat with prior code-build releases. */
+  | { type: 'primerPrompt'; turnCount: number; fromBackend: string; toBackend: string }
+  /** AskUserQuestion tool call surfaced from the agent. Each entry is one
+   * pickable card with the agent's question + N options. Clicking posts
+   * `askUserAnswer` which the host converts to the upstream tool_result. */
+  | {
+      type: 'askUserQuestion';
+      toolCallId: string;
+      questions: Array<{
+        question: string;
+        header?: string;
+        multiSelect?: boolean;
+        options: Array<{ label: string; description?: string; preview?: string }>;
+      }>;
+    }
+  /** TodoWrite-style task list emitted by the agent. Renders as a checklist
+   * card (one per snapshot). The agent owns updates — clicking is read-only. */
+  | {
+      type: 'taskList';
+      toolCallId: string;
+      tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; activeForm?: string }>;
+    };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {
   return typeof msg === 'object' && msg !== null && typeof (msg as { type?: unknown }).type === 'string';

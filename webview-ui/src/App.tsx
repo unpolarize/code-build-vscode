@@ -2,26 +2,30 @@ import { useEffect, useReducer } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
 import { post } from './vscodeApi';
-import { appendUser, initialState, reduce, type ChatState, type ImageAttachment } from './store';
+import { appendUser, initialState, markAskUserAnswered, reduce, type ChatState, type ImageAttachment } from './store';
 import { BUILTIN_COMMANDS, BUILTIN_NAMES } from './builtinCommands';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { MessageNav } from './components/MessageNav';
+import { PrimerBanner } from './components/PrimerBanner';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
   | { kind: 'sendUser'; text: string; images?: ImageAttachment[] }
   | { kind: 'clearPermission' }
   | { kind: 'clearPrimer' }
-  | { kind: 'clearItems' };
+  | { kind: 'clearItems' }
+  | { kind: 'askUserAnswered'; toolCallId: string; answers: Record<string, string> };
 
 function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
   if (action.kind === 'sendUser') return appendUser(state, action.text, action.images);
   if (action.kind === 'clearPermission') return { ...state, permission: null };
   if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
+  if (action.kind === 'askUserAnswered')
+    return markAskUserAnswered(state, action.toolCallId, action.answers);
   if (action.kind === 'clearItems') return { ...state, items: [], usage: null, usageBreakdown: [] };
   return state;
 }
@@ -165,7 +169,14 @@ export function App() {
           </div>
         </div>
       )}
-      <MessageList items={state.items} busy={state.busy} />
+      <MessageList
+        items={state.items}
+        busy={state.busy}
+        onAskUserAnswer={(toolCallId, answers) => {
+          dispatch({ kind: 'askUserAnswered', toolCallId, answers });
+          post({ type: 'askUserAnswer', toolCallId, answers });
+        }}
+      />
       <MessageNav items={state.items} />
       {state.permission && (
         <PermissionPrompt permission={state.permission} onRespond={onRespond} />

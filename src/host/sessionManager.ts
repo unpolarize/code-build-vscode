@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import type { BackendId, ContentBlock, PermissionMode } from '../shared/acpTypes';
+import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll, BACKENDS } from './backendRegistry';
@@ -85,6 +85,9 @@ export class SessionManager {
         break;
       case 'primerDecision':
         this.applyPrimerDecision(msg.choice);
+        break;
+      case 'askUserAnswer':
+        this.answerAskUserQuestion(msg.toolCallId, msg.answers);
         break;
       case 'prompt': {
         await this.ensureSession();
@@ -291,6 +294,10 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      // Side-channel: intercept structured tool calls (AskUserQuestion,
+      // TodoWrite) so the webview can render purpose-built UI instead of
+      // a generic tool card.
+      this.interceptToolCall(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }
@@ -327,6 +334,83 @@ export class SessionManager {
       effort: this.meta.effort,
       allowBypass: this.allowBypass
     });
+  }
+
+  /** Inspect each SessionUpdate as it streams from the backend and lift
+   * structured tool calls into purpose-built webview messages. We don't
+   * suppress the underlying `tool_call` event (the webview still shows the
+   * generic card briefly) — instead we send an ADDITIONAL `askUserQuestion`
+   * or `taskList` message so the UI can render a richer surface. Pending
+   * AskUserQuestion calls are remembered here so a later `askUserAnswer`
+   * can be translated back into the upstream tool_result. */
+  private pendingAskUserQuestions = new Map<
+    string,
+    Array<{ question: string; options: { label: string; description?: string }[] }>
+  >();
+  private interceptToolCall(update: SessionUpdate): void {
+    if (update.kind !== 'tool_call') return;
+    const name = update.toolCall.title;
+    const input = update.toolCall.rawInput as any;
+    if (!name || !input) return;
+
+    if (name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+      // Claude's AskUserQuestion shape: each entry has { question, header,
+      // multiSelect, options: [{label, description, preview}] }.
+      const questions = (input.questions as Array<any>).map((q) => ({
+        question: String(q.question ?? ''),
+        header: q.header ? String(q.header) : undefined,
+        multiSelect: !!q.multiSelect,
+        options: Array.isArray(q.options)
+          ? q.options.map((o: any) => ({
+              label: String(o.label ?? ''),
+              description: o.description ? String(o.description) : undefined,
+              preview: o.preview ? String(o.preview) : undefined
+            }))
+          : []
+      }));
+      this.pendingAskUserQuestions.set(update.toolCall.toolCallId, questions);
+      this.panel.post({
+        type: 'askUserQuestion',
+        toolCallId: update.toolCall.toolCallId,
+        questions
+      });
+      return;
+    }
+
+    // TodoWrite (claude) / todo_write (grok). Schema differs slightly:
+    //   claude:  { todos: [{content, status, activeForm}] }
+    //   grok:    { merge: bool, todos: [{id, content, status}] }
+    if ((name === 'TodoWrite' || name === 'todo_write') && Array.isArray(input.todos)) {
+      const tasks = (input.todos as Array<any>).map((t) => ({
+        content: String(t.content ?? ''),
+        status: (t.status ?? 'pending') as 'pending' | 'in_progress' | 'completed' | 'cancelled',
+        activeForm: t.activeForm ? String(t.activeForm) : undefined
+      }));
+      this.panel.post({
+        type: 'taskList',
+        toolCallId: update.toolCall.toolCallId,
+        tasks
+      });
+    }
+  }
+
+  /** Translate a webview-side click on an AskUserQuestion option card into
+   * the upstream tool_result the backend is waiting for. Claude expects a
+   * JSON string in the tool_result content; grok-build also accepts plain
+   * text. We send a JSON object so claude can parse it deterministically. */
+  private answerAskUserQuestion(toolCallId: string, answers: Record<string, string>): void {
+    const pending = this.pendingAskUserQuestions.get(toolCallId);
+    if (!pending) return;
+    this.pendingAskUserQuestions.delete(toolCallId);
+    // Send back as a user message of the form claude expects from the
+    // built-in AskUserQuestion tool. The CLI normalises this into a
+    // tool_result automatically on next prompt.
+    const text = JSON.stringify({
+      tool_use_id: toolCallId,
+      answers
+    });
+    const blocks: ContentBlock[] = [{ type: 'text', text }];
+    void this.session?.prompt(blocks);
   }
 
   private setMode(mode: PermissionMode): void {
@@ -419,6 +503,7 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      this.interceptToolCall(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }
@@ -665,6 +750,7 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      this.interceptToolCall(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }

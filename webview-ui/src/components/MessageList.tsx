@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import type { ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
+import { AskUserQuestionCard } from './AskUserQuestionCard';
+import { TaskListCard } from './TaskListCard';
 import { post } from '../vscodeApi';
 
 interface Props {
@@ -9,9 +11,12 @@ interface Props {
   /** True from the moment the user hits Send until the agent's turn ends.
    * Drives the "working…" indicator that fills the spawn→first-token gap. */
   busy?: boolean;
+  /** Called when the user clicks an option inside an AskUserQuestion card.
+   * Forwarded to App, which posts `askUserAnswer` back to the host. */
+  onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
 }
 
-export function MessageList({ items, busy }: Props) {
+export function MessageList({ items, busy, onAskUserAnswer }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -35,7 +40,7 @@ export function MessageList({ items, busy }: Props) {
         </div>
       )}
       {items.map((item) => (
-        <Item key={item.id} item={item} />
+        <Item key={item.id} item={item} onAskUserAnswer={onAskUserAnswer} />
       ))}
       {awaitingFirstToken && (
         <div className="msg msg-assistant">
@@ -53,7 +58,13 @@ export function MessageList({ items, busy }: Props) {
   );
 }
 
-function Item({ item }: { item: ChatItem }) {
+function Item({
+  item,
+  onAskUserAnswer
+}: {
+  item: ChatItem;
+  onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
+}) {
   switch (item.kind) {
     case 'user':
       // User messages contain markdown often (the user types `## headers`,
@@ -138,6 +149,17 @@ function Item({ item }: { item: ChatItem }) {
           <div className="msg-body">{item.text}</div>
         </div>
       );
+    case 'askUser':
+      return (
+        <AskUserQuestionCard
+          toolCallId={item.toolCallId}
+          questions={item.questions}
+          answers={item.answers}
+          onAnswer={onAskUserAnswer}
+        />
+      );
+    case 'tasks':
+      return <TaskListCard tasks={item.tasks} />;
     default:
       return null;
   }

@@ -10,6 +10,29 @@ export interface ImageAttachment {
   name?: string;
 }
 
+/** Single option presented inside an AskUserQuestion question card. */
+export interface AskUserOption {
+  label: string;
+  description?: string;
+  preview?: string;
+}
+
+/** One question card in an AskUserQuestion tool call (the tool can ask
+ * several at once — each gets its own card). */
+export interface AskUserQuestionEntry {
+  question: string;
+  header?: string;
+  multiSelect?: boolean;
+  options: AskUserOption[];
+}
+
+/** One task in a TodoWrite-style task list. */
+export interface TaskEntry {
+  content: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  activeForm?: string;
+}
+
 export type ChatItem =
   | { kind: 'user'; id: string; text: string; images?: ImageAttachment[] }
   | { kind: 'assistant'; id: string; text: string }
@@ -17,7 +40,20 @@ export type ChatItem =
   | { kind: 'tool'; id: string; tool: ToolCall }
   | { kind: 'plan'; id: string; entries: { content: string; status: string }[] }
   | { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] }
-  | { kind: 'error'; id: string; text: string };
+  | { kind: 'error'; id: string; text: string }
+  /** AskUserQuestion tool call rendered as a clickable card. `answers` is
+   * non-null once the user has picked something — we keep the card in the
+   * timeline so the choice is part of the conversation history. */
+  | {
+      kind: 'askUser';
+      id: string;
+      toolCallId: string;
+      questions: AskUserQuestionEntry[];
+      answers: Record<string, string> | null;
+    }
+  /** TodoWrite-style task list snapshot. The agent owns updates; the card
+   * is read-only from the user's side. */
+  | { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] };
 
 export interface PendingPermission {
   requestId: string;
@@ -86,6 +122,39 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
           toBackend: msg.toBackend
         }
       };
+    case 'askUserQuestion': {
+      // Append a new askUser card to the timeline. We don't merge with any
+      // earlier card for the same toolCallId — the agent never re-asks an
+      // already-answered call within the same turn.
+      const items = state.items.slice();
+      items.push({
+        kind: 'askUser',
+        id: nextId(),
+        toolCallId: msg.toolCallId,
+        questions: msg.questions,
+        answers: null
+      });
+      return { ...state, items };
+    }
+    case 'taskList': {
+      // Tasks are a stream of snapshots — each TodoWrite call REPLACES the
+      // previous one. Find the most-recent tasks card for this toolCallId
+      // and rewrite it in place; otherwise append.
+      const items = state.items.slice();
+      const lastTasksIdx = items
+        .map((it, i) => ({ it, i }))
+        .reverse()
+        .find(({ it }) => it.kind === 'tasks')?.i;
+      const next: ChatItem = {
+        kind: 'tasks',
+        id: lastTasksIdx != null ? items[lastTasksIdx].id : nextId(),
+        toolCallId: msg.toolCallId,
+        tasks: msg.tasks
+      };
+      if (lastTasksIdx != null) items[lastTasksIdx] = next;
+      else items.push(next);
+      return { ...state, items };
+    }
     case 'sessionMeta':
       return { ...state, session: msg.session };
     case 'busy':
@@ -123,6 +192,19 @@ export function appendUser(state: ChatState, text: string, images?: ImageAttachm
     items: [...state.items, { kind: 'user', id: nextId(), text, images }],
     busy: true
   };
+}
+
+/** Mark an AskUserQuestion card as answered after the user clicks an
+ * option. Keeps the card in the timeline so the choice stays visible. */
+export function markAskUserAnswered(
+  state: ChatState,
+  toolCallId: string,
+  answers: Record<string, string>
+): ChatState {
+  const items = state.items.map((it) =>
+    it.kind === 'askUser' && it.toolCallId === toolCallId ? { ...it, answers } : it
+  );
+  return { ...state, items };
 }
 
 function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
