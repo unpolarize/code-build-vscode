@@ -574,10 +574,42 @@ export class SessionManager {
     // it left off. The grok ACP transport doesn't support resume yet (no
     // external CLI flag) — it'll just start a new ACP session in the right
     // cwd; the loaded transcript above still gives the user the context.
+    //
+    // Active-session guard for claude: when the imported jsonl was touched
+    // within the last 60s the upstream CLI is presumably writing to it
+    // (the session is open in another window / panel right now), and
+    // `claude --resume <id>` will exit with code 1 ("session already in
+    // use"). Detect this case BEFORE spawning, drop the resume flag, and
+    // surface a clear warning instead. The replay above already shows the
+    // transcript so the user has the conversation context either way.
+    let resumeId: string | undefined = args.sessionId;
+    if (args.source === 'claude') {
+      try {
+        const jsonl = claudeJsonlPathFor(args.cwd, args.sessionId);
+        const st = require('node:fs').statSync(jsonl);
+        const ageMs = Date.now() - st.mtimeMs;
+        if (ageMs < 60_000) {
+          resumeId = undefined;
+          this.panel.post({
+            type: 'sessionUpdate',
+            sessionId: id,
+            update: {
+              kind: 'error',
+              message:
+                `This Claude session is still active in another panel (jsonl modified ${Math.round(ageMs / 1000)}s ago). ` +
+                `Opening here would conflict with the running CLI, so Code Build is showing the read-only transcript ` +
+                `and starting a fresh agent in \`${args.cwd}\` instead. Close the other panel and click "Open in Code Build" again to resume.`
+            }
+          });
+        }
+      } catch {
+        /* if stat fails, fall through and let the transport surface any error */
+      }
+    }
     await this.session.start({
       cwd: args.cwd,
       mode,
-      resumeId: args.sessionId,
+      resumeId,
       model: this.meta?.model,
       effort: this.meta?.effort,
       allowBypass: this.allowBypass

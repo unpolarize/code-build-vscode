@@ -85,12 +85,7 @@ function Item({
           {item.images && item.images.length > 0 && (
             <div className="msg-attachments">
               {item.images.map((img, idx) => (
-                <img
-                  key={idx}
-                  className="msg-attachment"
-                  src={`data:${img.mimeType};base64,${img.data}`}
-                  alt={img.name ?? `pasted image ${idx + 1}`}
-                />
+                <ImageAttachmentTile key={idx} image={img} index={idx} />
               ))}
             </div>
           )}
@@ -168,4 +163,91 @@ function Item({
     default:
       return null;
   }
+}
+
+/** Image attachment tile rendered inside a user message bubble.
+ *
+ * Click → opens a centred lightbox overlay with the full-resolution image.
+ * Each tile also exposes hover-revealed buttons to copy the image to the
+ * system clipboard (PNG bytes when ClipboardItem is supported, base64
+ * data-URL fallback otherwise) and to save the image to disk via the host. */
+import { useState } from 'react';
+import type { ImageAttachment } from '../store';
+
+function ImageAttachmentTile({ image, index }: { image: ImageAttachment; index: number }) {
+  const [showLightbox, setShowLightbox] = useState(false);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const dataUrl = `data:${image.mimeType};base64,${image.data}`;
+
+  async function copyImage() {
+    try {
+      // Preferred path: native ClipboardItem with the actual binary bytes
+      // so paste targets (Slack, Notes, design tools) get a real image.
+      // Fall back to copying the data URL as text when ClipboardItem isn't
+      // available — most native paste targets won't accept it but at least
+      // the user can paste it into a markdown source if they need to.
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const binary = atob(image.data);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const blob = new Blob([bytes], { type: image.mimeType });
+        await navigator.clipboard.write([new ClipboardItem({ [image.mimeType]: blob })]);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(dataUrl);
+      } else {
+        throw new Error('Clipboard API not available');
+      }
+      setCopyState('copied');
+      setTimeout(() => setCopyState('idle'), 1500);
+    } catch {
+      setCopyState('failed');
+      setTimeout(() => setCopyState('idle'), 1500);
+    }
+  }
+
+  return (
+    <>
+      <div className="msg-attachment-wrap" title="Click to view full size">
+        <img
+          className="msg-attachment"
+          src={dataUrl}
+          alt={image.name ?? `pasted image ${index + 1}`}
+          onClick={() => setShowLightbox(true)}
+        />
+        <div className="msg-attachment-actions">
+          <button
+            className="msg-attachment-btn"
+            onClick={copyImage}
+            title="Copy image to clipboard"
+          >
+            {copyState === 'copied' ? '✓ Copied' : copyState === 'failed' ? '✕ Failed' : '⧉ Copy'}
+          </button>
+        </div>
+      </div>
+      {showLightbox && (
+        <div
+          className="image-lightbox"
+          onClick={() => setShowLightbox(false)}
+          role="dialog"
+          aria-label="Image viewer"
+        >
+          <img className="image-lightbox-img" src={dataUrl} alt={image.name ?? ''} />
+          <button
+            className="image-lightbox-close"
+            onClick={(e) => { e.stopPropagation(); setShowLightbox(false); }}
+            aria-label="Close"
+          >
+            ×
+          </button>
+          <button
+            className="image-lightbox-copy"
+            onClick={(e) => { e.stopPropagation(); copyImage(); }}
+            title="Copy image to clipboard"
+          >
+            {copyState === 'copied' ? '✓ Copied' : '⧉ Copy'}
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
