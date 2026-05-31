@@ -6,18 +6,29 @@ import { post } from '../vscodeApi';
 
 interface Props {
   items: ChatItem[];
+  /** True from the moment the user hits Send until the agent's turn ends.
+   * Drives the "working…" indicator that fills the spawn→first-token gap. */
+  busy?: boolean;
 }
 
-export function MessageList({ items }: Props) {
+export function MessageList({ items, busy }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [items]);
+  }, [items, busy]);
+
+  // Show the working indicator only when we're busy AND the agent hasn't
+  // started streaming a response yet (last item is the user's message or a
+  // tool call still in flight). Once assistant text starts arriving the
+  // streaming text itself is the feedback, so we hide the pill.
+  const last = items[items.length - 1];
+  const awaitingFirstToken =
+    busy === true && (!last || last.kind === 'user' || last.kind === 'tool');
 
   return (
     <div className="messages">
-      {items.length === 0 && (
+      {items.length === 0 && !busy && (
         <div className="empty">
           <h3>Code Build</h3>
           <p>One chat, many agents — Claude, Grok, Codex, and any ACP CLI.</p>
@@ -26,6 +37,17 @@ export function MessageList({ items }: Props) {
       {items.map((item) => (
         <Item key={item.id} item={item} />
       ))}
+      {awaitingFirstToken && (
+        <div className="msg msg-assistant">
+          <div className="msg-role">Agent</div>
+          <div className="thinking-indicator" aria-label="Agent is working">
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-dot" />
+            <span className="thinking-label">working…</span>
+          </div>
+        </div>
+      )}
       <div ref={endRef} />
     </div>
   );

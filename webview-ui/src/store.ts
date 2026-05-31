@@ -40,6 +40,8 @@ export interface ChatState {
   commands: { name: string; description?: string }[];
   fileSuggestions: Array<{ path: string; label?: string }>;
   sessions: SessionMeta[];
+  /** Pending cross-backend carry-over prompt (null when not switching). */
+  primerPrompt: { turnCount: number; fromBackend: string; toBackend: string } | null;
 }
 
 export const initialState: ChatState = {
@@ -54,7 +56,8 @@ export const initialState: ChatState = {
   usageBreakdown: [],
   commands: [],
   fileSuggestions: [],
-  sessions: []
+  sessions: [],
+  primerPrompt: null
 };
 
 let seq = 0;
@@ -74,6 +77,15 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
+    case 'primerPrompt':
+      return {
+        ...state,
+        primerPrompt: {
+          turnCount: msg.turnCount,
+          fromBackend: msg.fromBackend,
+          toBackend: msg.toBackend
+        }
+      };
     case 'sessionMeta':
       return { ...state, session: msg.session };
     case 'busy':

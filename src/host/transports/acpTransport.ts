@@ -33,6 +33,7 @@ export class AcpTransport extends BaseAgentSession {
   private rpc?: JsonRpcEndpoint;
   private acpSessionId?: string;
   private startOpts?: StartOpts;
+  private mode: PermissionMode = 'default';
   private pendingPermissions = new Map<string, (outcome: PermissionOutcome) => void>();
 
   constructor(
@@ -45,9 +46,16 @@ export class AcpTransport extends BaseAgentSession {
 
   async start(opts: StartOpts): Promise<void> {
     this.startOpts = opts;
+    this.mode = opts.mode;
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
-    const args = spec.buildArgs({ cwd: opts.cwd, mode: opts.mode });
+    const args = spec.buildArgs({
+      cwd: opts.cwd,
+      mode: opts.mode,
+      model: opts.model,
+      effort: opts.effort,
+      allowBypass: opts.allowBypass
+    });
 
     this.proc = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
     this.proc.on('error', (err) =>
@@ -110,13 +118,36 @@ export class AcpTransport extends BaseAgentSession {
     const requestId = crypto.randomUUID();
     const toolCall = (params.toolCall ?? {}) as Record<string, unknown>;
     const options = (params.options ?? []) as { optionId: string; name: string; kind: string }[];
+    const toolKind = toolCall.kind as string | undefined;
+
+    // Auto-approve to match Claude Code's permission semantics:
+    //   - bypass  → approve everything (the user opted into the escape hatch)
+    //   - acceptEdits → approve edit/write tools, still prompt for the rest
+    //     (Bash, fetch, etc.) so destructive non-edit ops keep a gate.
+    // We pick the strongest "allow" option the agent offered (allow_always >
+    // allow_once) so the agent stops re-asking within the session.
+    const isEditKind = toolKind === 'edit' || toolKind === 'write' || toolKind === 'create';
+    const shouldAutoApprove =
+      (this.mode === 'bypass' && this.startOpts?.allowBypass) ||
+      (this.mode === 'acceptEdits' && isEditKind);
+    if (shouldAutoApprove) {
+      const allow =
+        options.find((o) => o.kind === 'allow_always') ??
+        options.find((o) => o.kind === 'allow_once');
+      if (allow) {
+        // Still surface the tool call to the UI (so the user sees activity),
+        // but resolve immediately without a blocking prompt.
+        return Promise.resolve({ outcome: { outcome: 'selected', optionId: allow.optionId } });
+      }
+    }
+
     this.emit({
       kind: 'permission_request',
       requestId,
       toolCall: {
         toolCallId: String(toolCall.toolCallId ?? requestId),
         title: String(toolCall.title ?? 'Permission request'),
-        kind: toolCall.kind as string | undefined,
+        kind: toolKind,
         status: 'pending'
       },
       options: options as never
@@ -148,8 +179,11 @@ export class AcpTransport extends BaseAgentSession {
     }
   }
 
-  setMode(_mode: PermissionMode): void {
-    // ACP session/set_mode wiring lands in P5 (needs mode-id mapping per agent).
+  setMode(mode: PermissionMode): void {
+    // Track the mode so handlePermission can auto-approve in bypass/acceptEdits.
+    // (ACP session/set_mode for the agent's own mode tracking lands later;
+    // the auto-approve path is what actually unblocks the user today.)
+    this.mode = mode;
   }
 
   respondPermission(requestId: string, outcome: PermissionOutcome): void {

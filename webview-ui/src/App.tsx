@@ -14,12 +14,14 @@ type Action =
   | { kind: 'host'; msg: HostToWebview }
   | { kind: 'sendUser'; text: string; images?: ImageAttachment[] }
   | { kind: 'clearPermission' }
+  | { kind: 'clearPrimer' }
   | { kind: 'clearItems' };
 
 function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
   if (action.kind === 'sendUser') return appendUser(state, action.text, action.images);
   if (action.kind === 'clearPermission') return { ...state, permission: null };
+  if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
   if (action.kind === 'clearItems') return { ...state, items: [], usage: null, usageBreakdown: [] };
   return state;
 }
@@ -93,7 +95,7 @@ export function App() {
     post({ type: 'setModel', model });
   }
 
-  function onSetEffort(effort: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max') {
+  function onSetEffort(effort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max') {
     post({ type: 'setEffort', effort });
   }
 
@@ -131,7 +133,39 @@ export function App() {
         onResumeSession={onResumeSession}
         onRefreshSessions={() => post({ type: 'listSessions' })}
       />
-      <MessageList items={state.items} />
+      {state.primerPrompt && (
+        <div className="primer-banner">
+          <span className="primer-text">
+            Continuing from a <strong>{state.primerPrompt.fromBackend}</strong> session
+            ({state.primerPrompt.turnCount} prior turn{state.primerPrompt.turnCount === 1 ? '' : 's'}).
+            Carry context into <strong>{state.primerPrompt.toBackend}</strong>?
+          </span>
+          <div className="primer-actions">
+            <button
+              className="btn btn-primer"
+              onClick={() => { post({ type: 'primerDecision', choice: 'full' }); dispatch({ kind: 'clearPrimer' }); }}
+              title="Prepend the full prior conversation to your next message"
+            >
+              Full conversation
+            </button>
+            <button
+              className="btn btn-primer"
+              onClick={() => { post({ type: 'primerDecision', choice: 'summary' }); dispatch({ kind: 'clearPrimer' }); }}
+              title="Prepend a compact summary to your next message"
+            >
+              Summary only
+            </button>
+            <button
+              className="btn btn-primer btn-primer-ghost"
+              onClick={() => { post({ type: 'primerDecision', choice: 'none' }); dispatch({ kind: 'clearPrimer' }); }}
+              title="Start fresh with no carried-over context"
+            >
+              Start fresh
+            </button>
+          </div>
+        </div>
+      )}
+      <MessageList items={state.items} busy={state.busy} />
       <MessageNav items={state.items} />
       {state.permission && (
         <PermissionPrompt permission={state.permission} onRespond={onRespond} />

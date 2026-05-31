@@ -6,10 +6,14 @@ const pexecFile = promisify(execFile);
 
 export type TransportKind = 'stream-json' | 'acp' | 'exec-json';
 
-/** Effort / thinking-budget level — Claude Code's runtime UI exposes this
- * as a 5-step slider; we mirror it for any backend that maps cleanly.
+/** Effort / thinking-budget level. These are the exact levels both the
+ * `claude` and `grok` CLIs accept for `--effort` (low/medium/high/xhigh/max).
  * `default` = let the agent pick (don't pass a flag). */
-export type EffortLevel = 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
+export type EffortLevel = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+
+/** The effort levels offered in the UI picker (shared by every backend that
+ * supports effort). Kept here so the webview and host agree on the set. */
+export const EFFORT_LEVELS: EffortLevel[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 export interface BackendSpec {
   id: BackendId;
@@ -23,6 +27,10 @@ export interface BackendSpec {
     model?: string;
     resumeId?: string;
     effort?: EffortLevel;
+    /** Whether the user has opted into the bypass/skip-permissions escape
+     * hatch (codeBuild.allowDangerouslySkipPermissions). buildArgs uses it
+     * to gate --dangerously-skip-permissions. */
+    allowBypass?: boolean;
   }): string[];
   /** Known model ids for the dropdown. The first entry is treated as the
    * default; empty list disables the picker (UI shows nothing). */
@@ -38,20 +46,13 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: 'Claude Code',
     bin: 'claude',
     transport: 'stream-json',
-    // Model ids as of Claude Code 1.0.x. The CLI also accepts shorthand
-    // ('sonnet'/'opus'/'haiku') and 'default' — we expose the verbose ids
-    // to make per-version selection unambiguous.
-    models: [
-      'default',
-      'claude-opus-4-7',
-      'claude-opus-4-6',
-      'claude-opus-4-5',
-      'claude-sonnet-4-6',
-      'claude-sonnet-4-5',
-      'claude-haiku-4-5'
-    ],
+    // Aliases, not version-pinned ids. The `claude` CLI resolves 'opus' /
+    // 'sonnet' / 'haiku' to the latest model in each family, so these never
+    // go stale (e.g. 'opus' → Opus 4.8 today). detectAll() may replace this
+    // with a dynamically-discovered list when available.
+    models: ['default', 'opus', 'sonnet', 'haiku'],
     supportsEffort: true,
-    buildArgs: ({ mode, model, resumeId, effort }) => {
+    buildArgs: ({ mode, model, resumeId, effort, allowBypass }) => {
       const args = [
         '-p',
         '--input-format',
@@ -61,11 +62,18 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
         '--verbose'
       ];
       if (model && model !== 'default') args.push('--model', model);
-      args.push('--permission-mode', claudePermMode(mode));
+      // Permission handling. In bypass mode we hand claude full autonomy via
+      // --dangerously-skip-permissions (the only flag that actually stops ALL
+      // prompts in headless -p mode — --permission-mode bypassPermissions
+      // still expects a permission responder we don't run). Gated by the
+      // allowBypass capability so it can't fire unless the user opted in.
+      if (mode === 'bypass' && allowBypass) {
+        args.push('--dangerously-skip-permissions');
+      } else {
+        args.push('--permission-mode', claudePermMode(mode));
+      }
       if (resumeId) args.push('--resume', resumeId);
-      // `--thinking-budget` was renamed to `--effort` in claude code 1.x.
-      // We pass the level by name; claude maps it to its internal token
-      // budget. `default` skips the flag.
+      // claude effort levels: low/medium/high/xhigh/max. `default` skips.
       if (effort && effort !== 'default') args.push('--effort', effort);
       return args;
     }
@@ -75,15 +83,18 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: 'Grok',
     bin: 'grok',
     transport: 'acp',
-    // xAI models surfaced by `grok` CLI as of 2026-05. `grok-build` is the
-    // SuperGrok-bundled coding agent; `grok-4.20` / `grok-4.3` come with
-    // API-key auth. Model swap mid-ACP-session isn't supported; the
-    // selection only takes effect on next session spawn.
-    models: ['default', 'grok-build', 'grok-4.20', 'grok-4.3'],
-    // grok's ACP daemon takes the model from a session-level config that
-    // we set via env. See env composition in streamJsonTransport.
-    supportsEffort: false,
-    buildArgs: () => ['agent', 'stdio']
+    // Populated dynamically from ~/.grok/models_cache.json by detectAll().
+    // This static fallback covers a fresh install whose cache isn't written
+    // yet. grok ACP takes the model on the spawn command line via -m.
+    models: ['default', 'grok-build'],
+    // grok's --effort is accepted by the CLI; ACP daemon honors it per spawn.
+    supportsEffort: true,
+    buildArgs: ({ model, effort }) => {
+      const args = ['agent', 'stdio'];
+      if (model && model !== 'default') args.push('--model', model);
+      if (effort && effort !== 'default') args.push('--effort', effort);
+      return args;
+    }
   },
   codex: {
     id: 'codex',
@@ -181,9 +192,42 @@ export async function detectAll(
       id: spec.id,
       label: spec.label,
       available: await detectBackend(spec, overrides),
-      models: spec.models,
+      models: discoverModels(spec),
       supportsEffort: spec.supportsEffort
     }))
   );
   return results;
+}
+
+/** Resolve the model list for a backend at detection time. Grok ships a
+ * `~/.grok/models_cache.json` the CLI keeps fresh — we read it so the picker
+ * reflects what the user can actually select (and picks up new xAI models
+ * without a code change). Other backends fall back to the static list on the
+ * spec. Always prepends 'default' so the user can defer to the CLI. */
+function discoverModels(spec: BackendSpec): string[] {
+  if (spec.id === 'grok') {
+    const fromCache = readGrokModels();
+    if (fromCache.length > 0) return ['default', ...fromCache];
+  }
+  return spec.models ?? [];
+}
+
+/** Read model ids out of grok's local cache. Returns [] on any failure
+ * (missing file, malformed JSON, hidden models) so callers fall back to
+ * the static list. */
+function readGrokModels(): string[] {
+  try {
+    // Lazy require keeps these node builtins out of the module's import
+    // graph for environments that don't need them.
+    const fsmod = require('node:fs') as typeof import('node:fs');
+    const osmod = require('node:os') as typeof import('node:os');
+    const pathmod = require('node:path') as typeof import('node:path');
+    const p = pathmod.join(osmod.homedir(), '.grok', 'models_cache.json');
+    const raw = fsmod.readFileSync(p, 'utf8');
+    const json = JSON.parse(raw) as { models?: Record<string, { info?: { hidden?: boolean } }> };
+    const models = json.models ?? {};
+    return Object.keys(models).filter((id) => !models[id]?.info?.hidden);
+  } catch {
+    return [];
+  }
 }

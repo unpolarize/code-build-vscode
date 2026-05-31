@@ -12,9 +12,14 @@ export interface StartOpts {
   model?: string;
   /** Resume an existing backend session id, if supported. */
   resumeId?: string;
-  /** Effort / thinking-budget level — claude code, codex (o-series). Not
-   * all backends honor it; buildArgs is the gatekeeper. */
-  effort?: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
+  /** Effort / thinking-budget level — claude code, codex, grok. Not all
+   * backends honor it; buildArgs is the gatekeeper. Levels match the CLIs:
+   * low/medium/high/xhigh/max. */
+  effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Whether the user opted into the skip-permissions escape hatch
+   * (codeBuild.allowDangerouslySkipPermissions). Gates the
+   * --dangerously-skip-permissions flag (claude) and ACP auto-approve. */
+  allowBypass?: boolean;
 }
 
 /**

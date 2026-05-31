@@ -3,8 +3,8 @@ import type { PermissionMode } from '../../../src/shared/acpTypes';
 import type { ChatState } from '../store';
 
 const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'bypass'];
-type Effort = 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
-const EFFORT_LEVELS: Effort[] = ['default', 'minimal', 'low', 'medium', 'high', 'max'];
+type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+const EFFORT_LEVELS: Effort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
 interface Props {
   state: ChatState;

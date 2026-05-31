@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll } from './backendRegistry';
+import { detectAll, BACKENDS } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -17,6 +17,7 @@ import {
   loadGrokHistory
 } from './persistence/externalReplay';
 import { listAllSessions } from './persistence/externalSources';
+import { serializeConversation, countUserTurns, type PrimerMode } from './persistence/conversationSerializer';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -31,6 +32,13 @@ export class SessionManager {
   private webviewReady = false;
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
+
+  /** Records captured from the OLD session right before a backend switch,
+   * held until the user answers the carry-over prompt. */
+  private handoffRecords?: { records: { type: string; text?: string; update?: any }[]; fromBackend: string };
+  /** Text primer to prepend to the user's NEXT prompt (one-shot). Set when
+   * the user chooses Full/Summary in the carry-over banner. */
+  private pendingPrimer?: string;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -73,7 +81,10 @@ export class SessionManager {
         await this.openSession(msg.backend);
         break;
       case 'pickBackend':
-        await this.openSession(msg.backend);
+        await this.switchBackend(msg.backend);
+        break;
+      case 'primerDecision':
+        this.applyPrimerDecision(msg.choice);
         break;
       case 'prompt': {
         await this.ensureSession();
@@ -84,7 +95,14 @@ export class SessionManager {
           this.commitAndTitle(originalText);
           this.store.appendUserText(this.meta!.id, originalText);
         }
-        const blocks = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        let blocks = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        // One-shot context handoff: if the user switched backend and chose to
+        // carry context, prepend the serialized prior conversation as a
+        // leading text block, then clear it so it's only sent once.
+        if (this.pendingPrimer) {
+          blocks = [{ type: 'text', text: this.pendingPrimer }, ...blocks];
+          this.pendingPrimer = undefined;
+        }
         try {
           await this.session!.prompt(blocks);
         } catch (err) {
@@ -188,11 +206,85 @@ export class SessionManager {
     }
   }
 
+  /** Handle the backend dropdown. If the current chat already has content
+   * AND the backend actually changes, capture the prior transcript and ask
+   * the user whether to carry it over before spinning up the new backend. */
+  private async switchBackend(backend: BackendId): Promise<void> {
+    const prevBackend = this.meta?.backend;
+    const prevId = this.meta?.id;
+    // Snapshot the prior transcript BEFORE we tear the session down.
+    let captured: { records: { type: string; text?: string; update?: any }[]; fromBackend: string } | undefined;
+    if (prevId && prevBackend && prevBackend !== backend) {
+      const loaded = this.store.load(prevId);
+      if (loaded.records.length > 0 && countUserTurns(loaded.records) > 0) {
+        captured = { records: loaded.records, fromBackend: backendLabel(prevBackend) };
+      }
+    }
+
+    await this.openSession(backend);
+
+    // After the new session is live, offer the carry-over choice. We hold the
+    // captured records until the user answers (applyPrimerDecision).
+    if (captured) {
+      this.handoffRecords = captured;
+      this.panel.post({
+        type: 'primerPrompt',
+        turnCount: countUserTurns(captured.records),
+        fromBackend: captured.fromBackend,
+        toBackend: backendLabel(backend)
+      });
+    }
+  }
+
+  /** Resolve the carry-over banner: serialize the held transcript per the
+   * chosen fidelity and stash it as the one-shot primer (or discard). */
+  private applyPrimerDecision(choice: 'full' | 'summary' | 'none'): void {
+    const held = this.handoffRecords;
+    this.handoffRecords = undefined;
+    if (!held || choice === 'none') {
+      this.pendingPrimer = undefined;
+      return;
+    }
+    const primer = serializeConversation(held.records, choice as PrimerMode, held.fromBackend);
+    this.pendingPrimer = primer || undefined;
+  }
+
+  /** Whether the user opted into the skip-permissions escape hatch. */
+  private get allowBypass(): boolean {
+    return this.config.get<boolean>('allowDangerouslySkipPermissions', false);
+  }
+
+  /** Sticky config remembered across sessions in globalState. The user's
+   * last mode / model / effort selection is restored on every new session
+   * so they don't have to re-pick bypass + model each time. Bypass is only
+   * restored when the escape hatch is still enabled in settings. */
+  private rememberedConfig(): { mode: PermissionMode; model?: string; effort: SessionMeta['effort'] } {
+    const g = this.context.globalState;
+    let mode = g.get<PermissionMode>('lastMode')
+      ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
+    if (mode === 'bypass' && !this.allowBypass) mode = 'default';
+    const model =
+      g.get<string>('lastModel')
+      ?? (this.config.get<string>('defaultModel', '') || undefined);
+    const effort =
+      g.get<SessionMeta['effort']>('lastEffort')
+      ?? this.config.get<SessionMeta['effort']>('defaultEffort', 'default')
+      ?? 'default';
+    return { mode, model: model || undefined, effort };
+  }
+
+  /** Persist the current selection so the next session restores it. */
+  private rememberConfig(): void {
+    if (!this.meta) return;
+    void this.context.globalState.update('lastMode', this.meta.mode);
+    void this.context.globalState.update('lastModel', this.meta.model ?? '');
+    void this.context.globalState.update('lastEffort', this.meta.effort ?? 'default');
+  }
+
   private async openSession(backend?: BackendId): Promise<void> {
     this.teardownSession();
     const id = crypto.randomUUID();
     const be = backend ?? this.defaultBackend();
-    const mode = this.config.get<PermissionMode>('initialPermissionMode', 'default');
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
@@ -204,22 +296,24 @@ export class SessionManager {
       }
     });
 
-    // Pull configured defaults from settings so a fresh session uses what
-    // the user picked last time. These are also surfaced to the UI so the
-    // dropdowns reflect reality on first paint.
-    const defaultModel = this.config.get<string>('defaultModel', '') || undefined;
-    const defaultEffort =
-      this.config.get<SessionMeta['effort']>('defaultEffort', 'default') ?? 'default';
+    // Restore the user's last-used mode / model / effort so a fresh session
+    // picks up where they left off (bypass stays sticky when still enabled).
+    const remembered = this.rememberedConfig();
+    // A model remembered from a different backend (e.g. 'opus' carried into
+    // grok) won't be valid — drop to the backend's default in that case.
+    const validModels = BACKENDS[be].models ?? [];
+    const model =
+      remembered.model && validModels.includes(remembered.model) ? remembered.model : undefined;
 
     this.meta = {
       id,
       backend: be,
       title: `New chat · ${be}`,
-      mode,
+      mode: remembered.mode,
       cwd: this.cwd,
       createdAt: Date.now(),
-      model: defaultModel,
-      effort: defaultEffort
+      model,
+      effort: remembered.effort
     };
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
@@ -228,9 +322,10 @@ export class SessionManager {
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     await this.session.start({
       cwd: this.cwd,
-      mode,
+      mode: remembered.mode,
       model: this.meta.model,
-      effort: this.meta.effort
+      effort: this.meta.effort,
+      allowBypass: this.allowBypass
     });
   }
 
@@ -240,17 +335,18 @@ export class SessionManager {
       this.panel.post({ type: 'sessionMeta', session: this.meta });
     }
     this.session?.setMode(mode);
+    this.rememberConfig();
   }
 
   /** Apply a new model selection. Persists onto meta so the picker stays
    * sticky on reload; takes effect at the next process spawn (claude reads
-   * --model only at spawn time). The UI shows a hint that a restart is
-   * pending if we update mid-session. */
+   * --model only at spawn time). */
   private setModel(model: string): void {
     if (!this.meta) return;
     this.meta.model = model;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+    this.rememberConfig();
   }
 
   /** Apply a new effort/thinking-budget level. Same persistence + respawn
@@ -260,6 +356,7 @@ export class SessionManager {
     this.meta.effort = effort;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+    this.rememberConfig();
   }
 
   /**
@@ -391,7 +488,8 @@ export class SessionManager {
       mode,
       resumeId: args.sessionId,
       model: this.meta?.model,
-      effort: this.meta?.effort
+      effort: this.meta?.effort,
+      allowBypass: this.allowBypass
     });
   }
 
@@ -586,7 +684,8 @@ export class SessionManager {
       cwd: this.meta.cwd,
       mode,
       model: this.meta.model,
-      effort: this.meta.effort
+      effort: this.meta.effort,
+      allowBypass: this.allowBypass
     });
   }
 }
@@ -603,6 +702,18 @@ function pickDominantModel(byModel: Array<{ model?: string; outputTokens?: numbe
     if (!best || (m.outputTokens ?? 0) > (best.outputTokens ?? 0)) best = m;
   }
   return best?.model;
+}
+
+/** Human label for a backend id (used in the carry-over banner copy). */
+function backendLabel(id: BackendId): string {
+  const map: Record<string, string> = {
+    claude: 'Claude Code',
+    grok: 'Grok',
+    codex: 'Codex',
+    opencode: 'opencode',
+    cline: 'Cline'
+  };
+  return map[id] ?? id;
 }
 
 /** Make a short, human-readable session title from the first user message. */

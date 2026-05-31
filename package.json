@@ -189,14 +189,14 @@
           "type": "string",
           "enum": [
             "default",
-            "minimal",
             "low",
             "medium",
             "high",
+            "xhigh",
             "max"
           ],
           "default": "default",
-          "description": "Default effort / thinking-budget level. Claude Code maps this to its --effort flag; Codex (o-series) maps it to --reasoning-effort. Grok ignores it. 'default' = let the backend pick."
+          "description": "Default effort / thinking-budget level. Claude Code and Grok map this to --effort; Codex (o-series) maps it to --reasoning-effort. 'default' = let the backend pick."
         }
       }
     }

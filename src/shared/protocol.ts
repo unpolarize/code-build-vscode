@@ -36,7 +36,7 @@ export interface SessionMeta {
    * Optional — when missing the backend picks the default. */
   model?: string;
   /** Currently-selected effort/thinking-budget level. */
-  effort?: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
+  effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
@@ -75,8 +75,11 @@ export type WebviewToHost =
    * agent is idle). */
   | { type: 'setModel'; model: string }
   /** Change the active effort/thinking-budget level. Same respawn rules. */
-  | { type: 'setEffort'; effort: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max' }
+  | { type: 'setEffort'; effort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
   | { type: 'newSession'; backend?: BackendId }
+  /** User's answer to the cross-backend context-handoff prompt: carry the
+   * full prior conversation, a summary, or nothing into the new backend. */
+  | { type: 'primerDecision'; choice: 'full' | 'summary' | 'none' }
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
@@ -99,7 +102,10 @@ export type HostToWebview =
   | { type: 'busy'; busy: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
-  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> };
+  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
+  /** Ask the user whether to carry conversation context into a just-switched
+   * backend. The webview shows a banner with Full / Summary / Start fresh. */
+  | { type: 'primerPrompt'; turnCount: number; fromBackend: string; toBackend: string };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {
   return typeof msg === 'object' && msg !== null && typeof (msg as { type?: unknown }).type === 'string';

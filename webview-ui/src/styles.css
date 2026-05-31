@@ -238,6 +238,69 @@ body {
   flex-wrap: wrap;
 }
 
+/* Cross-backend carry-over banner. */
+.primer-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 8px 12px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 6px;
+  background: var(--vscode-textBlockQuote-background, rgba(99, 102, 241, 0.08));
+}
+.primer-text {
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+.primer-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.btn-primer {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 0.85em;
+}
+.btn-primer:hover { background: var(--vscode-button-hoverBackground); }
+.btn-primer-ghost {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+}
+
+/* "Agent is working" indicator — fills the gap between Send and first token. */
+.thinking-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 2px;
+}
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--vscode-foreground);
+  opacity: 0.4;
+  animation: thinking-bounce 1.2s infinite ease-in-out;
+}
+.thinking-dot:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dot:nth-child(3) { animation-delay: 0.3s; }
+.thinking-label {
+  margin-left: 6px;
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+@keyframes thinking-bounce {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 0.9; transform: translateY(-3px); }
+}
+
 /* Floating message navigator (prev/next user message + jump dropdown). */
 .msg-nav {
   position: sticky;
