@@ -32,18 +32,35 @@ export interface SessionMeta {
    * (claude jsonl or grok chat_history.jsonl). Lets the picker show a
    * "Reveal in finder" affordance and lets future code peek at content. */
   externalPath?: string;
+  /** Currently-selected model id (e.g. 'claude-opus-4-7', 'grok-build').
+   * Optional — when missing the backend picks the default. */
+  model?: string;
+  /** Currently-selected effort/thinking-budget level. */
+  effort?: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
 export interface HydrateState {
   session: SessionMeta | null;
-  /** Available backends detected on this machine. */
-  backends: { id: BackendId; label: string; available: boolean }[];
+  /** Available backends detected on this machine, with their model lists
+   * + effort-support flags so the header can populate the dropdowns. */
+  backends: BackendCapability[];
   allowBypass: boolean;
   /** Recent persisted sessions, newest first, for the in-chat history dropdown. */
   sessions: SessionMeta[];
   /** Default backend from settings. */
   defaultBackend: BackendId;
+}
+
+/** Capability snapshot of one backend, served to the webview on hydrate. */
+export interface BackendCapability {
+  id: BackendId;
+  label: string;
+  available: boolean;
+  /** Known model ids (first entry conventionally 'default'). Empty list
+   * means the picker is hidden. */
+  models?: string[];
+  supportsEffort?: boolean;
 }
 
 // ---- Webview -> Host commands ----
@@ -53,6 +70,12 @@ export type WebviewToHost =
   | { type: 'cancel' }
   | { type: 'setMode'; mode: PermissionMode }
   | { type: 'pickBackend'; backend: BackendId }
+  /** Change the active model for the current session. Triggers a respawn
+   * with the new --model flag at the next prompt (or immediately if the
+   * agent is idle). */
+  | { type: 'setModel'; model: string }
+  /** Change the active effort/thinking-budget level. Same respawn rules. */
+  | { type: 'setEffort'; effort: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max' }
   | { type: 'newSession'; backend?: BackendId }
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }

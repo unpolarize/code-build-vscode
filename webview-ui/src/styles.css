@@ -39,12 +39,16 @@ body {
   flex: 1;
 }
 .backend-picker,
-.mode-picker {
+.mode-picker,
+.model-picker,
+.effort-picker {
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border, transparent);
   border-radius: 4px;
   padding: 3px 6px;
+  font-size: 0.85em;
+  max-width: 180px;
 }
 .usage {
   font-variant-numeric: tabular-nums;

@@ -196,9 +196,40 @@ function blockText(content: { type: string; text?: string }): string {
   return content.type === 'text' ? content.text ?? '' : '';
 }
 
+/** Tools that write to disk across all supported agent CLIs. Keys are
+ * matched against `tool.title` (which holds the agent's tool name). The
+ * value is the input-property name that carries the file path. */
+const EDIT_TOOLS: Record<string, string[]> = {
+  // Claude Code
+  Edit: ['file_path'],
+  Write: ['file_path'],
+  MultiEdit: ['file_path'],
+  NotebookEdit: ['notebook_path'],
+  // Grok / Codex / ACP-style names
+  search_replace: ['file_path'],
+  write: ['filePath', 'file_path'],
+  str_replace_editor: ['path'],
+  edit_file: ['path', 'file_path'],
+  apply_patch: ['file_path']
+};
+
+function fileFromToolInput(toolName: string, rawInput: unknown): string | null {
+  const keys = EDIT_TOOLS[toolName];
+  if (!keys || typeof rawInput !== 'object' || rawInput === null) return null;
+  for (const k of keys) {
+    const v = (rawInput as Record<string, unknown>)[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return null;
+}
+
 /**
  * Scan the tool items produced in the current turn (back to the last user message)
- * and aggregate the files they edited, with added/removed line counts from diffs.
+ * and aggregate the files they edited. Three sources, in priority order:
+ *   1. Diff content blocks on the tool call (most precise — has line counts).
+ *   2. Tool name + rawInput path lookup (`Edit.file_path`, `write.filePath`,
+ *      etc.) — catches edits whose content blocks are text-only tool_results.
+ *   3. tool.locations[].path (legacy fallback) for tools that fill it in.
  */
 function collectModifiedFiles(items: ChatItem[]): { path: string; added: number; removed: number }[] {
   const map = new Map<string, { path: string; added: number; removed: number }>();
@@ -216,10 +247,18 @@ function collectModifiedFiles(items: ChatItem[]): { path: string; added: number;
       entry.removed += removed;
       map.set(d.path, entry);
     }
-    // Edit/write tools without a diff block: still record the touched path.
-    if (!diffs.length && it.tool.kind === 'edit' && it.tool.locations?.length) {
-      for (const loc of it.tool.locations) {
-        if (!map.has(loc.path)) map.set(loc.path, { path: loc.path, added: 0, removed: 0 });
+    // Edit/write tool whose result was text-only (no diff content block):
+    // pull the file path from the tool's name + raw input. Lets the
+    // "Modified files" tile appear for grok / claude tools that don't
+    // emit diff blocks (Edit, Write, search_replace, etc.).
+    if (!diffs.length) {
+      const pathFromInput = fileFromToolInput(it.tool.title, it.tool.rawInput);
+      if (pathFromInput && !map.has(pathFromInput)) {
+        map.set(pathFromInput, { path: pathFromInput, added: 0, removed: 0 });
+      } else if (it.tool.kind === 'edit' && it.tool.locations?.length) {
+        for (const loc of it.tool.locations) {
+          if (!map.has(loc.path)) map.set(loc.path, { path: loc.path, added: 0, removed: 0 });
+        }
       }
     }
   }

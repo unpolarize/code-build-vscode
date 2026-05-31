@@ -12,6 +12,9 @@ export interface StartOpts {
   model?: string;
   /** Resume an existing backend session id, if supported. */
   resumeId?: string;
+  /** Effort / thinking-budget level — claude code, codex (o-series). Not
+   * all backends honor it; buildArgs is the gatekeeper. */
+  effort?: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
 }
 
 /**

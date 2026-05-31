@@ -3,11 +3,15 @@ import type { PermissionMode } from '../../../src/shared/acpTypes';
 import type { ChatState } from '../store';
 
 const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'bypass'];
+type Effort = 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
+const EFFORT_LEVELS: Effort[] = ['default', 'minimal', 'low', 'medium', 'high', 'max'];
 
 interface Props {
   state: ChatState;
   onPickBackend: (id: string) => void;
   onSetMode: (mode: PermissionMode) => void;
+  onSetModel: (model: string) => void;
+  onSetEffort: (effort: Effort) => void;
   onNewSession: () => void;
   onOpenInNewTab: () => void;
   onOpenInNewWindow: () => void;
@@ -19,6 +23,8 @@ export function Header({
   state,
   onPickBackend,
   onSetMode,
+  onSetModel,
+  onSetEffort,
   onNewSession,
   onOpenInNewTab,
   onOpenInNewWindow,
@@ -27,6 +33,14 @@ export function Header({
 }: Props) {
   const current = state.session?.backend ?? '';
   const [historyOpen, setHistoryOpen] = useState(false);
+
+  // Look up the current backend's capabilities to decide which dropdowns
+  // to render. Hide the model picker when the backend has no curated
+  // model list (e.g. opencode, cline — they don't accept --model);
+  // hide effort when the backend doesn't honor it (grok, opencode, cline).
+  const currentCap = state.backends.find((b) => b.id === current);
+  const modelOptions = currentCap?.models ?? [];
+  const supportsEffort = currentCap?.supportsEffort === true;
 
   function toggleHistory() {
     if (!historyOpen) onRefreshSessions();
@@ -60,6 +74,36 @@ export function Header({
           </option>
         ))}
       </select>
+
+      {modelOptions.length > 0 && (
+        <select
+          className="model-picker"
+          value={state.session?.model ?? 'default'}
+          onChange={(e) => onSetModel(e.target.value)}
+          title="Model — takes effect on next agent process spawn"
+        >
+          {modelOptions.map((m) => (
+            <option key={m} value={m}>
+              {m === 'default' ? 'auto · model' : m}
+            </option>
+          ))}
+        </select>
+      )}
+
+      {supportsEffort && (
+        <select
+          className="effort-picker"
+          value={state.session?.effort ?? 'default'}
+          onChange={(e) => onSetEffort(e.target.value as Effort)}
+          title="Effort / thinking budget — takes effect on next agent process spawn"
+        >
+          {EFFORT_LEVELS.map((lvl) => (
+            <option key={lvl} value={lvl}>
+              {lvl === 'default' ? 'auto · effort' : `effort: ${lvl}`}
+            </option>
+          ))}
+        </select>
+      )}
 
       <div className="header-spacer" />
 

@@ -103,6 +103,12 @@ export class SessionManager {
       case 'setMode':
         this.setMode(msg.mode);
         break;
+      case 'setModel':
+        this.setModel(msg.model);
+        break;
+      case 'setEffort':
+        this.setEffort(msg.effort);
+        break;
       case 'respondPermission':
         this.session?.respondPermission(msg.requestId, msg.outcome);
         break;
@@ -198,20 +204,34 @@ export class SessionManager {
       }
     });
 
+    // Pull configured defaults from settings so a fresh session uses what
+    // the user picked last time. These are also surfaced to the UI so the
+    // dropdowns reflect reality on first paint.
+    const defaultModel = this.config.get<string>('defaultModel', '') || undefined;
+    const defaultEffort =
+      this.config.get<SessionMeta['effort']>('defaultEffort', 'default') ?? 'default';
+
     this.meta = {
       id,
       backend: be,
       title: `New chat · ${be}`,
       mode,
       cwd: this.cwd,
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      model: defaultModel,
+      effort: defaultEffort
     };
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
     this.store.createSession(this.meta);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
-    await this.session.start({ cwd: this.cwd, mode });
+    await this.session.start({
+      cwd: this.cwd,
+      mode,
+      model: this.meta.model,
+      effort: this.meta.effort
+    });
   }
 
   private setMode(mode: PermissionMode): void {
@@ -220,6 +240,26 @@ export class SessionManager {
       this.panel.post({ type: 'sessionMeta', session: this.meta });
     }
     this.session?.setMode(mode);
+  }
+
+  /** Apply a new model selection. Persists onto meta so the picker stays
+   * sticky on reload; takes effect at the next process spawn (claude reads
+   * --model only at spawn time). The UI shows a hint that a restart is
+   * pending if we update mid-session. */
+  private setModel(model: string): void {
+    if (!this.meta) return;
+    this.meta.model = model;
+    this.store.updateMeta(this.meta);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+  }
+
+  /** Apply a new effort/thinking-budget level. Same persistence + respawn
+   * semantics as setModel. */
+  private setEffort(effort: SessionMeta['effort']): void {
+    if (!this.meta) return;
+    this.meta.effort = effort;
+    this.store.updateMeta(this.meta);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
   }
 
   /**
@@ -316,6 +356,17 @@ export class SessionManager {
           ? loadGrokHistory(grokChatPathFor(args.cwd, args.sessionId))
           : null;
     if (replay) {
+      // Extract the dominant model from the imported transcript so the
+      // header dropdown reflects what the session was actually using.
+      // For claude, the highest-token-volume model in `byModel` wins (a
+      // session that mostly used Opus shouldn't suddenly switch to
+      // Sonnet on resume).
+      const dominantModel = pickDominantModel(replay.byModel ?? []);
+      if (dominantModel && this.meta) {
+        this.meta.model = dominantModel;
+        this.store.updateMeta(this.meta);
+        this.panel.post({ type: 'sessionMeta', session: this.meta });
+      }
       this.panel.post({ type: 'historyLoaded', meta: this.meta, records: replay.records });
     } else {
       // Best-effort: surface the missing-transcript condition in the chat so
@@ -335,7 +386,13 @@ export class SessionManager {
     // it left off. The grok ACP transport doesn't support resume yet (no
     // external CLI flag) — it'll just start a new ACP session in the right
     // cwd; the loaded transcript above still gives the user the context.
-    await this.session.start({ cwd: args.cwd, mode, resumeId: args.sessionId });
+    await this.session.start({
+      cwd: args.cwd,
+      mode,
+      resumeId: args.sessionId,
+      model: this.meta?.model,
+      effort: this.meta?.effort
+    });
   }
 
   /** On the first user prompt: index the session in history and derive a title from it. */
@@ -525,8 +582,27 @@ export class SessionManager {
 
     // Start a live agent session (fresh process for now; resume tokens can be added later)
     const mode = this.meta.mode ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
-    await this.session.start({ cwd: this.meta.cwd, mode });
+    await this.session.start({
+      cwd: this.meta.cwd,
+      mode,
+      model: this.meta.model,
+      effort: this.meta.effort
+    });
   }
+}
+
+/** Pick the most "used" model from a per-model UsageInfo breakdown:
+ * highest output token count wins (output tokens are the strongest
+ * predictor of which model did the actual generation, vs cache reads
+ * which can be lopsided). Falls back to the first entry, then null. */
+function pickDominantModel(byModel: Array<{ model?: string; outputTokens?: number }>): string | undefined {
+  if (byModel.length === 0) return undefined;
+  let best: { model?: string; outputTokens?: number } | undefined;
+  for (const m of byModel) {
+    if (!m.model) continue;
+    if (!best || (m.outputTokens ?? 0) > (best.outputTokens ?? 0)) best = m;
+  }
+  return best?.model;
 }
 
 /** Make a short, human-readable session title from the first user message. */

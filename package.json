@@ -179,6 +179,24 @@
           "type": "boolean",
           "default": true,
           "description": "Connect to the default backend as soon as a chat opens (so slash commands and the agent are ready immediately, like Claude Code). Disable to start only on first prompt."
+        },
+        "codeBuild.defaultModel": {
+          "type": "string",
+          "default": "",
+          "description": "Default model id passed to the backend on session start. Examples: claude-opus-4-7, claude-sonnet-4-6, grok-build, grok-4.20, gpt-5. Empty = let the backend pick. Can be overridden per-session from the Model dropdown in the chat header."
+        },
+        "codeBuild.defaultEffort": {
+          "type": "string",
+          "enum": [
+            "default",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max"
+          ],
+          "default": "default",
+          "description": "Default effort / thinking-budget level. Claude Code maps this to its --effort flag; Codex (o-series) maps it to --reasoning-effort. Grok ignores it. 'default' = let the backend pick."
         }
       }
     }

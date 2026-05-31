@@ -89,6 +89,14 @@ export function App() {
     post({ type: 'setMode', mode });
   }
 
+  function onSetModel(model: string) {
+    post({ type: 'setModel', model });
+  }
+
+  function onSetEffort(effort: 'default' | 'minimal' | 'low' | 'medium' | 'high' | 'max') {
+    post({ type: 'setEffort', effort });
+  }
+
   function onRespond(requestId: string, outcome: PermissionOutcome) {
     post({ type: 'respondPermission', requestId, outcome });
     dispatch({ kind: 'clearPermission' });
@@ -115,6 +123,8 @@ export function App() {
         state={state}
         onPickBackend={onPickBackend}
         onSetMode={onSetMode}
+        onSetModel={onSetModel}
+        onSetEffort={onSetEffort}
         onNewSession={() => post({ type: 'newSession' })}
         onOpenInNewTab={() => post({ type: 'openInNewTab' })}
         onOpenInNewWindow={() => post({ type: 'openInNewWindow' })}
