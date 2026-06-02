@@ -62,7 +62,7 @@
       },
       {
         "command": "codeBuild.openInCoderSessions",
-        "title": "Code Build: Open Session in Coder Sessions"
+        "title": "Code Build: Open Session in Code Sessions"
       },
       {
         "command": "codeBuild.openPreviousSession",

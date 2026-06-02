@@ -95,7 +95,7 @@ export class StreamJsonTransport extends BaseAgentSession {
         let hint = '';
         if (resumeIdHint) {
           if (/already (in use|active|open)/i.test(stderr) || /resume.*active/i.test(stderr)) {
-            hint = `\n\nThis session is already open in another claude panel — close that window first, or click "Open transcript (JSONL)" on the session row in Coder Sessions to inspect it without resuming.`;
+            hint = `\n\nThis session is already open in another claude panel — close that window first, or click "Open transcript (JSONL)" on the session row in Code Sessions to inspect it without resuming.`;
           } else if (/not found|no such session/i.test(stderr)) {
             hint = `\n\nClaude couldn't locate the session by id. The upstream transcript may have been deleted or never existed.`;
           } else {

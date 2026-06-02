@@ -13,8 +13,8 @@ One UI, many agents: **Claude Code**, **Grok**, **Codex**, and any **ACP** agent
 - **Looks/feels like Claude Code for VS Code** — streaming text, tool-call cards, inline
   diffs, permission prompts, plan mode, slash commands.
 - **Backend-agnostic** — pick Claude, Grok, Codex, or any ACP CLI from the same chat.
-- **Interops with [Coder Sessions](https://github.com/zhirafovod/coder-sessions-vscode)**
-  rather than replacing it: code-build *produces* sessions; Coder Sessions *analyzes* them.
+- **Interops with [Code Sessions](https://github.com/unpolarize/code-sessions-vscode)**
+  rather than replacing it: code-build *produces* sessions; Code Sessions *analyzes* them.
 
 ## Architecture (Approach A — ACP-canonical)
 
@@ -72,7 +72,7 @@ one place.
 ### Option A — build, package, and install a VSIX (recommended)
 
 ```bash
-git clone https://github.com/zhirafovod/code-build-vscode.git
+git clone https://github.com/unpolarize/code-build-vscode.git
 cd code-build-vscode
 
 npm install              # install dependencies

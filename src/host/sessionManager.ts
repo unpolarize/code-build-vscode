@@ -501,7 +501,7 @@ export class SessionManager {
 
     // Use the upstream session id as the local id. This makes
     // back-references unambiguous (the user sees the same UUID in
-    // coder-sessions, in the CLI, and in code-build) and means a second
+    // code-sessions, in the CLI, and in code-build) and means a second
     // "Open in Code Build" click on the same row doesn't pile up dupes.
     const id = args.sessionId;
 

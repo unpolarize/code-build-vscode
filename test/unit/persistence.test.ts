@@ -72,7 +72,7 @@ test('updateMeta rewrites the title in index and transcript header', () => {
   assert.equal(store.load('sess-1').meta?.title, 'Fix the parser bug');
 });
 
-test('exporter produces Claude-style turn JSONL Coder Sessions can read', () => {
+test('exporter produces Claude-style turn JSONL Code Sessions can read', () => {
   const records = [
     { type: 'user', text: 'build X' },
     { type: 'update', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'done' } } as const },

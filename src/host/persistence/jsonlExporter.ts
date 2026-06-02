@@ -3,9 +3,9 @@ import type { SessionMeta } from '../../shared/protocol';
 
 /**
  * Exports a code-build transcript into a Claude-Code-style turn JSONL that the
- * Coder Sessions extension can index. Note: when code-build drives the real
+ * Code Sessions extension can index. Note: when code-build drives the real
  * `claude`/`grok` CLIs, those CLIs already persist their native transcripts that
- * Coder Sessions indexes directly — this exporter covers synthetic/other backends
+ * Code Sessions indexes directly — this exporter covers synthetic/other backends
  * and provides a uniform cross-link target.
  */
 export interface ExportRecord {

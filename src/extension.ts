@@ -44,7 +44,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
       await doOpenPreviousSession();
     }),
-    // Programmatic entry point for cross-extension session import — coder-sessions
+    // Programmatic entry point for cross-extension session import — code-sessions
     // calls this when the user clicks "Open in Code Build" on a claude or grok
     // session row. We spawn a fresh code-build session bound to the matching
     // backend in the right cwd, and pass the upstream session id as `resumeId`
@@ -155,7 +155,7 @@ async function openInCoderSessions(sessionId?: string): Promise<void> {
     await vscode.commands.executeCommand('coderSessions.viewConversation', sessionId);
   } else {
     void vscode.window.showInformationMessage(
-      'Coder Sessions integration: sessions are exported as JSONL and will appear in the Coder Sessions view once persistence (P4) is enabled.'
+      'Code Sessions integration: sessions are exported as JSONL and will appear in the Code Sessions view once persistence (P4) is enabled.'
     );
   }
 }
