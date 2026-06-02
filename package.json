@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zhirafovod/code-build-vscode.git"
+    "url": "git+https://github.com/unpolarize/code-build-vscode.git"
   },
   "engines": {
     "vscode": "^1.90.0"
