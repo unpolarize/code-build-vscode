@@ -38,8 +38,8 @@ export function activate(context: vscode.ExtensionContext): void {
       // The active webview handles focus internally on this signal.
       // (Reveal keeps the panel active; the webview focuses its input on visibility.)
     }),
-    vscode.commands.registerCommand('codeBuild.openInCoderSessions', async (sessionId?: string) => {
-      await openInCoderSessions(sessionId);
+    vscode.commands.registerCommand('codeBuild.openInCodeSessions', async (sessionId?: string) => {
+      await openInCodeSessions(sessionId);
     }),
     vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
       await doOpenPreviousSession();
@@ -148,11 +148,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 }
 
-async function openInCoderSessions(sessionId?: string): Promise<void> {
+async function openInCodeSessions(sessionId?: string): Promise<void> {
   // Best-effort cross-link: prefer the official command, fall back to a notice.
   const commands = await vscode.commands.getCommands(true);
-  if (sessionId && commands.includes('coderSessions.viewConversation')) {
-    await vscode.commands.executeCommand('coderSessions.viewConversation', sessionId);
+  if (sessionId && commands.includes('codeSessions.viewConversation')) {
+    await vscode.commands.executeCommand('codeSessions.viewConversation', sessionId);
   } else {
     void vscode.window.showInformationMessage(
       'Code Sessions integration: sessions are exported as JSONL and will appear in the Code Sessions view once persistence (P4) is enabled.'

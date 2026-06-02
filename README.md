@@ -119,8 +119,26 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
 6. **@-mentions now support full paths**: `@knowledge/tech/knowledge-base-architecture.md` (or any subpath) works
    for file context. `@browser` / `@web` injects a browser-context hint.
 
-Sessions are persisted under `~/.codebuild/` and exported in a Coder-Sessions-readable
+Sessions are persisted under `~/.codebuild/` and exported in a Code-Sessions-readable
 JSONL format.
+
+## Data & storage
+
+Code Build is **local-first**. It runs agent CLIs as subprocesses on your machine over stdio and persists conversations to your own disk — it sends **no data to any external service itself**; the only network traffic is whatever the agent CLI you selected makes on its own (e.g. to its model provider).
+
+**On-disk session store — `~/.codebuild/`.** Each chat is written as a JSONL transcript under `~/.codebuild/sessions/<session-id>.jsonl`, with a history list in `~/.codebuild/index.json`. Every line is one JSON record: a `meta` header (backend, title, mode, cwd, model, effort), `user` prompt records, and normalized agent `update` events. This directory is **gitignored** (`.codebuild/`) and is never committed.
+
+> **Plaintext warning:** transcripts are stored unencrypted. Anything you paste into a prompt — including API keys or secrets — is written verbatim to `~/.codebuild/sessions/*.jsonl` and stays on disk until you delete it. To reset all history: `rm -rf ~/.codebuild`.
+
+UI preferences (your last permission mode / model / effort) are stored separately in VS Code's `globalState`, not in `~/.codebuild`.
+
+**Code Sessions export.** Code Build can export a transcript as a Claude-Code-style turn JSONL (summary + user/assistant/tool_use/result lines) shaped to be read by the [Code Sessions](https://github.com/unpolarize/code-sessions-vscode) indexer. The two extensions are complementary: **Code Build *produces* sessions; Code Sessions *analyzes* them.** Code Build cross-links into it via the `codeSessions.viewConversation` command, and Code Sessions can open a session back in Code Build.
+
+**Filesystem confinement.** ACP agents can request file reads/writes through the `fs/*` bridge, which bypasses the interactive permission UI. Those paths are sandboxed by a `confineToRoot()` guard that resolves and normalizes the requested path and **rejects anything that escapes the session workspace root** (cwd) — blocking access to `~/.ssh`, `~/.aws`, and other files outside your project.
+
+**Other hardening.** Subprocesses inherit your environment so CLI logins keep working, but Code Build never injects API keys. The webview runs under a strict CSP (nonce-gated scripts, `default-src 'none'`) and renders assistant markdown through DOMPurify sanitization.
+
+See [`docs/DATA-STORES.md`](docs/DATA-STORES.md) for the full architecture, record formats, backend matrix, and event model.
 
 ## Develop
 

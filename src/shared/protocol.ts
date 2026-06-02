@@ -87,7 +87,7 @@ export type WebviewToHost =
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
-  | { type: 'openInCoderSessions' }
+  | { type: 'openInCodeSessions' }
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
   | { type: 'getFileSuggestions'; query: string }

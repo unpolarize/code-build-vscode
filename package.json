@@ -61,7 +61,7 @@
         "title": "Code Build: Focus Input"
       },
       {
-        "command": "codeBuild.openInCoderSessions",
+        "command": "codeBuild.openInCodeSessions",
         "title": "Code Build: Open Session in Code Sessions"
       },
       {

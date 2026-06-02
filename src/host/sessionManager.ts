@@ -145,9 +145,9 @@ export class SessionManager {
       case 'revealLocation':
         await this.editor.revealLocation(msg.path, msg.line);
         break;
-      case 'openInCoderSessions':
+      case 'openInCodeSessions':
         if (this.meta) {
-          await vscode.commands.executeCommand('codeBuild.openInCoderSessions', this.meta.id);
+          await vscode.commands.executeCommand('codeBuild.openInCodeSessions', this.meta.id);
         }
         break;
       case 'openInNewTab':
