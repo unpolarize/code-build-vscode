@@ -11,6 +11,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { confineToRoot } from '../pathGuard';
 
 interface InitializeResult {
   protocolVersion: number;
@@ -95,16 +96,25 @@ export class AcpTransport extends BaseAgentSession {
     }
   }
 
+  /** Session cwd used as the sandbox root for the fs/* bridge. */
+  private requireRoot(): string {
+    const root = this.startOpts?.cwd;
+    if (!root) throw new Error('No workspace root for fs request');
+    return root;
+  }
+
   private async onRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'fs/read_text_file': {
         const p = params as { path: string };
-        const content = await fs.readFile(p.path, 'utf8');
+        const safe = confineToRoot(this.requireRoot(), p.path);
+        const content = await fs.readFile(safe, 'utf8');
         return { content };
       }
       case 'fs/write_text_file': {
         const p = params as { path: string; content: string };
-        await fs.writeFile(p.path, p.content, 'utf8');
+        const safe = confineToRoot(this.requireRoot(), p.path);
+        await fs.writeFile(safe, p.content, 'utf8');
         return null;
       }
       case 'session/request_permission':
