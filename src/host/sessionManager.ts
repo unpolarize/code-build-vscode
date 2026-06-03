@@ -575,32 +575,33 @@ export class SessionManager {
     // external CLI flag) — it'll just start a new ACP session in the right
     // cwd; the loaded transcript above still gives the user the context.
     //
-    // Active-session guard for claude: when the imported jsonl was touched
-    // within the last few seconds the upstream CLI is actively writing to it
-    // and `claude --resume <id>` will exit with code 1. Threshold is tight
-    // (3 s) so just-closed panels — which flush their final events over
-    // ~1-2 s — don't get falsely flagged. The replay above already shows
-    // the transcript so the user has context either way. Posted as a
-    // soft 'notice' (not 'error') so the message doesn't look like a
-    // failure when it's just a transient conflict.
+    // Active-session guard for claude. Claude Code writes per-process
+    // control files under ~/.claude/sessions/<pid>.json:
+    //   { pid, sessionId, cwd, startedAt, procStart, version, entrypoint }
+    // If any of those records name our target sessionId AND the recorded
+    // pid is still alive, claude is actively running this session
+    // elsewhere — `claude --resume <id>` will exit with code 1 because the
+    // upstream CLI holds the jsonl (lsof reports no open fd because claude
+    // opens / appends / closes per event, so file-lock detection alone is
+    // unreliable — the .json control file is the canonical signal). Skip
+    // --resume, spawn a fresh agent in the same cwd, and surface a soft
+    // 'notice' (not 'error'). The transcript replay above already gives
+    // the user context.
     let resumeId: string | undefined = args.sessionId;
     if (args.source === 'claude') {
-      try {
-        const jsonl = claudeJsonlPathFor(args.cwd, args.sessionId);
-        const st = require('node:fs').statSync(jsonl);
-        const ageMs = Date.now() - st.mtimeMs;
-        if (ageMs < 3_000) {
-          resumeId = undefined;
-          this.panel.post({
-            type: 'notice',
-            text:
-              `This Claude session looks like it's still active elsewhere (jsonl was written ${Math.round(ageMs / 1000)} s ago). ` +
-              `Started a fresh agent in \`${args.cwd}\` instead — the prior transcript above is read-only. ` +
-              `If you just closed the other panel, wait a moment and click "Open in Code Build" again to take it over.`
-          });
-        }
-      } catch {
-        /* if stat fails, fall through and let the transport surface any error */
+      const holder = findActiveClaudeHolder(args.sessionId);
+      if (holder) {
+        resumeId = undefined;
+        this.panel.post({
+          type: 'notice',
+          text:
+            `This Claude session is actively running in another process (pid ${holder.pid}` +
+            (holder.entrypoint ? `, entrypoint \`${holder.entrypoint}\`` : '') +
+            (holder.cwd ? `, cwd \`${holder.cwd}\`` : '') +
+            `). Claude refuses two simultaneous resumes of the same id, so Code Build is showing the prior ` +
+            `transcript as read-only and starting a fresh agent in \`${args.cwd}\` instead. Close the other ` +
+            `panel to release the session, then click "Open in Code Build" again to take it over.`
+        });
       }
     }
     await this.session.start({
@@ -815,6 +816,47 @@ export class SessionManager {
  * highest output token count wins (output tokens are the strongest
  * predictor of which model did the actual generation, vs cache reads
  * which can be lopsided). Falls back to the first entry, then null. */
+/** Look up whether a Claude session id is currently held by a live claude
+ * process. Claude Code writes `~/.claude/sessions/<pid>.json` while a
+ * session is running and removes it on clean exit; the file records the
+ * pid + sessionId + cwd + entrypoint. We iterate those files, match on
+ * sessionId, and verify the pid is alive via `process.kill(pid, 0)`
+ * (POSIX signal-0 probe — throws if the pid is dead, returns silently if
+ * alive). Returns the holder info or undefined when nothing claims it. */
+interface ClaudeSessionHolder {
+  pid: number;
+  cwd?: string;
+  entrypoint?: string;
+}
+function findActiveClaudeHolder(sessionId: string): ClaudeSessionHolder | undefined {
+  // require() rather than top-level import: the helper is host-only (uses
+  // fs / os) and we want a self-contained pluck so changing the guard
+  // doesn't ripple into other call sites.
+  const fs = require('node:fs') as typeof import('node:fs');
+  const path = require('node:path') as typeof import('node:path');
+  const os = require('node:os') as typeof import('node:os');
+  const dir = path.join(os.homedir(), '.claude', 'sessions');
+  let names: string[];
+  try { names = fs.readdirSync(dir); } catch { return undefined; }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      const raw = fs.readFileSync(path.join(dir, name), 'utf8');
+      const obj = JSON.parse(raw) as { pid?: number; sessionId?: string; cwd?: string; entrypoint?: string };
+      if (obj.sessionId !== sessionId || typeof obj.pid !== 'number') continue;
+      // Signal-0 probe: throws ESRCH if the pid is dead. Anything else
+      // (EPERM, success) means the process exists.
+      try { process.kill(obj.pid, 0); } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ESRCH') continue;
+      }
+      return { pid: obj.pid, cwd: obj.cwd, entrypoint: obj.entrypoint };
+    } catch {
+      /* skip malformed control files */
+    }
+  }
+  return undefined;
+}
+
 function pickDominantModel(byModel: Array<{ model?: string; outputTokens?: number }>): string | undefined {
   if (byModel.length === 0) return undefined;
   let best: { model?: string; outputTokens?: number } | undefined;
