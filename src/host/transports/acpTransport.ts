@@ -36,6 +36,15 @@ export class AcpTransport extends BaseAgentSession {
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
   private pendingPermissions = new Map<string, (outcome: PermissionOutcome) => void>();
+  /** Resolves when initialize + session/new have completed (or rejects on
+   * any failure). prompt() awaits this so the user can hit Send while the
+   * ACP handshake is still in flight — the prompt is queued instead of
+   * failing with the cryptic "ACP session not started". */
+  private readyPromise?: Promise<void>;
+  /** Captured stderr while spawn + handshake are in progress; surfaced in
+   * the error bubble if the handshake fails so the user sees what went
+   * wrong instead of a generic timeout. */
+  private startupStderr = '';
 
   constructor(
     public readonly id: string,
@@ -63,28 +72,60 @@ export class AcpTransport extends BaseAgentSession {
       this.emit({ kind: 'error', message: `Failed to start ${bin}: ${err.message}` })
     );
     this.proc.on('exit', (code) => {
-      if (code && code !== 0) this.emit({ kind: 'error', message: `${bin} exited with code ${code}` });
+      if (code && code !== 0) {
+        const tail = this.startupStderr.trim().slice(-512);
+        this.emit({
+          kind: 'error',
+          message: `${bin} exited with code ${code}${tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : ''}`
+        });
+      }
     });
     this.proc.stderr.on('data', (b: Buffer) => {
-      const t = b.toString().trim();
-      if (t) console.error(`[code-build:${this.backend}] ${t}`);
+      const t = b.toString();
+      if (t.trim()) console.error(`[code-build:${this.backend}] ${t.trim()}`);
+      // Keep a rolling tail so the exit/handshake handler can include it.
+      if (this.startupStderr.length < 8192) this.startupStderr += t;
     });
 
     this.rpc = new JsonRpcEndpoint(this.proc.stdin, this.proc.stdout);
     this.rpc.onNotification((method, params) => this.onNotification(method, params));
     this.rpc.onRequest((method, params) => this.onRequest(method, params));
 
-    await this.rpc.request<InitializeResult>('initialize', {
-      protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
-      clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
-    });
+    // Wrap the handshake in a promise so prompt() can await it. Without
+    // this, a user who hits Send while the ACP init is still in flight
+    // sees the cryptic "ACP session not started" error. With it, the
+    // prompt simply waits until session/new resolves and then proceeds.
+    this.readyPromise = (async () => {
+      try {
+        await this.rpc!.request<InitializeResult>('initialize', {
+          protocolVersion: 1,
+          clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
+          clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
+        });
+        const session = await this.rpc!.request<NewSessionResult>('session/new', {
+          cwd: opts.cwd,
+          mcpServers: []
+        });
+        this.acpSessionId = session.sessionId;
+      } catch (err) {
+        // Surface handshake failures in the chat (the message handler's
+        // .catch only sees the start() rejection; if start() itself
+        // returned but the deferred handshake failed mid-flight, this
+        // is where the user finds out). Include the stderr tail so the
+        // root cause is visible.
+        const tail = this.startupStderr.trim().slice(-512);
+        const detail = tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : '';
+        this.emit({
+          kind: 'error',
+          message: `Failed to initialize ${bin} ACP session: ${
+            err instanceof Error ? err.message : String(err)
+          }${detail}`
+        });
+        throw err;
+      }
+    })();
 
-    const session = await this.rpc.request<NewSessionResult>('session/new', {
-      cwd: opts.cwd,
-      mcpServers: []
-    });
-    this.acpSessionId = session.sessionId;
+    await this.readyPromise;
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -168,8 +209,29 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   async prompt(blocks: ContentBlock[]): Promise<void> {
+    // Wait for the handshake to finish before we send the first prompt.
+    // Hitting Send mid-handshake used to produce "ACP session not started";
+    // now the prompt queues until session/new resolves. If the handshake
+    // failed entirely, the error was already surfaced from start() — we
+    // bail quietly here rather than emit a redundant second error.
+    if (this.readyPromise) {
+      try {
+        await this.readyPromise;
+      } catch {
+        return;
+      }
+    }
     if (!this.rpc || !this.acpSessionId) {
-      this.emit({ kind: 'error', message: 'ACP session not started' });
+      // Last-resort: handshake never even started (start() wasn't called
+      // or the process died before init). Surface a clearer message than
+      // the old generic string so the user knows what to do.
+      const tail = this.startupStderr.trim().slice(-512);
+      this.emit({
+        kind: 'error',
+        message:
+          `${this.backend} ACP session never finished its handshake — the agent process either failed to start or didn't respond to \`initialize\`.` +
+          (tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : '\n\nNo stderr captured.')
+      });
       return;
     }
     try {

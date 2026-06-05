@@ -58,8 +58,18 @@ export class StreamJsonTransport extends BaseAgentSession {
     });
     this.started = true;
 
+    // Buffer the LAST stdout line too — claude code 2.1.x sometimes
+    // surfaces a startup failure as a stream-json `result` event with
+    // `is_error: true` and an `error` field, then exits with code 1 and
+    // an EMPTY stderr (which is what produced the silent code-1 the user
+    // reported). We capture both and include them in the exit-time error
+    // bubble so the user has SOMETHING to act on.
+    let lastStdoutLine = '';
     const rl = readline.createInterface({ input: this.proc.stdout });
-    rl.on('line', (line) => this.onStdoutLine(line));
+    rl.on('line', (line) => {
+      if (line.trim()) lastStdoutLine = line.slice(0, 4096);
+      this.onStdoutLine(line);
+    });
 
     // Buffer stderr so the exit handler can surface the actual error in the
     // chat rather than the opaque "exited with code 1" the user used to see.
@@ -85,24 +95,54 @@ export class StreamJsonTransport extends BaseAgentSession {
       this.started = false;
       if (code && code !== 0) {
         const stderr = stderrBuf.trim();
-        // Friendly diagnoses for the two failure modes the user actually
-        // hits when "Open in Code Build" routes a session-resume:
-        //   1. session is already open in another window / claude panel —
-        //      claude refuses --resume on an active id (this is what
-        //      "claude exited with code 1" usually means).
-        //   2. session id was synthesised by code-build (no claude jsonl
-        //      ever existed for it) — claude emits "Session not found".
+        // Try to extract a structured error from claude's last stream-json
+        // line — `result` events with is_error / subtype:'error_during_*'
+        // carry the actual reason ("Session conflict", "rate limit", etc.)
+        // that doesn't always land in stderr.
+        let stdoutErr = '';
+        if (lastStdoutLine) {
+          try {
+            const obj = JSON.parse(lastStdoutLine) as {
+              type?: string;
+              subtype?: string;
+              is_error?: boolean;
+              error?: string;
+              result?: string;
+            };
+            if (obj?.is_error || /error/.test(obj?.subtype ?? '')) {
+              stdoutErr = obj.error || obj.result || obj.subtype || lastStdoutLine;
+            }
+          } catch {
+            /* not JSON or malformed — fall through to including the raw line */
+          }
+        }
+
         let hint = '';
         if (resumeIdHint) {
-          if (/already (in use|active|open)/i.test(stderr) || /resume.*active/i.test(stderr)) {
-            hint = `\n\nThis session is already open in another claude panel — close that window first, or click "Open transcript (JSONL)" on the session row in Code Sessions to inspect it without resuming.`;
-          } else if (/not found|no such session/i.test(stderr)) {
+          const probe = `${stderr} ${stdoutErr}`.toLowerCase();
+          if (/already (in use|active|open)|resume.*active|session conflict|already running/.test(probe)) {
+            hint = `\n\nThis session is already running in another claude process. Close the other panel (or kill the pid shown in \`~/.claude/sessions/*.json\`) and click "Open in Code Build" again to take it over.`;
+          } else if (/not found|no such session/.test(probe)) {
             hint = `\n\nClaude couldn't locate the session by id. The upstream transcript may have been deleted or never existed.`;
+          } else if (/rate.?limit|quota/.test(probe)) {
+            hint = `\n\nClaude hit a rate limit. Wait a few minutes and try again.`;
           } else {
             hint = `\n\nResume target: \`${resumeIdHint}\` — verify the session still exists in \`~/.claude/projects/\`.`;
           }
         }
-        const detail = stderr ? `\n\n\`${stderr.slice(-512).replace(/`/g, "'")}\`` : '';
+        // Surface BOTH stderr and the parsed stdout error so we never see
+        // a silent code-1 again. Tail-truncated so a runaway log doesn't
+        // blow up the chat bubble.
+        const detailParts: string[] = [];
+        if (stderr) detailParts.push(`stderr: ${stderr.slice(-512)}`);
+        if (stdoutErr) detailParts.push(`stream: ${stdoutErr.slice(-512)}`);
+        if (!stderr && !stdoutErr && lastStdoutLine) {
+          // Last-resort: include the raw final stdout line — at least the
+          // user (or a follow-up bug report) has something to inspect.
+          detailParts.push(`last: ${lastStdoutLine.slice(-512)}`);
+        }
+        const detail =
+          detailParts.length > 0 ? `\n\n\`\`\`\n${detailParts.join('\n').replace(/`/g, "'")}\n\`\`\`` : '';
         this.emit({
           kind: 'error',
           message: `\`${bin}\` exited with code ${code}.${hint}${detail}`
