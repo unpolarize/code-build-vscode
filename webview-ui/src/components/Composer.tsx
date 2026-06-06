@@ -45,15 +45,37 @@ export function Composer({
       ? commands.filter((c) => c.name.startsWith(slashMatch[1]))
       : [];
 
-  // @-mention file suggestions (triggered when @word at end of input)
+  // @-mention file suggestions (triggered when @word at end of input).
+  // Debounced + de-duplicated to avoid spawning a `workspace.findFiles`
+  // (and thus a ripgrep subprocess) on every keystroke. A flurry of
+  // typing like "@hello world" was creating 11+ concurrent ripgreps,
+  // each scanning the whole workspace from scratch — easily 28+
+  // simultaneous ripgreps observed on `~/docs`, pegging all 8 cores.
+  // Now: wait 200 ms of idle, skip if the query didn't actually change
+  // since last request, and skip the empty-query case entirely (no
+  // point burning a full-workspace scan to show "all files").
   const atMatch = /@(\S*)$/.exec(text);
   const atQuery = atMatch ? atMatch[1] : '';
-  // Request suggestions from host when the @ query changes
+  const lastSentQuery = useRef<string | null>(null);
   useEffect(() => {
-    if (atQuery !== undefined && onRequestFileSuggestions) {
-      onRequestFileSuggestions(atQuery);
+    if (!atMatch) {
+      // Reset so the next "@" fires a fresh request even if the previous
+      // query was the same string before we left at-mention mode.
+      lastSentQuery.current = null;
+      return;
     }
-  }, [atQuery, onRequestFileSuggestions]);
+    if (!onRequestFileSuggestions) return;
+    // Drop the no-op case where the user re-rendered for an unrelated
+    // reason (App passes a new `onRequestFileSuggestions` reference on
+    // every render — unstable; the useEffect would otherwise re-fire
+    // even when atQuery hadn't changed).
+    if (lastSentQuery.current === atQuery) return;
+    const handle = window.setTimeout(() => {
+      lastSentQuery.current = atQuery;
+      onRequestFileSuggestions(atQuery);
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [atQuery, atMatch != null, onRequestFileSuggestions]);
 
   // Filter client-side as fallback; host ideally already filters
   const atSuggestions = atMatch

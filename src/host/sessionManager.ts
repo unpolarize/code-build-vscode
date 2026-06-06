@@ -632,22 +632,34 @@ export class SessionManager {
     this.session = undefined;
   }
 
+  /** In-flight cancellation token for @-mention file searches. Every call
+   * cancels the previous one — VS Code's `findFiles` honors the token by
+   * killing the underlying ripgrep process. Without this, a quick burst of
+   * keystrokes left dozens of ripgreps running in parallel against the
+   * full workspace, pegging all cores on large repos like ~/docs. */
+  private fileSuggestionAbort?: vscode.CancellationTokenSource;
+
   /** Workspace file search for @-mentions. Supports paths with slashes (e.g. knowledge/tech/foo.md).
    * Strategy: glob on the last path segment (filename), then JS-filter by full relative path containing the query.
    */
   private async getFileSuggestions(query: string): Promise<Array<{ path: string; label?: string }>> {
+    // Cancel any previous in-flight search before issuing a new one. The
+    // previous ripgrep subprocess gets killed promptly so it doesn't keep
+    // burning CPU after the user has already typed a more specific query.
+    this.fileSuggestionAbort?.cancel();
+    this.fileSuggestionAbort?.dispose();
+    const tokenSource = new vscode.CancellationTokenSource();
+    this.fileSuggestionAbort = tokenSource;
+    const token = tokenSource.token;
+
     const q = query.trim();
     if (!q) {
-      // Broad recent-ish search when just "@"
-      try {
-        const uris = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 50);
-        return uris.slice(0, 25).map((uri) => {
-          const rel = vscode.workspace.asRelativePath(uri, false);
-          return { path: rel, label: path.basename(rel) };
-        });
-      } catch {
-        return [];
-      }
+      // Empty query (just `@` was typed) used to fire a full-workspace
+      // scan — slow and useless because the dropdown shows 25 arbitrary
+      // files. Return empty; the user will type a character and we'll
+      // search properly. Composer-side debounce + lastSentQuery filter
+      // already suppress most of the spam on the way in.
+      return [];
     }
 
     const lastSegment = q.includes('/') ? (q.split('/').pop() || q) : q;
@@ -655,7 +667,13 @@ export class SessionManager {
     const pattern = `**/*${this.globEscape(lastSegment)}*`;
 
     try {
-      const uris = await vscode.workspace.findFiles(pattern, '**/node_modules/**', max);
+      const uris = await vscode.workspace.findFiles(
+        pattern,
+        '**/node_modules/**',
+        max,
+        token
+      );
+      if (token.isCancellationRequested) return [];
       const results = uris.map((uri) => {
         const rel = vscode.workspace.asRelativePath(uri, false);
         return { path: rel, label: path.basename(rel) };
