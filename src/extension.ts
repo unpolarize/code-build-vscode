@@ -73,10 +73,19 @@ export function activate(context: vscode.ExtensionContext): void {
     )
   );
 
-  // Restore chat panels after reload / window-move (webview is re-created on move).
+  // Restore chat panels after reload / window-move. VS Code stores the
+  // panel's `state` blob and hands it back on deserialize — we stash the
+  // last live session id in there so the new SessionManager picks up
+  // where the user left off instead of opening a fresh chat. The state
+  // is written from the host whenever a session is committed (first
+  // prompt) and read here.
   vscode.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
-    async deserializeWebviewPanel(panel) {
-      attach(new ChatPanel(panel, context.extensionUri));
+    async deserializeWebviewPanel(panel, state: unknown) {
+      const mgr = attach(new ChatPanel(panel, context.extensionUri));
+      const stored = state as { lastSessionId?: string } | undefined;
+      if (stored && typeof stored.lastSessionId === 'string' && stored.lastSessionId) {
+        mgr.queueResume(stored.lastSessionId);
+      }
     }
   });
 

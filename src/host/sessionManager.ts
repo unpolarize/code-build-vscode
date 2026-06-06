@@ -296,10 +296,33 @@ export class SessionManager {
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
+    // Startup timing markers — surfaced as a single self-updating notice
+    // so the user sees what's eating the wait when starting a turn takes
+    // 30+ seconds (claude --resume on a multi-MB jsonl, ACP handshake,
+    // cache warmup). We post the notice once on spawn, then patch the
+    // same line by replacing items (webview notice rendering keeps the
+    // latest version of the same id). Implementation: just emit notices
+    // at the milestones; the user gets a small visible trail.
+    const spawnStart = Date.now();
+    this.panel.post({ type: 'notice', text: `Starting **${be}** agent…` });
+    let firstEventAt = 0;
+
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      // First time we see anything from the agent — surface the spawn
+      // time so the user knows whether the slowness is in our spawn (a
+      // few hundred ms) or in the agent's first-event latency (often
+      // seconds, especially with --resume on a long history).
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+        firstEventAt = Date.now();
+        const ms = firstEventAt - spawnStart;
+        this.panel.post({
+          type: 'notice',
+          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+        });
+      }
       // Side-channel: intercept structured tool calls (AskUserQuestion,
       // TodoWrite) so the webview can render purpose-built UI instead of
       // a generic tool card.
@@ -505,10 +528,28 @@ export class SessionManager {
     // "Open in Code Build" click on the same row doesn't pile up dupes.
     const id = args.sessionId;
 
+    // External-session startup is where the slowness usually lives —
+    // `claude --resume` on a multi-MB jsonl can sit silently for 30+ s
+    // before the first event. Notices give the user something to watch.
+    const spawnStart = Date.now();
+    this.panel.post({
+      type: 'notice',
+      text: `Loading ${args.source} session \`${args.sessionId.slice(0, 8)}\`…`
+    });
+    let firstEventAt = 0;
+
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+        firstEventAt = Date.now();
+        const ms = firstEventAt - spawnStart;
+        this.panel.post({
+          type: 'notice',
+          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+        });
+      }
       this.interceptToolCall(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
@@ -800,10 +841,25 @@ export class SessionManager {
     const be = loaded.meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
+    const spawnStart = Date.now();
+    this.panel.post({
+      type: 'notice',
+      text: `Resuming \`${id.slice(0, 8)}\` (${be})…`
+    });
+    let firstEventAt = 0;
+
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+        firstEventAt = Date.now();
+        const ms = firstEventAt - spawnStart;
+        this.panel.post({
+          type: 'notice',
+          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+        });
+      }
       this.interceptToolCall(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });

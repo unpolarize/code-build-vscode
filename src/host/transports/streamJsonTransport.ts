@@ -21,6 +21,10 @@ export class StreamJsonTransport extends BaseAgentSession {
   private mode: PermissionMode = 'default';
   private started = false;
   private startOpts?: StartOpts;
+  /** True once we've spawned the agent without `--resume` after a failed
+   * resume attempt. Prevents an infinite retry loop if the no-resume
+   * spawn itself fails. */
+  private resumeFallbackAttempted = false;
 
   constructor(
     public readonly id: string,
@@ -115,6 +119,32 @@ export class StreamJsonTransport extends BaseAgentSession {
           } catch {
             /* not JSON or malformed — fall through to including the raw line */
           }
+        }
+
+        // Auto-fallback for resume failures. If we spawned with --resume
+        // and claude exited 1 (the active-session guard didn't catch this
+        // — could be a race between chrome panel restart and control-file
+        // write, OR a genuine "session not found"), re-spawn ONCE without
+        // --resume. The transcript replay already in the webview keeps
+        // the user's context; they can keep chatting in a fresh agent
+        // process. Without this, claude resume failures landed as red
+        // errors with no recovery — the user had to manually start a
+        // new session.
+        if (resumeIdHint && !this.resumeFallbackAttempted) {
+          this.resumeFallbackAttempted = true;
+          this.emit({
+            kind: 'error', // 'notice' isn't a SessionUpdate kind — keep error
+            // tier but the wording makes the recovery clear.
+            message:
+              `Couldn't resume Claude session \`${resumeIdHint.slice(0, 8)}\` — starting a fresh agent in the same cwd. ` +
+              `(Reason: ${stdoutErr || stderr || `exit ${code}`}.) The transcript above is preserved as read-only context.`
+          });
+          // Clear the resume id and re-spawn. The transport keeps using
+          // the same startOpts but spawnProcess() reads resumeId from
+          // there, so wipe it first.
+          if (this.startOpts) this.startOpts.resumeId = undefined;
+          this.spawnProcess();
+          return;
         }
 
         let hint = '';

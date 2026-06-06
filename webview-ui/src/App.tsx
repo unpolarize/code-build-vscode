@@ -1,7 +1,7 @@
 import { useEffect, useReducer } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
-import { post } from './vscodeApi';
+import { post, setState } from './vscodeApi';
 import { appendUser, initialState, markAskUserAnswered, reduce, type ChatState, type ImageAttachment } from './store';
 import { BUILTIN_COMMANDS, BUILTIN_NAMES } from './builtinCommands';
 import { Header } from './components/Header';
@@ -42,6 +42,19 @@ export function App() {
     post({ type: 'ready' });
     return () => window.removeEventListener('message', handler);
   }, []);
+
+  // Persist the active session id to webview state. VS Code returns this
+  // blob to the panel serializer on the next deserialize, so a reload /
+  // window-move resumes the same conversation instead of opening a fresh
+  // chat. We only stash the id (not the whole transcript) — the host's
+  // SessionStore already has the records, and the host re-replays them
+  // through `historyLoaded` once `queueResume(id)` fires on the new
+  // SessionManager.
+  useEffect(() => {
+    if (state.session?.id) {
+      setState({ lastSessionId: state.session.id });
+    }
+  }, [state.session?.id]);
 
   // Merge always-on built-ins with agent-provided commands for the slash palette.
   const allCommands = [...BUILTIN_COMMANDS, ...state.commands];
