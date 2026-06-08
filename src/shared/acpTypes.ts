@@ -11,7 +11,14 @@ export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'resource_link'; uri: string; name?: string }
   | { type: 'image'; mimeType: string; data: string }
-  | { type: 'diff'; path: string; oldText: string; newText: string };
+  | { type: 'diff'; path: string; oldText: string; newText: string }
+  /** Reply to a previously-emitted tool_use. Anthropic's Messages API
+   * requires THIS block (not a plain text user message) to fulfil a
+   * pending tool call — claude's AskUserQuestion built-in waits on a
+   * tool_result keyed by tool_use_id. Sending a text block instead made
+   * claude treat the answer as a free-form user message and abandon the
+   * tool call ("× AskUserQuestion" failed state). */
+  | { type: 'tool_result'; tool_use_id: string; content: string };
 
 export type ToolCallStatus = 'pending' | 'in_progress' | 'completed' | 'failed';
 
@@ -84,6 +91,14 @@ export type SessionUpdate =
   | { kind: 'usage_breakdown'; entries: UsageInfo[] }
   | { kind: 'result'; stopReason: string; usage?: UsageInfo }
   | { kind: 'error'; message: string }
+  /** Backend reported its native session id at startup. Claude assigns
+   * its own session id (independent of our local UUID) and writes the
+   * transcript under that id in ~/.claude/projects. We capture it on
+   * the SessionMeta so a later reload can `--resume <native-id>` and
+   * pick up the on-disk transcript — without this, the resumed agent
+   * spawned with NO context and said "I don't have prior conversation
+   * context to continue from". */
+  | { kind: 'system_init'; backendSessionId: string }
   | {
       kind: 'permission_request';
       requestId: string;

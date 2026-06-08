@@ -37,6 +37,15 @@ export interface BackendSpec {
   models?: string[];
   /** Whether the effort picker should be shown for this backend. */
   supportsEffort?: boolean;
+  /** Whether the CLI accepts an external `--resume <session-id>` flag
+   * to pick up a prior conversation's transcript on a fresh spawn.
+   * `true` for claude (we pass `--resume <backendSessionId>` and the
+   * agent reads its own jsonl). `false` for ACP-based backends like
+   * grok — the protocol doesn't expose a session id the host can hand
+   * back to a new process. For backends with `false`, code-build
+   * auto-injects the conversation history as a primer on the user's
+   * first prompt so the resumed agent has context. */
+  supportsResume?: boolean;
 }
 
 // Centralizing spawn args here isolates CLI flag drift to one place (see spec §8).
@@ -52,6 +61,9 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     // with a dynamically-discovered list when available.
     models: ['default', 'opus', 'sonnet', 'haiku'],
     supportsEffort: true,
+    // claude -p --resume <session-id> reads the jsonl claude itself
+    // wrote at ~/.claude/projects/<...>/<id>.jsonl on a clean restart.
+    supportsResume: true,
     buildArgs: ({ mode, model, resumeId, effort, allowBypass }) => {
       const args = [
         '-p',
@@ -87,12 +99,25 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     // This static fallback covers a fresh install whose cache isn't written
     // yet. grok ACP takes the model on the spawn command line via -m.
     models: ['default', 'grok-build'],
-    // grok's --effort is accepted by the CLI; ACP daemon honors it per spawn.
     supportsEffort: true,
+    // ACP transports don't expose a session id the host can hand back
+    // to a new process. The host auto-injects the conversation history
+    // as a primer on the first prompt instead.
+    supportsResume: false,
+    // grok's reasoning options belong to the `grok agent` command and MUST
+    // precede the `stdio` subcommand, which itself accepts no flags. The flag
+    // is `--reasoning-effort` (NOT `--effort`), and grok's accepted levels are
+    // none/minimal/low/medium/high/xhigh — it rejects `max`, so map our `max`
+    // down to grok's ceiling `xhigh`. (Passing `--effort` or putting any option
+    // after `stdio` makes grok exit 2 with "unexpected argument", which is what
+    // hung new grok sessions / broke claude→grok hand-off.)
     buildArgs: ({ model, effort }) => {
-      const args = ['agent', 'stdio'];
+      const args = ['agent'];
       if (model && model !== 'default') args.push('--model', model);
-      if (effort && effort !== 'default') args.push('--effort', effort);
+      if (effort && effort !== 'default') {
+        args.push('--reasoning-effort', effort === 'max' ? 'xhigh' : effort);
+      }
+      args.push('stdio');
       return args;
     }
   },

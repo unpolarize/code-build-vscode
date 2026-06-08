@@ -54,8 +54,10 @@ export type ChatItem =
   /** Non-error informational banner — used for things the user should
    * know about but that aren't failures (e.g. claude session still
    * actively writing, falling back to a fresh chat). Renders as a soft
-   * amber notice instead of the red error styling. */
-  | { kind: 'notice'; id: string; text: string }
+   * amber notice instead of the red error styling. `detail` shows in a
+   * hover tooltip with the actual command line, cwd, resume id — what
+   * the user needs to diagnose a slow / stuck spawn. */
+  | { kind: 'notice'; id: string; text: string; detail?: string }
   /** AskUserQuestion tool call rendered as a clickable card. `answers` is
    * non-null once the user has picked something — we keep the card in the
    * timeline so the choice is part of the conversation history. */
@@ -68,7 +70,23 @@ export type ChatItem =
     }
   /** TodoWrite-style task list snapshot. The agent owns updates; the card
    * is read-only from the user's side. */
-  | { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] };
+  | { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] }
+  /** Audit card showing exactly what the host injected into the agent's
+   * stdin on a given turn (the carry-over primer, resolved @-mentions,
+   * raw user text, tool_result payloads). Collapsed by default;
+   * expanding it reveals the full content of each section. */
+  | {
+      kind: 'context';
+      id: string;
+      origin: 'prompt' | 'tool_result' | 'system';
+      summary: string;
+      sections: Array<{
+        label: string;
+        body: string;
+        chars: number;
+        kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
+      }>;
+    };
 
 export interface PendingPermission {
   requestId: string;
@@ -92,7 +110,13 @@ export interface ChatState {
   fileSuggestions: Array<{ path: string; label?: string }>;
   sessions: SessionMeta[];
   /** Pending cross-backend carry-over prompt (null when not switching). */
-  primerPrompt: { turnCount: number; fromBackend: string; toBackend: string } | null;
+  primerPrompt: {
+    turnCount: number;
+    fromBackend: string;
+    toBackend: string;
+    sourceBackendId: string;
+    llmSummarySupported: boolean;
+  } | null;
 }
 
 export const initialState: ChatState = {
@@ -130,7 +154,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, sessions: msg.sessions };
     case 'notice': {
       const items = state.items.slice();
-      items.push({ kind: 'notice', id: nextId(), text: msg.text });
+      items.push({ kind: 'notice', id: nextId(), text: msg.text, detail: msg.detail });
       return { ...state, items };
     }
     case 'primerPrompt':
@@ -139,7 +163,9 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         primerPrompt: {
           turnCount: msg.turnCount,
           fromBackend: msg.fromBackend,
-          toBackend: msg.toBackend
+          toBackend: msg.toBackend,
+          sourceBackendId: msg.sourceBackendId,
+          llmSummarySupported: msg.llmSummarySupported
         }
       };
     case 'askUserQuestion': {
@@ -153,6 +179,17 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         toolCallId: msg.toolCallId,
         questions: msg.questions,
         answers: null
+      });
+      return { ...state, items };
+    }
+    case 'contextInjected': {
+      const items = state.items.slice();
+      items.push({
+        kind: 'context',
+        id: nextId(),
+        origin: msg.origin,
+        summary: msg.summary,
+        sections: msg.sections
       });
       return { ...state, items };
     }
@@ -247,6 +284,13 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
     }
     case 'agent_thought_chunk': {
       const text = blockText(u.content);
+      // Defense-in-depth: never create a thought item from an empty
+      // chunk. Claude occasionally streams a signature-only thinking
+      // block whose visible text is empty; the normalizer filters
+      // these too but this guards against any future provider that
+      // emits the same shape. Without it, the user saw stranded
+      // "▶ Thinking…" rows that opened to an empty body.
+      if (!text) return state;
       const last = items[items.length - 1];
       if (last && last.kind === 'thought') {
         items[items.length - 1] = { ...last, text: last.text + text };
@@ -255,9 +299,22 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       }
       return { ...state, items };
     }
-    case 'tool_call':
+    case 'tool_call': {
+      // Suppress the generic ToolCard for tools that have a dedicated
+      // purpose-built card (AskUserQuestion, TodoWrite). Rendering both
+      // produced the confusing "× AskUserQuestion" red row above the
+      // interactive picker — the ToolCard showed the tool_use's
+      // pending/failed state while the AskUserQuestionCard rendered
+      // the picker below it. The structured card already conveys the
+      // semantic state ("answered" / "awaiting answer") so the ToolCard
+      // is pure noise.
+      const name = u.toolCall.title;
+      if (name === 'AskUserQuestion' || name === 'TodoWrite' || name === 'todo_write') {
+        return state;
+      }
       items.push({ kind: 'tool', id: nextId(), tool: u.toolCall });
       return { ...state, items };
+    }
     case 'tool_call_update': {
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];

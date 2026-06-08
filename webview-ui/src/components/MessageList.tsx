@@ -98,13 +98,26 @@ function Item({
           <Markdown className="msg-body" text={item.text} />
         </div>
       );
-    case 'thought':
+    case 'thought': {
+      // Show a content-length hint in the summary so the user sees
+      // there IS thinking text to expand. The bubble also reports the
+      // first line as a preview so collapsed thoughts aren't an
+      // anonymous "Thinking…". Without the preview, the user reported
+      // they thought thoughts were empty and clicking didn't do
+      // anything.
+      const firstLine =
+        item.text
+          .split('\n')
+          .find((l) => l.trim().length > 0)
+          ?.trim() ?? '';
+      const preview = firstLine.length > 70 ? firstLine.slice(0, 70) + '…' : firstLine;
       return (
         <details className="msg msg-thought">
-          <summary>Thinking…</summary>
+          <summary>Thinking… {preview && <span className="msg-thought-preview">— {preview}</span>}</summary>
           <Markdown className="msg-body" text={item.text} />
         </details>
       );
+    }
     case 'tool':
       return <ToolCard tool={item.tool} />;
     case 'files':
@@ -151,8 +164,13 @@ function Item({
       );
     case 'notice':
       return (
-        <div className="msg msg-notice">
-          <div className="msg-role">Notice</div>
+        // `title` lets the user hover anywhere on the bubble to see the
+        // resolved spawn command, cwd, and resume id — the diagnostic
+        // info that explains a "Starting … agent" line that hasn't
+        // moved in 60 seconds. The role label is also `title`d so the
+        // tooltip shows even when hovering the small "Notice" tag.
+        <div className="msg msg-notice" title={item.detail}>
+          <div className="msg-role" title={item.detail}>Notice</div>
           <Markdown className="msg-body" text={item.text} />
         </div>
       );
@@ -167,9 +185,48 @@ function Item({
       );
     case 'tasks':
       return <TaskListCard tasks={item.tasks} />;
+    case 'context':
+      return <ContextCard origin={item.origin} summary={item.summary} sections={item.sections} />;
     default:
       return null;
   }
+}
+
+/** Collapsible audit card showing exactly what the host injected into
+ * the agent's stdin on a given turn — the carry-over primer, resolved
+ * @-mention paths, raw user text, and tool_result payloads. The
+ * collapsed summary line names section kinds + sizes so the user can
+ * scan without expanding; each section expands independently so a 12K
+ * primer doesn't drown out a 2-character user prompt. */
+function ContextCard({
+  origin,
+  summary,
+  sections
+}: {
+  origin: 'prompt' | 'tool_result' | 'system';
+  summary: string;
+  sections: Array<{ label: string; body: string; chars: number; kind?: string }>;
+}) {
+  const originLabel =
+    origin === 'prompt' ? 'Injected into agent' :
+    origin === 'tool_result' ? 'Tool result returned' :
+    'System context';
+  return (
+    <details className="msg msg-context">
+      <summary className="msg-context-summary">
+        <span className="msg-context-eyebrow">{originLabel}</span>
+        <span className="msg-context-summary-text">{summary}</span>
+      </summary>
+      <div className="msg-context-body">
+        {sections.map((s, i) => (
+          <details key={i} className={`msg-context-section msg-context-${s.kind ?? 'other'}`}>
+            <summary>{s.label}</summary>
+            <pre className="msg-context-section-body">{s.body}</pre>
+          </details>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 /** Image attachment tile rendered inside a user message bubble.

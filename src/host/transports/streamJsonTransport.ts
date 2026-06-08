@@ -177,6 +177,16 @@ export class StreamJsonTransport extends BaseAgentSession {
           kind: 'error',
           message: `\`${bin}\` exited with code ${code}.${hint}${detail}`
         });
+      } else {
+        // Clean exit (code 0 / null). Claude in `-p` mode normally emits
+        // a `result` line then exits 0 — the result already cleared
+        // busy in the reducer. But the CLI can also exit cleanly mid-
+        // turn (SIGTERM, OOM-killed, internal abort) WITHOUT a result,
+        // leaving the webview's "working…" spinner stuck forever. Emit
+        // a synthetic `result` so the reducer flips busy=false; the
+        // user can see the agent stopped without a red error if it was
+        // a legitimate clean termination.
+        this.emit({ kind: 'result', stopReason: 'exit' });
       }
     });
   }

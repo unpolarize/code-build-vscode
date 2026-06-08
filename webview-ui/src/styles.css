@@ -403,6 +403,69 @@ body {
   border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
 }
 
+/* Card-based primer picker (replaces the old 3-button banner). */
+.primer-banner-header {
+  font-size: 0.9em;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+.primer-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.primer-card {
+  text-align: left;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.06));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.primer-card:hover {
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+  border-color: var(--vscode-focusBorder);
+}
+.primer-card-hybrid {
+  border-left: 3px solid var(--vscode-charts-blue, #60a5fa);
+}
+.primer-card-full {
+  border-left: 3px solid var(--vscode-charts-orange, #fb923c);
+}
+.primer-card-none {
+  border-left: 3px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+}
+.primer-card-title {
+  font-weight: 600;
+  font-size: 0.95em;
+}
+.primer-card-desc {
+  font-size: 0.82em;
+  opacity: 0.75;
+  line-height: 1.4;
+}
+.primer-card-n-input {
+  width: 48px;
+  padding: 2px 4px;
+  margin: 0 2px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+}
+.primer-card-n-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Markdown rendering — assistant + user message bodies                   */
 /* ---------------------------------------------------------------------- */
@@ -967,3 +1030,73 @@ body {
   background: var(--vscode-list-hoverBackground, rgba(128,128,128,0.12));
   opacity: 1;
 }
+
+/* Context-injection audit card.
+ * Renders as a thin dashed-border details element so it visually reads
+ * as "metadata about the next turn" rather than as conversation content.
+ * Inner sections are independently collapsible — a 12K primer doesn't
+ * drown out a 2-char user prompt this way. */
+.msg-context {
+  border: 1px dashed var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+  border-radius: 4px;
+  padding: 4px 8px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.04));
+  opacity: 0.85;
+}
+.msg-context[open] {
+  opacity: 1;
+}
+.msg-context-summary {
+  cursor: pointer;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  font-size: 0.85em;
+}
+.msg-context-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.75em;
+  opacity: 0.6;
+}
+.msg-context-summary-text {
+  opacity: 0.85;
+}
+.msg-context-body {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.msg-context-section {
+  border-left: 2px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  padding-left: 8px;
+}
+.msg-context-section > summary {
+  cursor: pointer;
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+.msg-context-section[open] > summary {
+  opacity: 1;
+}
+.msg-context-section-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  background: var(--vscode-textBlockQuote-background, rgba(128, 128, 128, 0.08));
+  border-radius: 3px;
+  max-height: 320px;
+  overflow: auto;
+}
+/* Color-code section types so the eye can scan kinds quickly:
+ * primer = amber (the most likely to be unexpectedly large), mention = blue,
+ * user_text = default, image = purple, tool_result = green. */
+.msg-context-primer { border-left-color: var(--vscode-charts-orange, #fb923c); }
+.msg-context-mention { border-left-color: var(--vscode-charts-blue, #60a5fa); }
+.msg-context-image { border-left-color: var(--vscode-charts-purple, #a78bfa); }
+.msg-context-tool_result { border-left-color: var(--vscode-charts-green, #4ade80); }

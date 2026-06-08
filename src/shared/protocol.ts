@@ -37,6 +37,13 @@ export interface SessionMeta {
   model?: string;
   /** Currently-selected effort/thinking-budget level. */
   effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** Backend's NATIVE session id (e.g. claude's `session_id` from the
+   * `system` init line). Distinct from `id`, which is our local UUID.
+   * Persisted so a reload of the panel can spawn the agent with
+   * `--resume <backendSessionId>` and pick up the on-disk transcript
+   * the agent itself wrote. Set the first time the backend emits a
+   * `system_init` event; never reassigned. */
+  backendSessionId?: string;
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
@@ -81,9 +88,16 @@ export type WebviewToHost =
   /** Change the active effort/thinking-budget level. Same respawn rules. */
   | { type: 'setEffort'; effort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
   | { type: 'newSession'; backend?: BackendId }
-  /** User's answer to the cross-backend context-handoff prompt: carry the
-   * full prior conversation, a summary, or nothing into the new backend. */
-  | { type: 'primerDecision'; choice: 'full' | 'summary' | 'none' }
+  /** User's answer to the cross-backend context-handoff prompt:
+   *   - 'full'   = prepend the prior conversation verbatim
+   *   - 'hybrid' = ask the SOURCE backend to LLM-summarise the prior
+   *                conversation (one-shot fork), then append the last
+   *                `lastNTurns` user/assistant turns verbatim so the
+   *                new backend has both a high-level recap AND recent
+   *                detail. `lastNTurns >= 0`; 0 = summary only.
+   *   - 'none'   = no carry-over, start fresh
+   */
+  | { type: 'primerDecision'; choice: 'full' | 'hybrid' | 'none'; lastNTurns?: number }
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
@@ -97,11 +111,6 @@ export type WebviewToHost =
    * instead of looking in the local ~/.codebuild store. Older callers that
    * only send `id` continue to work and are treated as local. */
   | { type: 'resumeSession'; id: string; source?: SessionSource; cwd?: string }
-  /** User's response to a `primerPrompt` shown on backend swap or
-   * external-session import. 'full' = verbatim prior turns; 'summary' =
-   * user prompts + brief assistant excerpts; 'none' = drop the primer.
-   * Dismissing the banner without choosing is equivalent to 'none'. */
-  | { type: 'primerDecision'; choice: 'full' | 'summary' | 'none' }
   /** User's click on an AskUserQuestion option card. The host translates
    * this into the upstream tool_result the backend is waiting for. */
   | { type: 'askUserAnswer'; toolCallId: string; answers: Record<string, string> };
@@ -115,16 +124,33 @@ export type HostToWebview =
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
   | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
-  /** Backend-swap / external-session-import primer Q&A. The webview shows
-   * a 3-button banner ('Full / Summary / Start fresh') above the composer;
-   * the answer comes back as `primerDecision`. The existing camelCase
-   * fields are kept for backward-compat with prior code-build releases. */
-  | { type: 'primerPrompt'; turnCount: number; fromBackend: string; toBackend: string }
+  /** Backend-swap primer Q&A. The webview shows a card picker above the
+   * composer; the answer comes back as `primerDecision`. `sourceBackendId`
+   * is the BackendId (not the human label) of the source — the host
+   * uses it to know which CLI to fork for the LLM summary. */
+  | {
+      type: 'primerPrompt';
+      turnCount: number;
+      fromBackend: string;
+      toBackend: string;
+      sourceBackendId: BackendId;
+      /** Whether we can run a one-shot LLM summarization on this source
+       * backend. False → the webview hides the hybrid option's
+       * "(LLM-generated)" tag and the host falls back to a clipped
+       * summary. Today only claude supports the one-shot fork. */
+      llmSummarySupported: boolean;
+    }
   /** Informational notice (not an error) — soft amber banner in the chat.
    * Used when the host wants to tell the user something is unusual (e.g.
    * a session is being held by another panel and we fell back to a fresh
-   * chat) without the red-error visual treatment. */
-  | { type: 'notice'; text: string }
+   * chat) without the red-error visual treatment.
+   *
+   * `detail` is rendered as a `title` attribute on the notice bubble so
+   * the user can hover for a multi-line tooltip. Startup notices fill
+   * this with the resolved spawn command, cwd, and any --resume id so
+   * the user can see WHAT we're actually waiting on when the panel
+   * stalls during "Starting claude agent…". */
+  | { type: 'notice'; text: string; detail?: string }
   /** AskUserQuestion tool call surfaced from the agent. Each entry is one
    * pickable card with the agent's question + N options. Clicking posts
    * `askUserAnswer` which the host converts to the upstream tool_result. */
@@ -144,6 +170,26 @@ export type HostToWebview =
       type: 'taskList';
       toolCallId: string;
       tasks: Array<{ content: string; status: 'pending' | 'in_progress' | 'completed' | 'cancelled'; activeForm?: string }>;
+    }
+  /** Transparency hook fired BEFORE every prompt / tool_result is written
+   * to the agent's stdin. Renders as a collapsible card in the chat so
+   * the user can audit exactly what we injected — the carry-over primer
+   * (if any), each `@`-mention resolution, the raw user text, image
+   * attachments, tool_result payloads. Without this, the agent's
+   * effective input is invisible: a 12K primer or a mis-resolved file
+   * ref can silently steer the turn and the user has no idea why. The
+   * sections are stacked in the order they appear in the final stdin
+   * line so a reader can mentally reconstruct the wire format. */
+  | {
+      type: 'contextInjected';
+      origin: 'prompt' | 'tool_result' | 'system';
+      summary: string;
+      sections: Array<{
+        label: string;
+        body: string;
+        chars: number;
+        kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
+      }>;
     };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {

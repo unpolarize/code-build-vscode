@@ -157,36 +157,16 @@ export function App() {
         onRefreshSessions={() => post({ type: 'listSessions' })}
       />
       {state.primerPrompt && (
-        <div className="primer-banner">
-          <span className="primer-text">
-            Continuing from a <strong>{state.primerPrompt.fromBackend}</strong> session
-            ({state.primerPrompt.turnCount} prior turn{state.primerPrompt.turnCount === 1 ? '' : 's'}).
-            Carry context into <strong>{state.primerPrompt.toBackend}</strong>?
-          </span>
-          <div className="primer-actions">
-            <button
-              className="btn btn-primer"
-              onClick={() => { post({ type: 'primerDecision', choice: 'full' }); dispatch({ kind: 'clearPrimer' }); }}
-              title="Prepend the full prior conversation to your next message"
-            >
-              Full conversation
-            </button>
-            <button
-              className="btn btn-primer"
-              onClick={() => { post({ type: 'primerDecision', choice: 'summary' }); dispatch({ kind: 'clearPrimer' }); }}
-              title="Prepend a compact summary to your next message"
-            >
-              Summary only
-            </button>
-            <button
-              className="btn btn-primer btn-primer-ghost"
-              onClick={() => { post({ type: 'primerDecision', choice: 'none' }); dispatch({ kind: 'clearPrimer' }); }}
-              title="Start fresh with no carried-over context"
-            >
-              Start fresh
-            </button>
-          </div>
-        </div>
+        <PrimerBanner
+          fromBackend={state.primerPrompt.fromBackend}
+          toBackend={state.primerPrompt.toBackend}
+          turnCount={state.primerPrompt.turnCount}
+          llmSummarySupported={state.primerPrompt.llmSummarySupported}
+          onDecide={(choice, lastNTurns) => {
+            post({ type: 'primerDecision', choice, lastNTurns });
+            dispatch({ kind: 'clearPrimer' });
+          }}
+        />
       )}
       <MessageList
         items={state.items}

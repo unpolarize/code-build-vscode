@@ -5,7 +5,7 @@ import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll, BACKENDS } from './backendRegistry';
+import { detectAll, BACKENDS, resolveBin } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -17,7 +17,15 @@ import {
   loadGrokHistory
 } from './persistence/externalReplay';
 import { listAllSessions } from './persistence/externalSources';
-import { serializeConversation, countUserTurns, type PrimerMode } from './persistence/conversationSerializer';
+import {
+  serializeConversation,
+  serializeHybridConversation,
+  serializeSelfResumePrimer,
+  buildTranscriptForSummary,
+  countUserTurns,
+  type PrimerMode
+} from './persistence/conversationSerializer';
+import { spawn } from 'node:child_process';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -34,11 +42,32 @@ export class SessionManager {
   private readonly store = new SessionStore();
 
   /** Records captured from the OLD session right before a backend switch,
-   * held until the user answers the carry-over prompt. */
-  private handoffRecords?: { records: { type: string; text?: string; update?: any }[]; fromBackend: string };
+   * held until the user answers the carry-over prompt. `sourceBackendId`
+   * is the actual BackendId (not the display label) so we know which
+   * CLI to fork when the user picks the hybrid (LLM-summary) option. */
+  private handoffRecords?: {
+    records: { type: string; text?: string; update?: any }[];
+    fromBackend: string;
+    sourceBackendId: BackendId;
+    sourceModel?: string;
+  };
   /** Text primer to prepend to the user's NEXT prompt (one-shot). Set when
    * the user chooses Full/Summary in the carry-over banner. */
   private pendingPrimer?: string;
+  /** True from the moment the user clicks the backend dropdown until
+   * the carry-over decision is fully applied (incl. async LLM
+   * summarisation). Used to hold a user prompt across the entire
+   * window — without this latch, a user who immediately types & sends
+   * after switching backends slips a context-less message through
+   * before the banner even renders. The queued blocks are flushed in
+   * finishPrimerDecision once the primer is ready. */
+  private primerPending = false;
+  /** Blocks held while `primerPending` is true. Flushed on completion. */
+  private queuedPromptBlocks?: ContentBlock[];
+  /** Cleanup for the "still waiting" follow-up timer on startup notices.
+   * Invoked when the first agent event arrives or the session is torn
+   * down, so the timer doesn't fire after we're already responsive. */
+  private startupNoticeCleanup?: () => void;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -84,12 +113,32 @@ export class SessionManager {
         await this.switchBackend(msg.backend);
         break;
       case 'primerDecision':
-        this.applyPrimerDecision(msg.choice);
+        void this.applyPrimerDecision(msg.choice, msg.lastNTurns);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
         break;
       case 'prompt': {
+        // Hold the user's prompt while a cross-backend handoff is in
+        // flight. Covers the entire window: from the moment the user
+        // picks the new backend (handoffRecords latched in
+        // switchBackend, BEFORE the spawn) through the banner click
+        // through the async LLM summarisation. Without this, a user
+        // who types and sends immediately after switching backends
+        // slipped a context-less message through before the primer
+        // could ever be set. finishPrimerDecision() flushes the queue
+        // once the primer is ready (or once 'Start fresh' is picked).
+        if (this.primerPending) {
+          this.queuedPromptBlocks = msg.blocks;
+          this.panel.post({
+            type: 'notice',
+            text: this.handoffRecords
+              ? `Holding your message — pick a carry-over option above first. Your message goes out the moment you choose.`
+              : `Holding your message until the source-backend summary is ready — it'll go out together with the carry-over primer.`,
+            detail: `The host queued your blocks because a cross-backend handoff is in progress. Pick a primer mode on the banner (or wait for summary to complete) and your message will be released with the primer prepended.`
+          });
+          break;
+        }
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
@@ -98,7 +147,9 @@ export class SessionManager {
           this.commitAndTitle(originalText);
           this.store.appendUserText(this.meta!.id, originalText);
         }
-        let blocks = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        const enriched = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        let blocks = enriched;
+        const usedPrimer = this.pendingPrimer;
         // One-shot context handoff: if the user switched backend and chose to
         // carry context, prepend the serialized prior conversation as a
         // leading text block, then clear it so it's only sent once.
@@ -106,6 +157,16 @@ export class SessionManager {
           blocks = [{ type: 'text', text: this.pendingPrimer }, ...blocks];
           this.pendingPrimer = undefined;
         }
+        // Transparency: surface exactly what we just injected into the
+        // agent's stdin BEFORE writing it. Without this, a 12K primer or
+        // a mis-resolved @-mention can silently steer a turn and the
+        // user has no signal. See HostToWebview.contextInjected.
+        this.emitContextInjectedForPrompt({
+          originalBlocks: msg.blocks,
+          enrichedBlocks: enriched,
+          finalBlocks: blocks,
+          primer: usedPrimer
+        });
         // Fire-and-forget so the message handler can pick up the NEXT prompt
         // immediately. This is what enables mid-stream steering — a second
         // 'prompt' message (interjected) from the webview runs through here
@@ -221,41 +282,246 @@ export class SessionManager {
   private async switchBackend(backend: BackendId): Promise<void> {
     const prevBackend = this.meta?.backend;
     const prevId = this.meta?.id;
+    const prevModel = this.meta?.model;
     // Snapshot the prior transcript BEFORE we tear the session down.
-    let captured: { records: { type: string; text?: string; update?: any }[]; fromBackend: string } | undefined;
+    let captured:
+      | {
+          records: { type: string; text?: string; update?: any }[];
+          fromBackend: string;
+          sourceBackendId: BackendId;
+          sourceModel?: string;
+        }
+      | undefined;
     if (prevId && prevBackend && prevBackend !== backend) {
+      // Externally-imported sessions (opened via "Open in Code Build"
+      // from coder-sessions) only have post-import activity in the
+      // local ~/.codebuild store. The actual conversation lives in the
+      // upstream jsonl. Without this branch, switchBackend on an
+      // imported session sees 0 user turns and silently skips the
+      // banner — the user reported exactly this for a grok session
+      // they were continuing. Pull the upstream transcript and merge
+      // it with any post-import activity so the banner shows AND the
+      // primer carries the full conversation.
+      let records: { type: string; text?: string; update?: any }[] = [];
+      const source = this.meta?.source;
+      if ((source === 'claude' || source === 'grok') && this.meta?.cwd) {
+        try {
+          const replay =
+            source === 'claude'
+              ? loadClaudeHistory(claudeJsonlPathFor(this.meta.cwd, this.meta.id))
+              : loadGrokHistory(grokChatPathFor(this.meta.cwd, this.meta.id));
+          if (replay) records.push(...(replay.records as any));
+        } catch {
+          /* missing file / parse error — fall through to local store */
+        }
+      }
       const loaded = this.store.load(prevId);
-      if (loaded.records.length > 0 && countUserTurns(loaded.records) > 0) {
-        captured = { records: loaded.records, fromBackend: backendLabel(prevBackend) };
+      records.push(...loaded.records.filter((r) => r.type !== 'meta'));
+
+      if (records.length > 0 && countUserTurns(records) > 0) {
+        captured = {
+          records,
+          fromBackend: backendLabel(prevBackend),
+          sourceBackendId: prevBackend,
+          sourceModel: prevModel
+        };
       }
     }
 
-    await this.openSession(backend);
-
-    // After the new session is live, offer the carry-over choice. We hold the
-    // captured records until the user answers (applyPrimerDecision).
+    // CRITICAL ORDERING: latch handoff state + show the banner
+    // SYNCHRONOUSLY, BEFORE awaiting openSession. The new-agent spawn
+    // takes 1-5 seconds; if we awaited first, a user typing & sending
+    // immediately after switching the dropdown would slip a
+    // context-less prompt through before the banner ever rendered.
+    // Now: pickBackend → handoffRecords set + primerPending=true +
+    // banner posted, all in the same synchronous task → THEN spawn.
+    // The prompt handler sees the latch and queues until the user
+    // picks a carry-over option.
     if (captured) {
       this.handoffRecords = captured;
+      this.primerPending = true;
       this.panel.post({
         type: 'primerPrompt',
         turnCount: countUserTurns(captured.records),
         fromBackend: captured.fromBackend,
-        toBackend: backendLabel(backend)
+        toBackend: backendLabel(backend),
+        sourceBackendId: captured.sourceBackendId,
+        // Today only claude supports our one-shot LLM summarization
+        // (claude -p --output-format json). Grok-source falls back to a
+        // clipped mechanical summary in the host.
+        llmSummarySupported: captured.sourceBackendId === 'claude'
       });
     }
+
+    await this.openSession(backend);
   }
 
-  /** Resolve the carry-over banner: serialize the held transcript per the
-   * chosen fidelity and stash it as the one-shot primer (or discard). */
-  private applyPrimerDecision(choice: 'full' | 'summary' | 'none'): void {
+  /** Resolve the carry-over banner. Three paths:
+   *
+   *   - 'none'   → drop the primer, no-op.
+   *   - 'full'   → serialize the prior transcript verbatim (capped),
+   *                synchronous.
+   *   - 'hybrid' → fork the SOURCE backend one-shot to LLM-summarise
+   *                the transcript, then append the last N turns
+   *                verbatim. Async (5–30s typical) — meanwhile we
+   *                queue any prompt the user sends, so the carry-over
+   *                they just opted into isn't accidentally lost when
+   *                they hit Enter quickly. Falls back to the clipped
+   *                summary if the fork fails (LLM crash, exit code,
+   *                timeout) so the turn never silently drops the
+   *                primer.
+   */
+  private async applyPrimerDecision(
+    choice: 'full' | 'hybrid' | 'none',
+    lastNTurns?: number
+  ): Promise<void> {
     const held = this.handoffRecords;
     this.handoffRecords = undefined;
     if (!held || choice === 'none') {
       this.pendingPrimer = undefined;
+      this.finishPrimerDecision();
       return;
     }
-    const primer = serializeConversation(held.records, choice as PrimerMode, held.fromBackend);
-    this.pendingPrimer = primer || undefined;
+
+    if (choice === 'full') {
+      const primer = serializeConversation(held.records, 'full', held.fromBackend);
+      this.pendingPrimer = primer || undefined;
+      this.finishPrimerDecision();
+      return;
+    }
+
+    // Hybrid (LLM summary + last N turns verbatim). primerPending
+    // stays true (set at switchBackend time) until finishPrimerDecision
+    // — so queued prompts keep waiting through the async fork.
+    const n = Math.max(0, Math.min(50, lastNTurns ?? 5));
+    this.panel.post({
+      type: 'notice',
+      text: `Summarising **${held.fromBackend}** conversation for handoff…`,
+      detail:
+        held.sourceBackendId === 'claude'
+          ? `Forking a one-shot \`claude -p --output-format json\` on ${held.records.length.toLocaleString()} record(s). Typical 10–30s. The last ${n} turn${n === 1 ? '' : 's'} will be appended verbatim once the summary is ready. Any message you send before then is queued and will be released with the primer.`
+          : `Building a clipped summary locally — ${held.sourceBackendId} doesn't support one-shot LLM summarisation yet. Should be near-instant. The last ${n} turn${n === 1 ? '' : 's'} will be appended verbatim.`
+    });
+
+    try {
+      const summary =
+        held.sourceBackendId === 'claude'
+          ? await this.summarizeViaClaude(held.records, held.sourceModel)
+          : clippedSummaryFallback(held.records, held.fromBackend);
+      const primer = serializeHybridConversation({
+        records: held.records,
+        summary,
+        lastNTurns: n,
+        fromBackend: held.fromBackend
+      });
+      this.pendingPrimer = primer;
+      this.panel.post({
+        type: 'notice',
+        text: `Summary ready (${primer.length.toLocaleString()} chars). It'll be prepended to your next message.`,
+        detail: `Composition:\n- LLM summary: ${summary.length.toLocaleString()} chars\n- Last ${n} verbatim turn${n === 1 ? '' : 's'}\n- Handoff framing block\n\nFull primer text is visible in the audit card that'll appear above your next user message.`
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Don't leave the user with no primer — fall back to the clipped
+      // serializer. The notice tells them what happened.
+      const clipped = serializeConversation(held.records, 'summary', held.fromBackend);
+      this.pendingPrimer = clipped || undefined;
+      this.panel.post({
+        type: 'notice',
+        text: `LLM summarisation failed — falling back to a clipped summary.`,
+        detail: `Error: ${msg}\n\nClipped summary length: ${(clipped ?? '').length.toLocaleString()} chars. The handoff still works, just without the LLM-quality recap.`
+      });
+    } finally {
+      this.finishPrimerDecision();
+    }
+  }
+
+  /** Common post-decision step: clear `primerPending` and, if the user
+   * already hit Send while we were waiting, dispatch their queued blocks
+   * now (which will pick up `pendingPrimer` on the way through). */
+  private finishPrimerDecision(): void {
+    this.primerPending = false;
+    if (this.queuedPromptBlocks) {
+      const blocks = this.queuedPromptBlocks;
+      this.queuedPromptBlocks = undefined;
+      // Re-enter through `handle({type:'prompt'})` so the queued blocks
+      // run through the same enrich/primer/audit pipeline as a fresh
+      // send. We construct a minimal WebviewToHost so the type
+      // discriminator is right.
+      void this.handle({ type: 'prompt', blocks });
+    }
+  }
+
+  /** One-shot LLM summarisation via `claude -p --output-format json`.
+   *
+   * Why one-shot (not --resume): --resume would create a side jsonl in
+   * ~/.claude/projects + risk colliding with the active session guard
+   * if claude is also running interactively elsewhere. We just pipe
+   * the transcript on stdin and read the final JSON `result` field
+   * out of stdout. The cost is real (the transcript is the input
+   * tokens) but bounded — we tail-truncate to 120K chars (~30K
+   * tokens). Errors throw so the caller can fall back to a clipped
+   * summary instead of silently shipping no primer at all. */
+  private summarizeViaClaude(
+    records: { type: string; text?: string; update?: any }[],
+    model?: string
+  ): Promise<string> {
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const bin = overrides['claude'] || 'claude';
+    const transcript = buildTranscriptForSummary(records);
+    const prompt =
+      `You are summarising a conversation between a user and an AI coding ` +
+      `assistant for handoff to a DIFFERENT AI assistant. The new assistant ` +
+      `has zero prior context. Write a concise summary (200–400 words) ` +
+      `covering: the user's goal, key findings/decisions, current task ` +
+      `state, files involved, and any outstanding questions. Don't include ` +
+      `verbatim turns (those will be appended separately). Just the summary text.\n\n` +
+      `=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
+
+    const args = ['-p', '--output-format', 'json'];
+    if (model && model !== 'default') args.push('--model', model);
+
+    return new Promise<string>((resolve, reject) => {
+      const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      const timer = setTimeout(() => {
+        proc.kill();
+        reject(new Error('claude one-shot summarisation timed out after 90s'));
+      }, 90_000);
+      proc.stdout.on('data', (b: Buffer) => {
+        stdout += b.toString();
+      });
+      proc.stderr.on('data', (b: Buffer) => {
+        stderr += b.toString();
+      });
+      proc.on('error', (err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        if (code !== 0) {
+          return reject(
+            new Error(`claude exited ${code}${stderr ? `: ${stderr.slice(-200)}` : ''}`)
+          );
+        }
+        try {
+          const obj = JSON.parse(stdout) as { result?: string; text?: string };
+          const text = (obj.result || obj.text || '').trim();
+          if (!text) return reject(new Error('claude returned an empty summary'));
+          resolve(text);
+        } catch (e) {
+          reject(
+            new Error(
+              `Failed to parse claude one-shot output: ${(e as Error).message}. Raw tail: ${stdout.slice(-200)}`
+            )
+          );
+        }
+      });
+      proc.stdin.write(prompt);
+      proc.stdin.end();
+    });
   }
 
   /** Whether the user opted into the skip-permissions escape hatch. */
@@ -296,15 +562,18 @@ export class SessionManager {
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
-    // Startup timing markers — surfaced as a single self-updating notice
-    // so the user sees what's eating the wait when starting a turn takes
-    // 30+ seconds (claude --resume on a multi-MB jsonl, ACP handshake,
-    // cache warmup). We post the notice once on spawn, then patch the
-    // same line by replacing items (webview notice rendering keeps the
-    // latest version of the same id). Implementation: just emit notices
-    // at the milestones; the user gets a small visible trail.
+    // Startup timing markers — see postStartupNotice() for the detail
+    // tooltip + 30s follow-up nudge. Long --resume loads can sit silent
+    // for 30+ s; the user now sees both WHAT we're spawning (hover) and
+    // gets a 30s "still waiting" beat so a stuck spawn doesn't look like
+    // a fast spawn that's just slow.
     const spawnStart = Date.now();
-    this.panel.post({ type: 'notice', text: `Starting **${be}** agent…` });
+    const cancelNudge = this.postStartupNotice({
+      be,
+      text: `Starting **${be}** agent…`,
+      cwd: this.cwd,
+      spawnStart
+    });
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
@@ -314,10 +583,13 @@ export class SessionManager {
       // First time we see anything from the agent — surface the spawn
       // time so the user knows whether the slowness is in our spawn (a
       // few hundred ms) or in the agent's first-event latency (often
-      // seconds, especially with --resume on a long history).
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+      // seconds, especially with --resume on a long history). Also
+      // cancels the "still waiting" follow-up nudge so it doesn't fire
+      // after we've already become responsive.
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
         firstEventAt = Date.now();
         const ms = firstEventAt - spawnStart;
+        cancelNudge();
         this.panel.post({
           type: 'notice',
           text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
@@ -327,6 +599,7 @@ export class SessionManager {
       // TodoWrite) so the webview can render purpose-built UI instead of
       // a generic tool card.
       this.interceptToolCall(update);
+      this.captureBackendSessionId(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }
@@ -423,22 +696,196 @@ export class SessionManager {
     }
   }
 
+  /** Build + post a `contextInjected` audit card describing every block
+   * we're about to write to the agent's stdin on a regular prompt
+   * turn. Sections appear in stdin order: primer first (if any), then
+   * each resolved @-mention with its workspace path, then the user's
+   * raw typed text, then any image attachments. The summary line in
+   * the collapsed card names whichever sections were present — the
+   * user gets a one-glance signal that "this turn included a 12K
+   * primer + 2 file refs" without expanding.
+   *
+   * `originalBlocks` is what the webview sent (pre-mention-rewrite),
+   * `enrichedBlocks` is post @-mention resolution (each @path is now
+   * a resource_link), and `finalBlocks` includes the primer if one
+   * was set. We diff between them so the mention/image sections list
+   * resolved paths, not the literal `@token` text. */
+  private emitContextInjectedForPrompt(args: {
+    originalBlocks: ContentBlock[];
+    enrichedBlocks: ContentBlock[];
+    finalBlocks: ContentBlock[];
+    primer: string | undefined;
+  }): void {
+    // Only surface the audit card when the host actually INJECTED
+    // something — i.e., the first message after a backend switch where
+    // the user chose to carry context. On a regular prompt we don't
+    // rewrite anything beyond resolving @-mentions (which are visible
+    // in the user's typed text anyway), so a card every turn was just
+    // visual noise. The user explicitly asked for it to be scoped
+    // here.
+    if (!args.primer) return;
+    const sections: Array<{
+      label: string;
+      body: string;
+      chars: number;
+      kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
+    }> = [];
+
+    sections.push({
+      label: `Carry-over primer (${args.primer.length.toLocaleString()} chars)`,
+      body: args.primer,
+      chars: args.primer.length,
+      kind: 'primer'
+    });
+
+    // Iterate the enriched block list (post-mention-rewrite). Group
+    // text-runs that came from the user as one user_text section; emit
+    // each resource_link / image as its own section with the
+    // resolved target.
+    let userTextBuf = '';
+    const flushUserText = () => {
+      if (!userTextBuf.trim()) {
+        userTextBuf = '';
+        return;
+      }
+      sections.push({
+        label: `User text (${userTextBuf.length.toLocaleString()} chars)`,
+        body: userTextBuf,
+        chars: userTextBuf.length,
+        kind: 'user_text'
+      });
+      userTextBuf = '';
+    };
+    for (const b of args.enrichedBlocks) {
+      if (b.type === 'text') {
+        userTextBuf += b.text;
+      } else if (b.type === 'resource_link') {
+        flushUserText();
+        const path = b.uri.startsWith('file://') ? b.uri.slice('file://'.length) : b.uri;
+        sections.push({
+          label: `@-mention → ${b.name ?? path}`,
+          body: `Resolved to: ${path}`,
+          chars: path.length,
+          kind: 'mention'
+        });
+      } else if (b.type === 'image') {
+        flushUserText();
+        const approxKb = Math.round((b.data.length * 3) / 4 / 1024);
+        sections.push({
+          label: `Image attachment (${b.mimeType}, ~${approxKb} KB)`,
+          body: `data:${b.mimeType};base64,<${b.data.length.toLocaleString()} chars of base64 elided>`,
+          chars: b.data.length,
+          kind: 'image'
+        });
+      }
+    }
+    flushUserText();
+
+    // No sections means the user sent literally nothing (defensive —
+    // the prompt handler guards against empty sends, but if a future
+    // path lands here with nothing to inject we just skip the card).
+    if (sections.length === 0) return;
+
+    const summary = this.summariseSections(sections);
+    this.panel.post({
+      type: 'contextInjected',
+      origin: 'prompt',
+      summary,
+      sections
+    });
+  }
+
+  /** One-line collapsed-card label naming the section kinds present so
+   * the user can scan without expanding. */
+  private summariseSections(sections: Array<{ kind?: string; chars: number }>): string {
+    const counts = new Map<string, { count: number; chars: number }>();
+    for (const s of sections) {
+      const k = s.kind ?? 'other';
+      const cur = counts.get(k) ?? { count: 0, chars: 0 };
+      cur.count += 1;
+      cur.chars += s.chars;
+      counts.set(k, cur);
+    }
+    const pretty: Record<string, string> = {
+      primer: 'primer',
+      mention: '@-mention',
+      user_text: 'user text',
+      image: 'image',
+      tool_result: 'tool result',
+      system: 'system'
+    };
+    const parts: string[] = [];
+    for (const [k, v] of counts) {
+      const label = pretty[k] ?? k;
+      const plural = v.count > 1 ? `${v.count} ${label}s` : `${v.count} ${label}`;
+      const size = v.chars > 1000 ? ` (${Math.round(v.chars / 1000)}K chars)` : ` (${v.chars} chars)`;
+      parts.push(plural + size);
+    }
+    return parts.join(' · ');
+  }
+
+  /** Persist the backend's native session id when the transport surfaces
+   * it. Claude assigns its own session id at spawn (independent of our
+   * local UUID) and writes its transcript under that id in
+   * ~/.claude/projects — without persisting it, a later
+   * loadExistingSession spawns claude with no --resume and the agent
+   * has zero context ("I don't have prior conversation context to
+   * continue from"). Only writes once per session — the field is
+   * permanent for the conversation. */
+  private captureBackendSessionId(update: SessionUpdate): void {
+    if (update.kind !== 'system_init') return;
+    if (!this.meta) return;
+    if (this.meta.backendSessionId === update.backendSessionId) return;
+    this.meta.backendSessionId = update.backendSessionId;
+    this.store.updateMeta(this.meta);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+  }
+
   /** Translate a webview-side click on an AskUserQuestion option card into
-   * the upstream tool_result the backend is waiting for. Claude expects a
-   * JSON string in the tool_result content; grok-build also accepts plain
-   * text. We send a JSON object so claude can parse it deterministically. */
+   * the upstream tool_result the backend is waiting for.
+   *
+   * Anthropic's Messages API protocol requires a `tool_result` content
+   * block (keyed by `tool_use_id`) to fulfil a pending tool call —
+   * NOT a plain text user message. The prior implementation sent the
+   * answer as a text block, which claude couldn't correlate with the
+   * in-flight AskUserQuestion tool_use: it timed the tool call out
+   * with status=failed (the red × in the chat) and then answered
+   * conversationally ("No problem, tell me which thread to pick up
+   * and I'll dive in"), exactly the symptom the user reported. We
+   * now serialize the picks as JSON and send them inside a
+   * `tool_result` block; claude's normaliser threads it back into the
+   * built-in AskUserQuestion handler and the agent continues its
+   * turn. Also flip busy=true so the working… indicator reappears
+   * while claude processes the answer. */
   private answerAskUserQuestion(toolCallId: string, answers: Record<string, string>): void {
     const pending = this.pendingAskUserQuestions.get(toolCallId);
     if (!pending) return;
     this.pendingAskUserQuestions.delete(toolCallId);
-    // Send back as a user message of the form claude expects from the
-    // built-in AskUserQuestion tool. The CLI normalises this into a
-    // tool_result automatically on next prompt.
-    const text = JSON.stringify({
-      tool_use_id: toolCallId,
-      answers
+    const payload = JSON.stringify({ answers });
+    const blocks: ContentBlock[] = [
+      {
+        type: 'tool_result',
+        tool_use_id: toolCallId,
+        content: payload
+      }
+    ];
+    // Audit card so the user sees exactly what claude is about to
+    // receive in response to its AskUserQuestion. Same transparency
+    // story as a regular prompt: the answer JSON is normally invisible.
+    this.panel.post({
+      type: 'contextInjected',
+      origin: 'tool_result',
+      summary: `1 tool result (${payload.length} chars)`,
+      sections: [
+        {
+          label: `tool_result for ${toolCallId.slice(0, 12)}…`,
+          body: payload,
+          chars: payload.length,
+          kind: 'tool_result'
+        }
+      ]
     });
-    const blocks: ContentBlock[] = [{ type: 'text', text }];
+    this.panel.post({ type: 'busy', busy: true });
     void this.session?.prompt(blocks);
   }
 
@@ -530,11 +977,16 @@ export class SessionManager {
 
     // External-session startup is where the slowness usually lives —
     // `claude --resume` on a multi-MB jsonl can sit silently for 30+ s
-    // before the first event. Notices give the user something to watch.
+    // before the first event. postStartupNotice() gives the user both
+    // a visible spawn line AND a hoverable tooltip with the actual
+    // command/cwd/resume id + a 30s nudge if the agent stays silent.
     const spawnStart = Date.now();
-    this.panel.post({
-      type: 'notice',
-      text: `Loading ${args.source} session \`${args.sessionId.slice(0, 8)}\`…`
+    const cancelNudge = this.postStartupNotice({
+      be,
+      text: `Loading ${args.source} session \`${args.sessionId.slice(0, 8)}\`…`,
+      cwd: args.cwd,
+      resumeId: be === 'claude' ? args.sessionId : undefined,
+      spawnStart
     });
     let firstEventAt = 0;
 
@@ -542,9 +994,10 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
         firstEventAt = Date.now();
         const ms = firstEventAt - spawnStart;
+        cancelNudge();
         this.panel.post({
           type: 'notice',
           text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
@@ -645,6 +1098,33 @@ export class SessionManager {
         });
       }
     }
+
+    // Self-resume primer: when the agent CAN'T natively resume (grok
+    // ACP, claude when the active-session guard tripped), the new
+    // process has zero memory of the conversation even though the
+    // user sees the transcript in the UI. Inject the last N turns
+    // verbatim as a primer on the first prompt so the agent has
+    // context. Without this, asking "what is the keyword" after a
+    // grok-session resume produces "I don't know what keyword you
+    // mean — let me search the files" because the agent literally
+    // doesn't know.
+    const nativeResume = BACKENDS[be].supportsResume && !!resumeId;
+    if (!nativeResume && replay && replay.records.length > 0) {
+      const primer = serializeSelfResumePrimer({
+        records: replay.records as any,
+        lastNTurns: 10,
+        backendLabel: backendLabel(be)
+      });
+      if (primer) {
+        this.pendingPrimer = primer;
+        this.panel.post({
+          type: 'notice',
+          text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
+          detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
+        });
+      }
+    }
+
     await this.session.start({
       cwd: args.cwd,
       mode,
@@ -671,6 +1151,88 @@ export class SessionManager {
     this.unsubscribe = undefined;
     this.session?.dispose();
     this.session = undefined;
+    // Cancel any pending "still waiting" notice — we don't want it
+    // firing after the user has already torn down or replaced the
+    // session it described.
+    this.startupNoticeCleanup?.();
+    this.startupNoticeCleanup = undefined;
+  }
+
+  /** Emit a structured startup notice with diagnostic detail (resolved
+   * spawn command, cwd, resume id) plumbed through the `detail` field so
+   * the user can hover the notice bubble to see WHAT we're spawning when
+   * the panel stalls during "Starting … agent". Also schedules a single
+   * 30s follow-up "still waiting" notice — long --resume loads on multi-
+   * MB jsonls can sit silent that long while claude warms its cache, so
+   * the user gets an incremental progress signal instead of staring at
+   * a frozen pill. Returns `onFirstEvent()` which the caller invokes
+   * once the agent emits anything, to cancel the follow-up timer. */
+  private postStartupNotice(opts: {
+    be: BackendId;
+    text: string;
+    cwd: string;
+    resumeId?: string;
+    spawnStart: number;
+  }): () => void {
+    // Resolve the same spawn command the transport will use, so the
+    // tooltip is the actual argv (not a generic description). Mirrors
+    // StreamJsonTransport.spawnProcess() / ACPTransport spawn args. We
+    // can't reach into the live transport (it hasn't fully started
+    // yet), so re-derive from BACKENDS[be].buildArgs() with the same
+    // inputs the transport will pass.
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const spec = BACKENDS[opts.be];
+    const bin = resolveBin(spec, overrides);
+    const remembered = this.rememberedConfig();
+    const args = spec.buildArgs({
+      cwd: opts.cwd,
+      mode: remembered.mode,
+      model: remembered.model,
+      resumeId: opts.resumeId,
+      effort: remembered.effort,
+      allowBypass: this.allowBypass
+    });
+    const cmdLine = `${bin} ${args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
+    const startedAt = new Date(opts.spawnStart).toLocaleTimeString();
+    const detail = [
+      `Command: ${cmdLine}`,
+      `Cwd: ${opts.cwd}`,
+      opts.resumeId ? `Resume: ${opts.resumeId}` : `Resume: (none — fresh session)`,
+      `Mode: ${remembered.mode}` + (remembered.model ? ` · model: ${remembered.model}` : '') +
+        (remembered.effort && remembered.effort !== 'default' ? ` · effort: ${remembered.effort}` : ''),
+      `Started: ${startedAt}`,
+      `Phase: spawn + waiting for first event from agent`
+    ].join('\n');
+    this.panel.post({ type: 'notice', text: opts.text, detail });
+
+    // The 30s "still waiting" nudge only makes sense when the agent
+    // actually has work to do at startup — i.e., resuming a long
+    // transcript (claude reads its multi-MB jsonl) or completing an
+    // ACP handshake (grok). For FRESH claude sessions in `-p` mode
+    // the process is alive sub-second but doesn't emit any events
+    // until the user sends a prompt; the user saw the nudge fire
+    // anyway and read it as "stuck" when nothing was actually wrong.
+    // Skip the timer when no resume id is in play; the only signal
+    // we wait for in that case is the system_init line (which we
+    // now also accept as the first-event marker).
+    if (!opts.resumeId) {
+      this.startupNoticeCleanup = () => {};
+      return this.startupNoticeCleanup;
+    }
+
+    const timer = setTimeout(() => {
+      const elapsed = Math.round((Date.now() - opts.spawnStart) / 1000);
+      this.panel.post({
+        type: 'notice',
+        text:
+          `Still waiting on **${opts.be}** · ${elapsed}s elapsed. The agent may be loading a long transcript or warming a cache. Hover for the actual command.`,
+        detail: `${detail}\nElapsed: ${elapsed}s\nIf this hangs much longer, cancel from the composer and start a fresh chat with /new.`
+      });
+    }, 30_000);
+
+    const cleanup = () => clearTimeout(timer);
+    this.startupNoticeCleanup = cleanup;
+    return cleanup;
   }
 
   /** In-flight cancellation token for @-mention file searches. Every call
@@ -841,10 +1403,19 @@ export class SessionManager {
     const be = loaded.meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
+    // Same resume-id resolution we'll pass to session.start() below —
+    // hoisted so the startup notice's hover tooltip shows the actual
+    // --resume <id> we're about to use (or "(none)" when we have
+    // nothing to resume with).
+    const earlyResumeId =
+      loaded.meta.backendSessionId ?? (loaded.meta.source === 'claude' ? loaded.meta.id : undefined);
     const spawnStart = Date.now();
-    this.panel.post({
-      type: 'notice',
-      text: `Resuming \`${id.slice(0, 8)}\` (${be})…`
+    const cancelNudge = this.postStartupNotice({
+      be,
+      text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
+      cwd: loaded.meta.cwd,
+      resumeId: earlyResumeId,
+      spawnStart
     });
     let firstEventAt = 0;
 
@@ -852,9 +1423,10 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update')) {
+      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
         firstEventAt = Date.now();
         const ms = firstEventAt - spawnStart;
+        cancelNudge();
         this.panel.post({
           type: 'notice',
           text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
@@ -874,11 +1446,47 @@ export class SessionManager {
     // Replay the stored transcript so the UI shows the full conversation history
     this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
 
-    // Start a live agent session (fresh process for now; resume tokens can be added later)
+    // Self-resume primer for backends without native --resume (grok ACP
+    // today). The new agent process has zero memory of the conversation
+    // even though the user sees the history in the UI. Inject the last
+    // N turns verbatim as a one-shot primer on the first prompt so the
+    // agent picks up where it left off. claude with a valid resume id
+    // skips this — its own `--resume` already feeds the jsonl back to
+    // the model. See [[serializeSelfResumePrimer]].
+    const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
+    if (!nativeResume && loaded.records.length > 0) {
+      const primer = serializeSelfResumePrimer({
+        records: loaded.records as any,
+        lastNTurns: 10,
+        backendLabel: backendLabel(be)
+      });
+      if (primer) {
+        this.pendingPrimer = primer;
+        this.panel.post({
+          type: 'notice',
+          text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
+          detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
+        });
+      }
+    }
+
+    // Resume the agent with its NATIVE session id when we have one.
+    // Two paths reach a resumable id:
+    //   1. The session was opened in code-build originally — we captured
+    //      claude's `session_id` from the `system` init line into
+    //      `meta.backendSessionId` (see captureBackendSessionId).
+    //   2. The session was imported via openExternalSession — the local
+    //      id IS claude's session id (set as `id = args.sessionId`).
+    // Pre-fix, loadExistingSession spawned claude without `--resume` at
+    // all, so the user reload landed on a fresh agent with no memory
+    // of the prior conversation. The auto-fallback in
+    // StreamJsonTransport still kicks in if --resume fails (e.g. the
+    // jsonl was deleted), so a stale id can't get us stuck.
     const mode = this.meta.mode ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
     await this.session.start({
       cwd: this.meta.cwd,
       mode,
+      resumeId: earlyResumeId,
       model: this.meta.model,
       effort: this.meta.effort,
       allowBypass: this.allowBypass
@@ -939,6 +1547,19 @@ function pickDominantModel(byModel: Array<{ model?: string; outputTokens?: numbe
     if (!best || (m.outputTokens ?? 0) > (best.outputTokens ?? 0)) best = m;
   }
   return best?.model;
+}
+
+/** Mechanical summary used when the source backend doesn't support the
+ * one-shot LLM fork (today: anything other than claude). Returns just
+ * the summary string — the caller wraps it into the hybrid primer. */
+function clippedSummaryFallback(
+  records: { type: string; text?: string; update?: any }[],
+  fromBackend: string
+): string {
+  const full = serializeConversation(records, 'summary', fromBackend);
+  // Strip the outer <conversation-context> wrapper; the hybrid
+  // serializer adds its own. We just want the inner turns text.
+  return full.replace(/<\/?conversation-context[^>]*>/g, '').trim();
 }
 
 /** Human label for a backend id (used in the carry-over banner copy). */

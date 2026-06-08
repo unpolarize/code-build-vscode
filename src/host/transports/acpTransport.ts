@@ -107,6 +107,11 @@ export class AcpTransport extends BaseAgentSession {
           mcpServers: []
         });
         this.acpSessionId = session.sessionId;
+        // Emit for parity with the Claude path. This lets SessionManager
+        // captureBackendSessionId persist the native grok ACP session id
+        // into SessionMeta, powering "Open in Code Sessions", history
+        // cross-links, and any future load/resume using the agent's own id.
+        this.emit({ kind: "system_init", backendSessionId: session.sessionId });
       } catch (err) {
         // Surface handshake failures in the chat (the message handler's
         // .catch only sees the start() rejection; if start() itself
