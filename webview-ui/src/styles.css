@@ -608,6 +608,29 @@ body {
   margin-top: 3px;
   line-height: 1.4;
 }
+/* "Other" pseudo-option — dashed border distinguishes the free-text
+ * escape hatch from the agent-provided predefined options. */
+.askuser-option-other {
+  border-style: dashed;
+}
+.askuser-other-input {
+  width: 100%;
+  min-height: 70px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  background: var(--vscode-input-background);
+  color: var(--vscode-input-foreground);
+  font-family: inherit;
+  font-size: inherit;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.askuser-other-input:focus {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: -1px;
+}
 .askuser-actions {
   display: flex;
   justify-content: flex-end;

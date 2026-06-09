@@ -20,6 +20,13 @@ export interface StartOpts {
    * (codeBuild.allowDangerouslySkipPermissions). Gates the
    * --dangerously-skip-permissions flag (claude) and ACP auto-approve. */
   allowBypass?: boolean;
+  /** Additional directories the agent is allowed to touch beyond the
+   * spawn cwd. Plumbed into claude as `--add-dir <path>` flags so the
+   * agent's Read/Write/Bash tools aren't restricted to the workspace
+   * folder. Without this, --dangerously-skip-permissions skips the
+   * permission UI but the tools still respect the cwd boundary — that
+   * was the "code-build chat is locked to the project repo" bug. */
+  additionalTrustedDirs?: string[];
 }
 
 /**

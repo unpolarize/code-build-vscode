@@ -529,6 +529,30 @@ export class SessionManager {
     return this.config.get<boolean>('allowDangerouslySkipPermissions', false);
   }
 
+  /** Directories the agent's tools are allowed to touch beyond the
+   * session cwd. Claude only reads/writes/executes inside cwd +
+   * --add-dir paths even with --dangerously-skip-permissions; without
+   * widening the scope here the agent feels "locked to the project
+   * repo" the moment the user opens code-build inside a workspace.
+   *
+   * Resolution: explicit `codeBuild.additionalTrustedDirs` setting
+   * wins; otherwise — and ONLY when bypass mode is fully enabled —
+   * default to the user's $HOME so the agent can roam over personal
+   * files (~/projects, ~/.config, etc.), matching how terminal claude
+   * behaves after a user runs `cd ~ && claude --dangerously-skip-permissions`.
+   * In default / acceptEdits / plan modes (or bypass without the
+   * user's explicit opt-in), we DON'T auto-widen — the workspace
+   * scope is the safer floor. */
+  private trustedDirs(mode: PermissionMode): string[] {
+    const explicit = this.config.get<string[]>('additionalTrustedDirs', []) ?? [];
+    if (explicit.length > 0) return explicit.filter(Boolean);
+    if (mode === 'bypass' && this.allowBypass) {
+      const home = process.env.HOME;
+      return home ? [home] : [];
+    }
+    return [];
+  }
+
   /** Sticky config remembered across sessions in globalState. The user's
    * last mode / model / effort selection is restored on every new session
    * so they don't have to re-pick bypass + model each time. Bypass is only
@@ -634,7 +658,8 @@ export class SessionManager {
       mode: remembered.mode,
       model: this.meta.model,
       effort: this.meta.effort,
-      allowBypass: this.allowBypass
+      allowBypass: this.allowBypass,
+      additionalTrustedDirs: this.trustedDirs(remembered.mode)
     });
   }
 
@@ -1131,7 +1156,8 @@ export class SessionManager {
       resumeId,
       model: this.meta?.model,
       effort: this.meta?.effort,
-      allowBypass: this.allowBypass
+      allowBypass: this.allowBypass,
+      additionalTrustedDirs: this.trustedDirs(mode)
     });
   }
 
@@ -1220,17 +1246,32 @@ export class SessionManager {
       return this.startupNoticeCleanup;
     }
 
+    // Tag the nudge with a unique key so it can be retroactively
+    // dismissed once the agent actually wakes up. Without this, a
+    // timer that fired at t=30s would leave a "still waiting" item
+    // in the chat even after the agent's first event lands at
+    // t=31s — exactly the stale-notice bug the user reported. The
+    // key embeds spawnStart so reconnect cycles don't collide.
+    const nudgeKey = `startup-nudge-${opts.spawnStart}`;
     const timer = setTimeout(() => {
       const elapsed = Math.round((Date.now() - opts.spawnStart) / 1000);
       this.panel.post({
         type: 'notice',
         text:
           `Still waiting on **${opts.be}** · ${elapsed}s elapsed. The agent may be loading a long transcript or warming a cache. Hover for the actual command.`,
-        detail: `${detail}\nElapsed: ${elapsed}s\nIf this hangs much longer, cancel from the composer and start a fresh chat with /new.`
+        detail: `${detail}\nElapsed: ${elapsed}s\nIf this hangs much longer, cancel from the composer and start a fresh chat with /new.`,
+        key: nudgeKey
       });
     }, 30_000);
 
-    const cleanup = () => clearTimeout(timer);
+    const cleanup = () => {
+      clearTimeout(timer);
+      // Retroactive dismiss: if the timer already fired (the agent
+      // was slow but DID eventually emit), the notice is in the
+      // webview's items list. Tell the webview to prune it so we
+      // don't leave a stale "still waiting" hanging around forever.
+      this.panel.post({ type: 'dismissNotice', key: nudgeKey });
+    };
     this.startupNoticeCleanup = cleanup;
     return cleanup;
   }
@@ -1489,7 +1530,8 @@ export class SessionManager {
       resumeId: earlyResumeId,
       model: this.meta.model,
       effort: this.meta.effort,
-      allowBypass: this.allowBypass
+      allowBypass: this.allowBypass,
+      additionalTrustedDirs: this.trustedDirs(mode)
     });
   }
 }

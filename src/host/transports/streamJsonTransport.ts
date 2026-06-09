@@ -49,7 +49,8 @@ export class StreamJsonTransport extends BaseAgentSession {
       model: this.startOpts!.model,
       resumeId: this.startOpts!.resumeId ?? this.normalizer.sessionId,
       effort: this.startOpts!.effort,
-      allowBypass: this.startOpts!.allowBypass
+      allowBypass: this.startOpts!.allowBypass,
+      additionalTrustedDirs: this.startOpts!.additionalTrustedDirs
     });
 
     // Curated env: keep subscription auth working, never inject API keys here.

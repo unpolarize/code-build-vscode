@@ -31,6 +31,10 @@ export interface BackendSpec {
      * hatch (codeBuild.allowDangerouslySkipPermissions). buildArgs uses it
      * to gate --dangerously-skip-permissions. */
     allowBypass?: boolean;
+    /** Extra directories the agent's tools are allowed to read/write
+     * beyond `cwd`. claude maps these to `--add-dir`; other backends
+     * may ignore. */
+    additionalTrustedDirs?: string[];
   }): string[];
   /** Known model ids for the dropdown. The first entry is treated as the
    * default; empty list disables the picker (UI shows nothing). */
@@ -64,7 +68,7 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     // claude -p --resume <session-id> reads the jsonl claude itself
     // wrote at ~/.claude/projects/<...>/<id>.jsonl on a clean restart.
     supportsResume: true,
-    buildArgs: ({ mode, model, resumeId, effort, allowBypass }) => {
+    buildArgs: ({ mode, model, resumeId, effort, allowBypass, additionalTrustedDirs }) => {
       const args = [
         '-p',
         '--input-format',
@@ -87,6 +91,20 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
       if (resumeId) args.push('--resume', resumeId);
       // claude effort levels: low/medium/high/xhigh/max. `default` skips.
       if (effort && effort !== 'default') args.push('--effort', effort);
+      // --add-dir is the ONLY way to widen claude's tool-access scope
+      // beyond the spawn cwd. --dangerously-skip-permissions only
+      // skips the prompt UI — tools still refuse paths outside cwd +
+      // --add-dir entries. Terminal-claude users typically run from
+      // ~ or have ~/.claude/settings.json pre-trusting their home,
+      // which is why their workflow feels unrestricted. Code-build
+      // spawns from the workspace folder, so without these flags
+      // claude looks "locked to the project repo" — exactly the bug
+      // the user reported. We pass every entry from the host through.
+      if (additionalTrustedDirs && additionalTrustedDirs.length > 0) {
+        for (const dir of additionalTrustedDirs) {
+          if (dir) args.push('--add-dir', dir);
+        }
+      }
       return args;
     }
   },

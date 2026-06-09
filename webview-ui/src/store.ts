@@ -56,8 +56,10 @@ export type ChatItem =
    * actively writing, falling back to a fresh chat). Renders as a soft
    * amber notice instead of the red error styling. `detail` shows in a
    * hover tooltip with the actual command line, cwd, resume id — what
-   * the user needs to diagnose a slow / stuck spawn. */
-  | { kind: 'notice'; id: string; text: string; detail?: string }
+   * the user needs to diagnose a slow / stuck spawn. `key` is used by
+   * dismissNotice to retroactively remove stale notices (e.g., the 30s
+   * "still waiting" nudge after the agent finally emits). */
+  | { kind: 'notice'; id: string; text: string; detail?: string; key?: string }
   /** AskUserQuestion tool call rendered as a clickable card. `answers` is
    * non-null once the user has picked something — we keep the card in the
    * timeline so the choice is part of the conversation history. */
@@ -154,7 +156,22 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, sessions: msg.sessions };
     case 'notice': {
       const items = state.items.slice();
-      items.push({ kind: 'notice', id: nextId(), text: msg.text, detail: msg.detail });
+      items.push({
+        kind: 'notice',
+        id: nextId(),
+        text: msg.text,
+        detail: msg.detail,
+        key: msg.key
+      });
+      return { ...state, items };
+    }
+    case 'dismissNotice': {
+      // Retroactively prune any notice items whose `key` matches —
+      // used to clean up stale "still waiting" nudges once the agent
+      // wakes up. Other ChatItem kinds are untouched.
+      const items = state.items.filter(
+        (it) => !(it.kind === 'notice' && it.key === msg.key)
+      );
       return { ...state, items };
     }
     case 'primerPrompt':

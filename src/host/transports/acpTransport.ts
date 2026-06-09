@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type {
   BackendId,
@@ -149,17 +150,34 @@ export class AcpTransport extends BaseAgentSession {
     return root;
   }
 
+  /** Resolve an agent-requested path. In bypass mode (the user opted
+   * into the dangerous escape hatch) we skip the workspace-root
+   * confinement so grok can touch files anywhere on the filesystem —
+   * mirroring claude's `--dangerously-skip-permissions` semantics
+   * which trusts the agent process completely. Otherwise we run
+   * the pathGuard and reject anything that escapes session.cwd. */
+  private resolveFsPath(requested: string): string {
+    const root = this.requireRoot();
+    if (this.mode === 'bypass' && this.startOpts?.allowBypass) {
+      // No sandbox. Relative requests still resolve against the
+      // session cwd so the agent's "./foo.md" works as it would in a
+      // terminal; absolute requests pass through verbatim.
+      return path.resolve(root, requested);
+    }
+    return confineToRoot(root, requested);
+  }
+
   private async onRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'fs/read_text_file': {
         const p = params as { path: string };
-        const safe = confineToRoot(this.requireRoot(), p.path);
+        const safe = this.resolveFsPath(p.path);
         const content = await fs.readFile(safe, 'utf8');
         return { content };
       }
       case 'fs/write_text_file': {
         const p = params as { path: string; content: string };
-        const safe = confineToRoot(this.requireRoot(), p.path);
+        const safe = this.resolveFsPath(p.path);
         await fs.writeFile(safe, p.content, 'utf8');
         return null;
       }

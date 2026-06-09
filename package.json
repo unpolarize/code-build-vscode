@@ -180,6 +180,12 @@
           "default": false,
           "description": "Permit the 'bypass' permission mode. Security-sensitive; off by default."
         },
+        "codeBuild.additionalTrustedDirs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Extra directories the agent's tools are allowed to read/write beyond the workspace folder (passed to claude as --add-dir, mirrored for ACP backends in bypass mode). Without this, even 'bypass' permission mode keeps the agent scoped to the workspace. Leave empty to use defaults: in bypass mode the user's $HOME is automatically trusted (matches terminal-claude behaviour); in other modes only the workspace is in scope."
+        },
         "codeBuild.binPaths": {
           "type": "object",
           "default": {},

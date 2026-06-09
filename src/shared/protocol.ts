@@ -149,8 +149,20 @@ export type HostToWebview =
    * the user can hover for a multi-line tooltip. Startup notices fill
    * this with the resolved spawn command, cwd, and any --resume id so
    * the user can see WHAT we're actually waiting on when the panel
-   * stalls during "Starting claude agent…". */
-  | { type: 'notice'; text: string; detail?: string }
+   * stalls during "Starting claude agent…".
+   *
+   * `key` lets the host retroactively remove a notice that turned out
+   * to be stale — e.g., the 30s "still waiting" nudge fires, then the
+   * agent's first event arrives at 31s and the nudge is no longer
+   * true. Without dismissal, the stale notice persisted at the bottom
+   * of the chat and looked like an unresolved hang. See dismissNotice. */
+  | { type: 'notice'; text: string; detail?: string; key?: string }
+  /** Remove every notice in the timeline whose `key` matches. No-op when
+   * nothing matches. Used to clean up the 30s "still waiting on claude"
+   * nudge once the agent actually emits an event — without this, a
+   * timer that fired just before the agent woke up sat in the chat
+   * forever and made it look like the turn never finished. */
+  | { type: 'dismissNotice'; key: string }
   /** AskUserQuestion tool call surfaced from the agent. Each entry is one
    * pickable card with the agent's question + N options. Clicking posts
    * `askUserAnswer` which the host converts to the upstream tool_result. */
