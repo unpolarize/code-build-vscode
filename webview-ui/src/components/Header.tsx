@@ -107,6 +107,21 @@ export function Header({
 
       <div className="header-spacer" />
 
+      {state.memoryEntries > 0 && (
+        <span
+          className="memory-chip"
+          title={
+            `Memory: ${state.memoryEntries} entr${state.memoryEntries === 1 ? 'y' : 'ies'} across ${state.memoryFiles} source file${state.memoryFiles === 1 ? '' : 's'} (CLAUDE.md / AGENTS.md / MEMORY.md / ~/.claude / ~/.codex visible to the agent).\n` +
+            Object.entries(state.memoryByProvider)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ') +
+            `\n\nOpen "Memory" in the Code Sessions sidebar for per-source breakdown.`
+          }
+        >
+          🧠 {state.memoryEntries}
+        </span>
+      )}
+
       {state.usage?.costUsd != null && (
         <span className="usage" title={formatUsageTooltip(state)}>
           ${state.usage.costUsd.toFixed(4)}

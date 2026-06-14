@@ -57,6 +57,15 @@ export interface HydrateState {
   sessions: SessionMeta[];
   /** Default backend from settings. */
   defaultBackend: BackendId;
+  /** Memory inventory snapshot. The Header renders a small chip showing
+   * the number of memory entries discovered across CLAUDE.md /
+   * AGENTS.md / MEMORY.md / ~/.claude / ~/.codex sources visible from
+   * the current workspace. Clicking the chip surfaces a tooltip with
+   * the per-provider breakdown. Refreshed on hydrate; live changes
+   * picked up by re-hydration on session swap or panel reload. */
+  memoryEntries: number;
+  memoryFiles: number;
+  memoryByProvider: Record<string, number>;
 }
 
 /** Capability snapshot of one backend, served to the webview on hydrate. */

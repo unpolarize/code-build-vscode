@@ -131,6 +131,12 @@ export interface ChatState {
     sourceBackendId: string;
     llmSummarySupported: boolean;
   } | null;
+  /** Memory inventory snapshot piped through `hydrate`. Drives the
+   * small Memory chip in the Header (clickable to open Code Sessions
+   * Memory tab where available). */
+  memoryEntries: number;
+  memoryFiles: number;
+  memoryByProvider: Record<string, number>;
 }
 
 export const initialState: ChatState = {
@@ -146,7 +152,10 @@ export const initialState: ChatState = {
   commands: [],
   fileSuggestions: [],
   sessions: [],
-  primerPrompt: null
+  primerPrompt: null,
+  memoryEntries: 0,
+  memoryFiles: 0,
+  memoryByProvider: {}
 };
 
 let seq = 0;
@@ -165,7 +174,10 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         session: msg.state.session,
         backends: msg.state.backends,
         allowBypass: msg.state.allowBypass,
-        sessions: msg.state.sessions ?? []
+        sessions: msg.state.sessions ?? [],
+        memoryEntries: msg.state.memoryEntries ?? 0,
+        memoryFiles: msg.state.memoryFiles ?? 0,
+        memoryByProvider: msg.state.memoryByProvider ?? {}
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };

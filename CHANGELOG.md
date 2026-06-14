@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.0 — 2026-06-13
+
+### Memory chip in the header
+
+Companion to Code Sessions 1.2.0's new Memory tab. CB now surfaces
+"how many memories the agent has access to" right in the chat header.
+
+- New `🧠 N` chip between the header spacer and the cost/usage chip. Hover tooltip carries the per-provider breakdown (`claude: 12, codex: 3, …`) and a pointer to the Code Sessions Memory tab for the full inventory.
+- Counts are computed at every `hydrate` via a CB-side `memoryScan.ts` that scans CLAUDE.md / CLAUDE.local.md / AGENTS.md / MEMORY.md / `.claude/CLAUDE.md` / `.claude/rules/*` / `.claude/commands/*` at the workspace root plus `~/.claude/{CLAUDE.md,MEMORY.md}` / `~/.claude/projects/<encoded-cwd>/memory/MEMORY.md` / `~/.codex/{AGENTS.md,memories/}` / `~/.grok/AGENTS.md` at the user scope. Entry count = H2 headers (markdown) or file count (codex memories dir). Fenced-code-aware.
+- `HydrateState` extended with `memoryEntries: number`, `memoryFiles: number`, `memoryByProvider: Record<string, number>`. Backwards-compatible — webview state defaults to zeros when the host didn't populate them.
+- Per-session "how many memories WERE used in this conversation" attribution is NOT in this release — that needs the memory-map work in `@unpolarize/agent-memory-core` to land first. v0.4.0 ships the inventory + global counter.
+
+Per AGENTS.md: 0.3.0 → 0.4.0 (MINOR — new user-facing surface).
+
 ## 0.3.0 — 2026-06-13
 
 ### Per-turn classification chips (§3 from cb-cs-feature-spec.md)

@@ -27,6 +27,7 @@ import {
 } from './persistence/conversationSerializer';
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
+import { scanMemorySources, summariseSources } from './memoryScan';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -281,12 +282,21 @@ export class SessionManager {
     const backends = await detectAll(overrides);
     const allowBypass = this.config.get<boolean>('allowDangerouslySkipPermissions', false);
     const defaultBackend = this.defaultBackend();
+    // Memory inventory snapshot for the Header chip. Cheap scan
+    // (handful of stat()+readFile()s); rerun on every hydrate so a
+    // panel reload or session swap picks up CLAUDE.md edits.
+    const wsRoots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+    const memSources = scanMemorySources(wsRoots);
+    const memTotals = summariseSources(memSources);
     const state: HydrateState = {
       session: this.meta ?? null,
       backends,
       allowBypass,
       sessions: this.store.list().slice(0, 100),
-      defaultBackend
+      defaultBackend,
+      memoryEntries: memTotals.totalEntries,
+      memoryFiles: memTotals.totalFiles,
+      memoryByProvider: memTotals.byProvider
     };
     this.panel.post({ type: 'hydrate', state });
 
