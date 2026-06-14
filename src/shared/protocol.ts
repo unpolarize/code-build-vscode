@@ -163,6 +163,13 @@ export type HostToWebview =
    * timer that fired just before the agent woke up sat in the chat
    * forever and made it look like the turn never finished. */
   | { type: 'dismissNotice'; key: string }
+  /** Topic labels for a completed turn. The host's classifier fires
+   * after each end-of-turn `result` event when `codeBuild.classifyTurns`
+   * is enabled. `turnIndex` is the 0-based index of the user prompt
+   * within this session; the webview maps it to the matching user
+   * bubble (small chips next to the role line). Off by default;
+   * each call costs a small Haiku-tier inference. */
+  | { type: 'turnLabels'; turnIndex: number; labels: string[] }
   /** AskUserQuestion tool call surfaced from the agent. Each entry is one
    * pickable card with the agent's question + N options. Clicking posts
    * `askUserAnswer` which the host converts to the upstream tool_result. */

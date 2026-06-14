@@ -51,6 +51,12 @@ export type ChatItem =
        * "mid-turn" badge so the conversation history shows where the user
        * intervened. */
       interjected?: boolean;
+      /** Topic labels from the host-side classifier (when
+       * `codeBuild.classifyTurns` is on). Rendered as small chips next
+       * to the role line. Populated asynchronously after the
+       * end-of-turn `result` event — undefined until classification
+       * completes. */
+      labels?: string[];
     })
   | (WithTimestamps & { kind: 'assistant'; id: string; text: string })
   | (WithTimestamps & { kind: 'thought'; id: string; text: string })
@@ -175,12 +181,27 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, items };
     }
     case 'dismissNotice': {
-      // Retroactively prune any notice items whose `key` matches —
-      // used to clean up stale "still waiting" nudges once the agent
-      // wakes up. Other ChatItem kinds are untouched.
       const items = state.items.filter(
         (it) => !(it.kind === 'notice' && it.key === msg.key)
       );
+      return { ...state, items };
+    }
+    case 'turnLabels': {
+      // Decorate the Nth user bubble (0-based) with classifier labels.
+      // The host counts user prompts independently; we walk the items
+      // list in order and decorate the matching index. If the index
+      // is out of range (item was cleared via /new), no-op.
+      const items = state.items.slice();
+      let userIdx = -1;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind !== 'user') continue;
+        userIdx += 1;
+        if (userIdx === msg.turnIndex) {
+          items[i] = { ...it, labels: msg.labels };
+          break;
+        }
+      }
       return { ...state, items };
     }
     case 'primerPrompt':

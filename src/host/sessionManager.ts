@@ -26,6 +26,7 @@ import {
   type PrimerMode
 } from './persistence/conversationSerializer';
 import { spawn } from 'node:child_process';
+import { classifyTurn } from './classifier';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -75,6 +76,20 @@ export class SessionManager {
    * claude — both threads are preserved on disk in ~/.codebuild and
    * surface in the history picker either way. */
   private previousSessionByBackend = new Map<BackendId, string>();
+
+  /** 0-based count of user prompts sent in the current session. The
+   * end-of-turn classifier uses this as the `turnIndex` so the
+   * webview can map labels back to the right user bubble even when
+   * the classify call returns out-of-order or after a few seconds.
+   * Reset on openSession / loadExistingSession. */
+  private userTurnsSent = 0;
+  /** Buffered text of the most recent USER prompt — fed to the
+   * classifier on the next `result` event. */
+  private lastUserText = '';
+  /** Buffered text of assistant chunks during the current turn —
+   * accumulated as agent_message_chunk events fire, harvested on
+   * `result`, then cleared. */
+  private currentAssistantBuf = '';
   /** Cleanup for the "still waiting" follow-up timer on startup notices.
    * Invoked when the first agent event arrives or the session is torn
    * down, so the timer doesn't fire after we're already responsive. */
@@ -161,6 +176,12 @@ export class SessionManager {
           this.commitAndTitle(originalText);
           this.store.appendUserText(this.meta!.id, originalText);
         }
+        // Stash for the classifier (paired with the upcoming
+        // assistant text on the next `result`). Bumps turnIndex AFTER
+        // assignment so the count matches the webview's 0-based
+        // user-bubble index in the items list.
+        this.lastUserText = originalText;
+        this.currentAssistantBuf = '';
         const enriched = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
         let blocks = enriched;
         const usedPrimer = this.pendingPrimer;
@@ -628,6 +649,11 @@ export class SessionManager {
 
   private async openSession(backend?: BackendId): Promise<void> {
     this.teardownSession();
+    // Reset per-session classifier state so a fresh chat starts the
+    // turn counter at 0.
+    this.userTurnsSent = 0;
+    this.lastUserText = '';
+    this.currentAssistantBuf = '';
     const id = crypto.randomUUID();
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
@@ -669,6 +695,7 @@ export class SessionManager {
       // TodoWrite) so the webview can render purpose-built UI instead of
       // a generic tool card.
       this.interceptToolCall(update);
+      this.onTurnEvent(update);
       this.captureBackendSessionId(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
@@ -895,6 +922,41 @@ export class SessionManager {
     return parts.join(' · ');
   }
 
+  /** Accumulate streaming assistant text + fire the turn classifier on
+   * end-of-turn. Called from every onEvent handler (openSession /
+   * openExternalSession / loadExistingSession share this so the
+   * behaviour is identical across spawn paths). Off by default —
+   * gated by `codeBuild.classifyTurns`. */
+  private onTurnEvent(update: SessionUpdate): void {
+    if (update.kind === 'agent_message_chunk' && update.content?.type === 'text') {
+      this.currentAssistantBuf += update.content.text ?? '';
+      return;
+    }
+    if (update.kind !== 'result') return;
+    if (!this.config.get<boolean>('classifyTurns', false)) return;
+    if (!this.lastUserText) return;
+    const userTurnIdx = this.userTurnsSent;
+    this.userTurnsSent += 1;
+    const userText = this.lastUserText;
+    const assistantText = this.currentAssistantBuf;
+    this.lastUserText = '';
+    this.currentAssistantBuf = '';
+    if (!this.meta) return;
+    const be = this.meta.backend;
+    if (be !== 'claude') return; // grok one-shot not wired yet
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const bin = overrides['claude'] || 'claude';
+    // Fire-and-forget. Classification is decorative; failures are
+    // swallowed and the chip just doesn't appear. Use Haiku for the
+    // cheap tier; user can override with `codeBuild.classifyModel`.
+    const model = this.config.get<string>('classifyModel', 'haiku');
+    void classifyTurn(userText, assistantText, { backend: be, bin, model }).then((labels) => {
+      if (labels.length > 0) {
+        this.panel.post({ type: 'turnLabels', turnIndex: userTurnIdx, labels });
+      }
+    });
+  }
+
   /** Persist the backend's native session id when the transport surfaces
    * it. Claude assigns its own session id at spawn (independent of our
    * local UUID) and writes its transcript under that id in
@@ -1033,6 +1095,11 @@ export class SessionManager {
     if (args.source !== 'claude' && args.source !== 'grok') return;
 
     this.teardownSession();
+    // Reset per-session classifier state so a fresh chat starts the
+    // turn counter at 0.
+    this.userTurnsSent = 0;
+    this.lastUserText = '';
+    this.currentAssistantBuf = '';
 
     // Map source → backend. Default to claude when an unknown source slips
     // through (defensive — we already validated above).
@@ -1075,6 +1142,7 @@ export class SessionManager {
         });
       }
       this.interceptToolCall(update);
+      this.onTurnEvent(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }
@@ -1471,6 +1539,11 @@ export class SessionManager {
 
   dispose(): void {
     this.teardownSession();
+    // Reset per-session classifier state so a fresh chat starts the
+    // turn counter at 0.
+    this.userTurnsSent = 0;
+    this.lastUserText = '';
+    this.currentAssistantBuf = '';
   }
 
   /** Load a previous persisted session (history + live continuation). Called from the "Open Previous" command. */
@@ -1486,6 +1559,11 @@ export class SessionManager {
     }
 
     this.teardownSession();
+    // Reset per-session classifier state so a fresh chat starts the
+    // turn counter at 0.
+    this.userTurnsSent = 0;
+    this.lastUserText = '';
+    this.currentAssistantBuf = '';
 
     const be = loaded.meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
@@ -1520,6 +1598,7 @@ export class SessionManager {
         });
       }
       this.interceptToolCall(update);
+      this.onTurnEvent(update);
       if (update.kind === 'result' || update.kind === 'error') {
         this.panel.post({ type: 'busy', busy: false });
       }

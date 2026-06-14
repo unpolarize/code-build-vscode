@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 — 2026-06-13
+
+### Per-turn classification chips (§3 from cb-cs-feature-spec.md)
+
+- After each end-of-turn (`result` event), CB now optionally runs a one-shot classifier call against the **active backend** to label the just-finished turn with 1–3 topic chips. The chips render next to the user bubble's role line. Implements notes.md "CB skills to classify all turns of the conversations using current coder model/agent".
+- Off by default. Opt in with `codeBuild.classifyTurns: true`. Model picker: `codeBuild.classifyModel` (default `haiku` for cost-cheapest tier on claude).
+- Only claude backend is wired in v1 (`claude -p --output-format json` one-shot). Grok one-shot mode pending — labels just don't appear for grok turns until that lands.
+- New `src/host/classifier.ts` (~90 LOC) — spawn + parse + 20s timeout, errors swallowed silently (classification is decorative).
+- Protocol gains `turnLabels { turnIndex, labels[] }` host→webview message. Indexed by 0-based user-prompt count so out-of-order arrivals still map correctly.
+- Reducer decorates the user ChatItem with `labels?: string[]`; renders a chip strip with hover tooltip carrying "Classifier label: <name>".
+- Resets cleanly on `/new` and on session switch (per-session turn counter).
+
 ## 0.2.1 — 2026-06-13
 
 ### Better "Files modified" card per turn

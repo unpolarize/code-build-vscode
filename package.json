@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -260,6 +260,16 @@
           "type": "boolean",
           "default": false,
           "description": "Permit the 'bypass' permission mode. Security-sensitive; off by default."
+        },
+        "codeBuild.classifyTurns": {
+          "type": "boolean",
+          "default": false,
+          "description": "After each end-of-turn, run a one-shot classification call on the active backend to label the turn with 1-3 topic chips. Off by default because each call costs a small inference (Haiku tier on claude). Only claude is wired today; grok one-shot mode pending."
+        },
+        "codeBuild.classifyModel": {
+          "type": "string",
+          "default": "haiku",
+          "description": "Model alias passed to the classifier one-shot. 'haiku' is the cheap tier; 'sonnet' or 'opus' work too but rack up cost faster."
         },
         "codeBuild.additionalTrustedDirs": {
           "type": "array",

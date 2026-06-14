@@ -99,6 +99,13 @@ function Item({
             You
             {item.interjected && <span className="msg-interjected-badge">↗ mid-turn</span>}
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+            {item.labels && item.labels.length > 0 && (
+              <span className="msg-labels">
+                {item.labels.map((l, i) => (
+                  <span key={i} className="msg-label-chip" title={`Classifier label: ${l}`}>{l}</span>
+                ))}
+              </span>
+            )}
           </div>
           <Markdown className="msg-body" text={item.text} />
           {item.images && item.images.length > 0 && (

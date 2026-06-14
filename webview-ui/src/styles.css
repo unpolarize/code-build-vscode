@@ -145,6 +145,28 @@ body {
   background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
   border-color: var(--vscode-focusBorder);
 }
+
+/* Classifier label chips on the user bubble. The host's classifier
+ * fires async after end-of-turn; these chips appear ~10-20s after
+ * the agent finishes its reply (Haiku turnaround). Each chip is a
+ * normalised lowercase topic. */
+.msg-labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.msg-label-chip {
+  font-size: 0.85em;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(99, 102, 241, 0.18);
+  color: var(--vscode-foreground);
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  cursor: help;
+}
 .msg-body {
   white-space: pre-wrap;
   word-break: break-word;
