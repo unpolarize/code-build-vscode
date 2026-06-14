@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
-import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID } from './host/panel';
+import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID, preferredEditorColumn } from './host/panel';
 import { SessionManager } from './host/sessionManager';
 import { ChatViewProvider } from './host/chatViewProvider';
 import { SessionStore } from './host/persistence/store';
 import { listAllSessions } from './host/persistence/externalSources';
+import { MemoryTreeProvider, MEMORY_VIEW_ID, registerMemoryCommands } from './host/memoryView';
 import type { SessionMeta, SessionSource } from './shared/protocol';
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -27,10 +28,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('codeBuild.newConversation', () => openChat()),
     vscode.commands.registerCommand('codeBuild.openInNewTab', () =>
-      openChat(vscode.ViewColumn.Active)
+      openChat(preferredEditorColumn())
     ),
     vscode.commands.registerCommand('codeBuild.openInNewWindow', async () => {
-      openChat(vscode.ViewColumn.Active);
+      openChat(preferredEditorColumn());
       // No programmatic move-to-window API exists; trigger the built-in gesture.
       await vscode.commands.executeCommand('workbench.action.moveEditorToNewWindow');
     }),
@@ -57,7 +58,7 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage('Code Build: openExternalSession needs {source, sessionId, cwd}.');
           return;
         }
-        const panel = ChatPanel.create(context.extensionUri, vscode.ViewColumn.Active);
+        const panel = ChatPanel.create(context.extensionUri, preferredEditorColumn());
         const mgr = attach(panel);
         mgr.queueExternal(args);
       }
@@ -72,6 +73,16 @@ export function activate(context: vscode.ExtensionContext): void {
       { webviewOptions: { retainContextWhenHidden: true } }
     )
   );
+
+  // Live Memory tree view — explicit-memory-management surface backed by
+  // @unpolarize/agent-memory-core. Lists every MemoryEntry the active
+  // workspace exposes across Claude / Codex / Grok / auto-memory / Codex
+  // memories. Right-click to pin / unpin / hide / unhide / edit / delete.
+  const memoryView = new MemoryTreeProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider(MEMORY_VIEW_ID, memoryView),
+  );
+  registerMemoryCommands(context, memoryView);
 
   // Restore chat panels after reload / window-move. VS Code stores the
   // panel's `state` blob and hands it back on deserialize — we stash the
@@ -140,7 +151,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const ext = vscode.extensions.getExtension('zhirafovod.code-build-vscode');
     if (!ext) return;
 
-    const panel = ChatPanel.create(ext.extensionUri, vscode.ViewColumn.Active);
+    const panel = ChatPanel.create(ext.extensionUri, preferredEditorColumn());
     const mgr = attach(panel);
     const src = picked.meta.source ?? 'codebuild';
     if (src === 'codebuild') {

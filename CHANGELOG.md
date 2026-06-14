@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — 2026-06-13
+
+### Fix: "+ New conversation" + external-session opens no longer split the editor
+
+Same root cause as code-sessions 1.2.1: `vscode.ViewColumn.Active` is unreliable when commands fire from a sidebar tree (active text editor is undefined → VS Code falls through to "create new split column"). Reported in notes.md as "very annoying."
+
+Fix: new `preferredEditorColumn()` helper in `src/host/panel.ts` (exported) queries `vscode.window.tabGroups.activeTabGroup` first (always-defined focused editor group), then falls back to the active editor's column, then `ViewColumn.One`. Applied to all four panel-creation sites: `ChatPanel.create` default, `codeBuild.openInNewTab`, `codeBuild.openInNewWindow`, `codeBuild.openExternalSession`, `openPreviousSession`.
+
+Result: the `+ New conversation` icon in the header, "Resume session" / "Open in Code Build" cross-extension actions, and the "Open in new tab/window" commands all reuse the existing editor area instead of stacking a new column next to it.
+
 ## 0.4.0 — 2026-06-13
 
 ### Memory chip in the header
