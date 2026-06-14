@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -29,7 +29,8 @@
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
-    "onWebviewPanel:codeBuild.chat"
+    "onWebviewPanel:codeBuild.chat",
+    "onView:codeBuild.liveMemory"
   ],
   "contributes": {
     "viewsContainers": {
@@ -47,6 +48,13 @@
           "id": "codeBuild.sidebar",
           "name": "Chat",
           "type": "webview"
+        },
+        {
+          "id": "codeBuild.liveMemory",
+          "name": "Live Memory",
+          "type": "tree",
+          "contextualTitle": "Memory entries the active agent will read",
+          "icon": "$(database)"
         }
       ]
     },
@@ -55,6 +63,42 @@
         "command": "codeBuild.newConversation",
         "title": "Code Build: New Conversation",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "codeBuild.memory.refresh",
+        "title": "Refresh",
+        "icon": "$(refresh)",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.pin",
+        "title": "Pin to context",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.unpin",
+        "title": "Unpin",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.hide",
+        "title": "Hide from context",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.unhide",
+        "title": "Unhide",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.edit",
+        "title": "Edit in source file",
+        "category": "Code Build / Memory"
+      },
+      {
+        "command": "codeBuild.memory.delete",
+        "title": "Delete from source",
+        "category": "Code Build / Memory"
       },
       {
         "command": "codeBuild.openInNewTab",
@@ -124,6 +168,43 @@
           "command": "codeBuild.openInNewTab",
           "group": "navigation@3",
           "when": "view == codeBuild.sidebar"
+        },
+        {
+          "command": "codeBuild.memory.refresh",
+          "when": "view == codeBuild.liveMemory",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "codeBuild.memory.pin",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /^memoryEntry($|\\.hidden$)/",
+          "group": "1_pin"
+        },
+        {
+          "command": "codeBuild.memory.unpin",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /\\.pinned/",
+          "group": "1_pin"
+        },
+        {
+          "command": "codeBuild.memory.hide",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /^memoryEntry($|\\.pinned$)/",
+          "group": "2_hide"
+        },
+        {
+          "command": "codeBuild.memory.unhide",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /\\.hidden/",
+          "group": "2_hide"
+        },
+        {
+          "command": "codeBuild.memory.edit",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /^memoryEntry/",
+          "group": "3_edit"
+        },
+        {
+          "command": "codeBuild.memory.delete",
+          "when": "view == codeBuild.liveMemory && viewItem =~ /^memoryEntry/",
+          "group": "9_destructive"
         }
       ],
       "webviewPanel/title": [
@@ -230,6 +311,7 @@
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
+    "@unpolarize/agent-memory-core": "file:../agent-memory-core",
     "dompurify": "^3.4.7",
     "marked": "^18.0.4",
     "react": "^18.3.1",

@@ -33,8 +33,15 @@ export interface TaskEntry {
   activeForm?: string;
 }
 
+/** Common timestamp fields on every chat item. `createdAt` is stamped when
+ * the item first lands in the items list; `updatedAt` (optional) tracks
+ * the last streaming patch (assistant/thought chunks merge into existing
+ * items — we keep the first-chunk timestamp but bump updatedAt so a
+ * hover tooltip can show both). */
+type WithTimestamps = { createdAt: number; updatedAt?: number };
+
 export type ChatItem =
-  | {
+  | (WithTimestamps & {
       kind: 'user';
       id: string;
       text: string;
@@ -44,40 +51,23 @@ export type ChatItem =
        * "mid-turn" badge so the conversation history shows where the user
        * intervened. */
       interjected?: boolean;
-    }
-  | { kind: 'assistant'; id: string; text: string }
-  | { kind: 'thought'; id: string; text: string }
-  | { kind: 'tool'; id: string; tool: ToolCall }
-  | { kind: 'plan'; id: string; entries: { content: string; status: string }[] }
-  | { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] }
-  | { kind: 'error'; id: string; text: string }
-  /** Non-error informational banner — used for things the user should
-   * know about but that aren't failures (e.g. claude session still
-   * actively writing, falling back to a fresh chat). Renders as a soft
-   * amber notice instead of the red error styling. `detail` shows in a
-   * hover tooltip with the actual command line, cwd, resume id — what
-   * the user needs to diagnose a slow / stuck spawn. `key` is used by
-   * dismissNotice to retroactively remove stale notices (e.g., the 30s
-   * "still waiting" nudge after the agent finally emits). */
-  | { kind: 'notice'; id: string; text: string; detail?: string; key?: string }
-  /** AskUserQuestion tool call rendered as a clickable card. `answers` is
-   * non-null once the user has picked something — we keep the card in the
-   * timeline so the choice is part of the conversation history. */
-  | {
+    })
+  | (WithTimestamps & { kind: 'assistant'; id: string; text: string })
+  | (WithTimestamps & { kind: 'thought'; id: string; text: string })
+  | (WithTimestamps & { kind: 'tool'; id: string; tool: ToolCall })
+  | (WithTimestamps & { kind: 'plan'; id: string; entries: { content: string; status: string }[] })
+  | (WithTimestamps & { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] })
+  | (WithTimestamps & { kind: 'error'; id: string; text: string })
+  | (WithTimestamps & { kind: 'notice'; id: string; text: string; detail?: string; key?: string })
+  | (WithTimestamps & {
       kind: 'askUser';
       id: string;
       toolCallId: string;
       questions: AskUserQuestionEntry[];
       answers: Record<string, string> | null;
-    }
-  /** TodoWrite-style task list snapshot. The agent owns updates; the card
-   * is read-only from the user's side. */
-  | { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] }
-  /** Audit card showing exactly what the host injected into the agent's
-   * stdin on a given turn (the carry-over primer, resolved @-mentions,
-   * raw user text, tool_result payloads). Collapsed by default;
-   * expanding it reveals the full content of each section. */
-  | {
+    })
+  | (WithTimestamps & { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] })
+  | (WithTimestamps & {
       kind: 'context';
       id: string;
       origin: 'prompt' | 'tool_result' | 'system';
@@ -88,7 +78,7 @@ export type ChatItem =
         chars: number;
         kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
       }>;
-    };
+    });
 
 export interface PendingPermission {
   requestId: string;
@@ -139,6 +129,9 @@ export const initialState: ChatState = {
 
 let seq = 0;
 const nextId = () => `i${seq++}`;
+/** Now-in-ms helper. Centralised so a future test harness can swap in a
+ * deterministic clock without sed'ing every call site. */
+const now = (): number => Date.now();
 
 /** Pure reducer: (state, host message) -> next state. Streaming chunks patch in place. */
 export function reduce(state: ChatState, msg: HostToWebview): ChatState {
@@ -158,7 +151,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       const items = state.items.slice();
       items.push({
         kind: 'notice',
-        id: nextId(),
+        id: nextId(), createdAt: now(),
         text: msg.text,
         detail: msg.detail,
         key: msg.key
@@ -192,7 +185,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       const items = state.items.slice();
       items.push({
         kind: 'askUser',
-        id: nextId(),
+        id: nextId(), createdAt: now(),
         toolCallId: msg.toolCallId,
         questions: msg.questions,
         answers: null
@@ -203,7 +196,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       const items = state.items.slice();
       items.push({
         kind: 'context',
-        id: nextId(),
+        id: nextId(), createdAt: now(),
         origin: msg.origin,
         summary: msg.summary,
         sections: msg.sections
@@ -219,9 +212,17 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         .map((it, i) => ({ it, i }))
         .reverse()
         .find(({ it }) => it.kind === 'tasks')?.i;
+      const existing = lastTasksIdx != null ? items[lastTasksIdx] : null;
       const next: ChatItem = {
         kind: 'tasks',
-        id: lastTasksIdx != null ? items[lastTasksIdx].id : nextId(),
+        id: existing?.id ?? nextId(),
+        // Preserve the original card's createdAt across TodoWrite
+        // snapshot rewrites so the timestamp reads "when the
+        // checklist FIRST appeared", not "when the latest update
+        // landed". updatedAt tracks the latest snapshot for hover
+        // detail.
+        createdAt: existing?.createdAt ?? now(),
+        updatedAt: existing ? now() : undefined,
         toolCallId: msg.toolCallId,
         tasks: msg.tasks
       };
@@ -268,7 +269,7 @@ export function appendUser(
 ): ChatState {
   return {
     ...state,
-    items: [...state.items, { kind: 'user', id: nextId(), text, images, interjected }],
+    items: [...state.items, { kind: 'user', id: nextId(), createdAt: now(), text, images, interjected }],
     busy: true
   };
 }
@@ -293,9 +294,13 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       const text = blockText(u.content);
       const last = items[items.length - 1];
       if (last && last.kind === 'assistant') {
-        items[items.length - 1] = { ...last, text: last.text + text };
+        // Preserve createdAt across chunk merges so the bubble's
+        // stamp reads "when the assistant STARTED replying", not
+        // "when the last token landed". updatedAt carries the
+        // latest-chunk time for hover detail.
+        items[items.length - 1] = { ...last, text: last.text + text, updatedAt: now() };
       } else {
-        items.push({ kind: 'assistant', id: nextId(), text });
+        items.push({ kind: 'assistant', id: nextId(), createdAt: now(), text });
       }
       return { ...state, items };
     }
@@ -310,9 +315,9 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       if (!text) return state;
       const last = items[items.length - 1];
       if (last && last.kind === 'thought') {
-        items[items.length - 1] = { ...last, text: last.text + text };
+        items[items.length - 1] = { ...last, text: last.text + text, updatedAt: now() };
       } else {
-        items.push({ kind: 'thought', id: nextId(), text });
+        items.push({ kind: 'thought', id: nextId(), createdAt: now(), text });
       }
       return { ...state, items };
     }
@@ -329,7 +334,7 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       if (name === 'AskUserQuestion' || name === 'TodoWrite' || name === 'todo_write') {
         return state;
       }
-      items.push({ kind: 'tool', id: nextId(), tool: u.toolCall });
+      items.push({ kind: 'tool', id: nextId(), createdAt: now(), tool: u.toolCall });
       return { ...state, items };
     }
     case 'tool_call_update': {
@@ -343,7 +348,7 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       return { ...state, items };
     }
     case 'plan':
-      items.push({ kind: 'plan', id: nextId(), entries: u.entries });
+      items.push({ kind: 'plan', id: nextId(), createdAt: now(), entries: u.entries });
       return { ...state, items };
     case 'available_commands_update':
       return { ...state, commands: u.commands };
@@ -359,7 +364,7 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
     case 'result': {
       const files = collectModifiedFiles(items);
       if (files.length) {
-        items.push({ kind: 'files', id: nextId(), files });
+        items.push({ kind: 'files', id: nextId(), createdAt: now(), files });
       }
       return {
         ...state,
@@ -369,7 +374,7 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       };
     }
     case 'error':
-      items.push({ kind: 'error', id: nextId(), text: u.message });
+      items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message });
       return { ...state, items, busy: false };
     case 'permission_request':
       return {
@@ -480,22 +485,22 @@ function replayRecordsToItems(records: Array<{ type: string; text?: string; upda
   const items: ChatItem[] = [];
   for (const rec of records) {
     if (rec.type === 'user' && rec.text) {
-      items.push({ kind: 'user', id: nextId(), text: rec.text });
+      items.push({ kind: 'user', id: nextId(), createdAt: now(), text: rec.text });
     } else if (rec.type === 'update' && rec.update) {
       const u = rec.update;
       if (u.kind === 'agent_message_chunk' && u.content?.text) {
         const last = items[items.length - 1];
         if (last && last.kind === 'assistant') {
-          items[items.length - 1] = { ...last, text: last.text + (u.content.text || '') };
+          items[items.length - 1] = { ...last, text: last.text + (u.content.text || ''), updatedAt: now() };
         } else {
-          items.push({ kind: 'assistant', id: nextId(), text: u.content.text || '' });
+          items.push({ kind: 'assistant', id: nextId(), createdAt: now(), text: u.content.text || '' });
         }
       } else if (u.kind === 'tool_call') {
-        items.push({ kind: 'tool', id: nextId(), tool: u.toolCall });
+        items.push({ kind: 'tool', id: nextId(), createdAt: now(), tool: u.toolCall });
       } else if (u.kind === 'plan') {
-        items.push({ kind: 'plan', id: nextId(), entries: u.entries || [] });
+        items.push({ kind: 'plan', id: nextId(), createdAt: now(), entries: u.entries || [] });
       } else if (u.kind === 'error') {
-        items.push({ kind: 'error', id: nextId(), text: u.message || 'Error' });
+        items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message || 'Error' });
       }
     }
   }

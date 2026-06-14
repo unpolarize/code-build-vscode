@@ -64,6 +64,17 @@ export class SessionManager {
   private primerPending = false;
   /** Blocks held while `primerPending` is true. Flushed on completion. */
   private queuedPromptBlocks?: ContentBlock[];
+
+  /** Per-backend memory of the most recent session id used in THIS chat
+   * panel. When the user flips claude → grok → claude, we restore the
+   * original claude session (with full transcript + native --resume)
+   * instead of spawning a fresh blank one. Cleared on `/new` and on
+   * panel teardown. The "no new messages were added" intent from
+   * notes.md is best served by simply restoring: if the user typed
+   * something in grok, they can still flip back to the original
+   * claude — both threads are preserved on disk in ~/.codebuild and
+   * surface in the history picker either way. */
+  private previousSessionByBackend = new Map<BackendId, string>();
   /** Cleanup for the "still waiting" follow-up timer on startup notices.
    * Invoked when the first agent event arrives or the session is torn
    * down, so the timer doesn't fire after we're already responsive. */
@@ -107,6 +118,9 @@ export class SessionManager {
         break;
       }
       case 'newSession':
+        // Fresh slate — clear the per-backend restore memory so the
+        // new chat doesn't accidentally inherit any prior thread.
+        this.previousSessionByBackend.clear();
         await this.openSession(msg.backend);
         break;
       case 'pickBackend':
@@ -283,6 +297,38 @@ export class SessionManager {
     const prevBackend = this.meta?.backend;
     const prevId = this.meta?.id;
     const prevModel = this.meta?.model;
+
+    // Remember the outgoing session id so a flip back to the original
+    // backend lands on the SAME session (with --resume on backends
+    // that support it). Without this, every switch creates a fresh
+    // session and the user "loses" the prior thread until they fish
+    // it back out of the history picker. Per notes.md: "When in CB
+    // switching from one agent to another one — do not lose the
+    // previous conversation thread, if no new messages were added."
+    if (prevBackend && prevId && prevBackend !== backend) {
+      this.previousSessionByBackend.set(prevBackend, prevId);
+    }
+
+    // Fast path: the user previously had a session in this target
+    // backend in this chat panel. Restore it instead of spawning a
+    // fresh one + offering a primer. Skips the handoff banner
+    // entirely — they're rejoining their own thread, not handing
+    // off across agents.
+    const restoreId = this.previousSessionByBackend.get(backend);
+    if (restoreId && restoreId !== this.meta?.id) {
+      // Drop the entry so a SECOND flip-back gets fresh behaviour
+      // (if the user wanted continued restore-on-flip, they can
+      // pick from the history picker explicitly).
+      this.previousSessionByBackend.delete(backend);
+      this.panel.post({
+        type: 'notice',
+        text: `Restoring your earlier **${backendLabel(backend)}** thread (\`${restoreId.slice(0, 8)}\`) — no carry-over needed, the agent already has its own context.`,
+        detail: `Per-backend session memory: when you flip claude → grok → claude (or vice-versa), the original session is restored instead of a fresh spawn + primer dance. This keeps the thread you were in the middle of, with native --resume on supported backends.`,
+        key: `restore-${restoreId}`
+      });
+      await this.loadExistingSession(restoreId);
+      return;
+    }
     // Snapshot the prior transcript BEFORE we tear the session down.
     let captured:
       | {

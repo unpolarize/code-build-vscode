@@ -88,6 +88,21 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   opacity: 0.6;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+/* Per-bubble timestamp chip. Sits next to the role label
+ * ("You", "Agent", "Plan", …). Auto-updates every 30s in the
+ * TimeChip component. Hover tooltip carries the ISO timestamp(s). */
+.msg-time {
+  font-size: 0.95em;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  opacity: 0.7;
+  cursor: help;
 }
 .msg-body {
   white-space: pre-wrap;

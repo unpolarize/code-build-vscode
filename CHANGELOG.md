@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0 — 2026-06-13
+
+Features driven from the notes.md "next session (CB & CS)" punchlist.
+
+### Per-message timestamps
+
+- Every chat bubble (user / assistant / thought / tool / files / plan / error / notice / askUser / tasks / context) now renders a small relative-time chip next to the role label: `just now` → `15s ago` → `7m ago` → `at 14:32` → `2026-06-13 14:32`. The chip auto-updates every 30s while the panel is open.
+- Hover the chip for the absolute ISO 8601 timestamp(s). Streaming assistant / thought chunks AND TodoWrite snapshot rewrites preserve the FIRST `createdAt` and surface the latest `updatedAt` in the hover tooltip, so the bubble reads "when did this *start*" with "last touched at X" available on demand.
+- New helpers in `webview-ui/src/util/time.ts`: `formatRelative`, `formatIso`, `formatHover`.
+- `ChatItem` union extended with `createdAt: number` (required) + `updatedAt?: number` (optional, set on chunk merges + tasks snapshots).
+
+### Per-backend session memory across switches
+
+- Switching backends (claude ↔ grok) used to create a fresh session on every flip — flip claude → grok → claude and you'd end up in a brand-new claude session, the previous thread effectively orphaned in the history picker.
+- New `previousSessionByBackend: Map<BackendId, string>` in `SessionManager` remembers the session id for each backend used in this chat panel. On switch-back to a backend that has a remembered session, `loadExistingSession` is invoked instead of `openSession` — the original thread is restored with full transcript + native `--resume` on backends that support it (claude). The primer banner is skipped entirely; the user is rejoining their own thread, not handing off across agents.
+- A soft amber notice announces the restore so the user knows what happened: *"Restoring your earlier Claude Code thread (`xxxxxxxx`) — no carry-over needed, the agent already has its own context."*
+- Cleared on `/new` (fresh slate intent). A second flip-back after the first restore intentionally creates a fresh session — the user can pull the old one from the history picker if they need it.
+
+### Spec coordination
+
+- `knowledge/tech/projects/code-build/cb-cs-feature-spec.md` in the docs workspace documents the remaining four feature requests (memory maps, turn classification, files-changed polish, switch-without-loss, timestamps) with status + sequencing. Items #1 (browser personal profile) and #6/#7 (this release) are done; #4 (files-changed polish) and #3 (turn classifier) follow.
+
 ## 0.1.0 — 2026-06-13
 
 First Marketplace-targeted build. Bundles the cross-backend handoff

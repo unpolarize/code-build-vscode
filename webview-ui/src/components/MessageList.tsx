@@ -1,10 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { TaskListCard } from './TaskListCard';
 import { post } from '../vscodeApi';
+import { formatRelative, formatHover } from '../util/time';
 
 interface Props {
   items: ChatItem[];
@@ -58,6 +59,23 @@ export function MessageList({ items, busy, onAskUserAnswer }: Props) {
   );
 }
 
+/** Small live-updating relative-time chip rendered next to each message
+ * role label. Refreshes every 30s so "just now" → "1m ago" without
+ * waiting for the next render trigger. Hover tooltip carries the
+ * absolute ISO timestamp(s). */
+function TimeChip({ createdAt, updatedAt }: { createdAt: number; updatedAt?: number }) {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => force((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <time className="msg-time" title={formatHover(createdAt, updatedAt)} dateTime={new Date(createdAt).toISOString()}>
+      {formatRelative(createdAt)}
+    </time>
+  );
+}
+
 function Item({
   item,
   onAskUserAnswer
@@ -80,6 +98,7 @@ function Item({
           <div className="msg-role">
             You
             {item.interjected && <span className="msg-interjected-badge">↗ mid-turn</span>}
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
           </div>
           <Markdown className="msg-body" text={item.text} />
           {item.images && item.images.length > 0 && (
@@ -94,17 +113,14 @@ function Item({
     case 'assistant':
       return (
         <div className="msg msg-assistant">
-          <div className="msg-role">Agent</div>
+          <div className="msg-role">
+            Agent
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </div>
           <Markdown className="msg-body" text={item.text} />
         </div>
       );
     case 'thought': {
-      // Show a content-length hint in the summary so the user sees
-      // there IS thinking text to expand. The bubble also reports the
-      // first line as a preview so collapsed thoughts aren't an
-      // anonymous "Thinking…". Without the preview, the user reported
-      // they thought thoughts were empty and clicking didn't do
-      // anything.
       const firstLine =
         item.text
           .split('\n')
@@ -113,7 +129,11 @@ function Item({
       const preview = firstLine.length > 70 ? firstLine.slice(0, 70) + '…' : firstLine;
       return (
         <details className="msg msg-thought">
-          <summary>Thinking… {preview && <span className="msg-thought-preview">— {preview}</span>}</summary>
+          <summary>
+            Thinking…{' '}
+            {preview && <span className="msg-thought-preview">— {preview}</span>}
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </summary>
           <Markdown className="msg-body" text={item.text} />
         </details>
       );
@@ -123,7 +143,10 @@ function Item({
     case 'files':
       return (
         <div className="msg msg-files">
-          <div className="msg-role">Modified files ({item.files.length})</div>
+          <div className="msg-role">
+            Modified files ({item.files.length})
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </div>
           <div className="files-list">
             {item.files.map((f, i) => (
               <div
@@ -145,7 +168,10 @@ function Item({
     case 'plan':
       return (
         <div className="msg msg-plan">
-          <div className="msg-role">Plan</div>
+          <div className="msg-role">
+            Plan
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </div>
           <ol>
             {item.entries.map((e, i) => (
               <li key={i} className={`plan-${e.status}`}>
@@ -158,7 +184,10 @@ function Item({
     case 'error':
       return (
         <div className="msg msg-error">
-          <div className="msg-role">Error</div>
+          <div className="msg-role">
+            Error
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </div>
           <div className="msg-body">{item.text}</div>
         </div>
       );
@@ -170,7 +199,10 @@ function Item({
         // moved in 60 seconds. The role label is also `title`d so the
         // tooltip shows even when hovering the small "Notice" tag.
         <div className="msg msg-notice" title={item.detail}>
-          <div className="msg-role" title={item.detail}>Notice</div>
+          <div className="msg-role" title={item.detail}>
+            Notice
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </div>
           <Markdown className="msg-body" text={item.text} />
         </div>
       );
