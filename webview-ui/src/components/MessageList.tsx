@@ -149,17 +149,40 @@ function Item({
           </div>
           <div className="files-list">
             {item.files.map((f, i) => (
-              <div
-                key={i}
-                className="files-item"
-                title={f.path}
-                onClick={() => post({ type: 'revealLocation', path: f.path })}
-              >
-                <span className="files-path">{f.path}</span>
+              <div key={i} className="files-item" title={f.path}>
+                <span
+                  className="files-path"
+                  onClick={() => post({ type: 'revealLocation', path: f.path })}
+                >
+                  {f.path}
+                </span>
                 <span className="files-stat">
                   {f.added > 0 && <span className="files-add">+{f.added}</span>}
                   {f.removed > 0 && <span className="files-del">-{f.removed}</span>}
                 </span>
+                {/* "Open diff" affordance — launches VS Code's
+                    side-by-side diff view via EditorTools.openDiff.
+                    Only shown when we captured both halves of the
+                    diff from the tool's content block; rawInput-only
+                    fallbacks don't have the before-text so the
+                    button is hidden. */}
+                {f.oldText != null && f.newText != null && (
+                  <button
+                    className="files-diff-btn"
+                    title="Open side-by-side diff"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      post({
+                        type: 'openDiff',
+                        path: f.path,
+                        oldText: f.oldText ?? '',
+                        newText: f.newText ?? ''
+                      });
+                    }}
+                  >
+                    diff
+                  </button>
+                )}
               </div>
             ))}
           </div>

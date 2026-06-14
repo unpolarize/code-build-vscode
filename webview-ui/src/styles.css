@@ -104,6 +104,47 @@ body {
   opacity: 0.7;
   cursor: help;
 }
+
+/* Files-card per-row layout. The file path is clickable
+ * (revealLocation); the diff button launches openDiff. */
+.files-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.files-path {
+  cursor: pointer;
+  font-family: var(--vscode-editor-font-family, monospace);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.files-path:hover {
+  text-decoration: underline;
+}
+.files-stat {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+.files-add { color: var(--vscode-charts-green, #4ade80); margin-right: 4px; }
+.files-del { color: var(--vscode-charts-red, #f87171); }
+.files-diff-btn {
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  border-radius: 3px;
+  padding: 1px 8px;
+  font-size: 0.75em;
+  cursor: pointer;
+  color: var(--vscode-foreground);
+  opacity: 0.7;
+}
+.files-diff-btn:hover {
+  opacity: 1;
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+  border-color: var(--vscode-focusBorder);
+}
 .msg-body {
   white-space: pre-wrap;
   word-break: break-word;

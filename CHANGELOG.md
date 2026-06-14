@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-06-13
+
+### Better "Files modified" card per turn
+
+- The card now exposes a per-file **"diff" button** that launches VS Code's side-by-side diff view (via the existing `EditorTools.openDiff` host bridge). Shown only when the tool emitted a diff content block (we have both before + after blobs); rawInput-only fallbacks hide the button.
+- The file path stays clickable for reveal-in-editor; the diff button is a sibling control with its own hover treatment, so the two affordances don't collide.
+- Diff blobs are capped at 10 KB each so a 5-MB-file edit doesn't bloat the transcript; the host-side diff view still works for larger files.
+- New CSS rules: `.files-item` flex row, `.files-path` cursor + truncation, `.files-diff-btn` ghost button.
+- Per-turn aggregation now KEEPS the earliest `oldText` and LATEST `newText` when multiple tool calls touch the same file in one turn — so the diff button shows the FULL delta for that turn, not the latest micro-edit.
+
 ## 0.2.0 — 2026-06-13
 
 Features driven from the notes.md "next session (CB & CS)" punchlist.

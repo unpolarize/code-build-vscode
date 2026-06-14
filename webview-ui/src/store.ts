@@ -56,7 +56,23 @@ export type ChatItem =
   | (WithTimestamps & { kind: 'thought'; id: string; text: string })
   | (WithTimestamps & { kind: 'tool'; id: string; tool: ToolCall })
   | (WithTimestamps & { kind: 'plan'; id: string; entries: { content: string; status: string }[] })
-  | (WithTimestamps & { kind: 'files'; id: string; files: { path: string; added: number; removed: number }[] })
+  | (WithTimestamps & {
+      kind: 'files';
+      id: string;
+      files: {
+        path: string;
+        added: number;
+        removed: number;
+        /** Reconstructed before/after blobs for the agent's edit, when
+         * the tool emitted a diff content block. Used by the
+         * "Open diff" button to launch the host-side
+         * `EditorTools.openDiff`. Capped at 10 KB each so a long
+         * file doesn't bloat the transcript. Undefined when the
+         * tool didn't emit diff content (rawInput-only fallback). */
+        oldText?: string;
+        newText?: string;
+      }[];
+    })
   | (WithTimestamps & { kind: 'error'; id: string; text: string })
   | (WithTimestamps & { kind: 'notice'; id: string; text: string; detail?: string; key?: string })
   | (WithTimestamps & {
@@ -429,8 +445,25 @@ function fileFromToolInput(toolName: string, rawInput: unknown): string | null {
  *      etc.) — catches edits whose content blocks are text-only tool_results.
  *   3. tool.locations[].path (legacy fallback) for tools that fill it in.
  */
-function collectModifiedFiles(items: ChatItem[]): { path: string; added: number; removed: number }[] {
-  const map = new Map<string, { path: string; added: number; removed: number }>();
+/** Cap each before/after blob at 10 KB so a 5MB-file edit doesn't
+ * inflate the transcript. The "Open diff" UI is still useful for
+ * larger files via the host-side diff view; the inline blobs here are
+ * the fallback when the user wants a quick mini-diff in the card. */
+const DIFF_BLOB_CAP = 10_240;
+function clipBlob(s: string): string {
+  return s.length > DIFF_BLOB_CAP ? s.slice(0, DIFF_BLOB_CAP) + '\n…(truncated)' : s;
+}
+
+interface FileChange {
+  path: string;
+  added: number;
+  removed: number;
+  oldText?: string;
+  newText?: string;
+}
+
+function collectModifiedFiles(items: ChatItem[]): FileChange[] {
+  const map = new Map<string, FileChange>();
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
     if (it.kind === 'user' || it.kind === 'files') break; // turn boundary
@@ -443,12 +476,16 @@ function collectModifiedFiles(items: ChatItem[]): { path: string; added: number;
       const entry = map.get(d.path) ?? { path: d.path, added: 0, removed: 0 };
       entry.added += added;
       entry.removed += removed;
+      // Capture the before/after blobs so the "Open diff" button can
+      // ship them to the host (EditorTools.openDiff). When multiple
+      // tool calls touch the same file in one turn, KEEP THE FIRST
+      // oldText (earliest snapshot) and the LATEST newText (final
+      // state). This is the diff a user actually wants to see — the
+      // full delta for that turn, not the per-step micro-diffs.
+      if (entry.oldText == null) entry.oldText = clipBlob(d.oldText);
+      entry.newText = clipBlob(d.newText);
       map.set(d.path, entry);
     }
-    // Edit/write tool whose result was text-only (no diff content block):
-    // pull the file path from the tool's name + raw input. Lets the
-    // "Modified files" tile appear for grok / claude tools that don't
-    // emit diff blocks (Edit, Write, search_replace, etc.).
     if (!diffs.length) {
       const pathFromInput = fileFromToolInput(it.tool.title, it.tool.rawInput);
       if (pathFromInput && !map.has(pathFromInput)) {
