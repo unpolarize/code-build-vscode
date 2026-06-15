@@ -10,6 +10,7 @@ import { Composer } from './components/Composer';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
+import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
@@ -156,6 +157,27 @@ export function App() {
         onResumeSession={onResumeSession}
         onRefreshSessions={() => post({ type: 'listSessions' })}
       />
+      {(() => {
+        // Find the most recent user item to surface in the banner.
+        // Walks backwards through items because chat order is
+        // chronological. busy=true on the SessionManager side
+        // implies the agent is still working on this user message.
+        let lastUser: Extract<typeof state.items[number], { kind: 'user' }> | null = null;
+        for (let i = state.items.length - 1; i >= 0; i--) {
+          const it = state.items[i];
+          if (it.kind === 'user') {
+            lastUser = it;
+            break;
+          }
+        }
+        return (
+          <ActiveQuestionBanner
+            question={lastUser}
+            busy={state.busy === true}
+            visible={state.showActiveQuestionBanner}
+          />
+        );
+      })()}
       {state.primerPrompt && (
         <PrimerBanner
           fromBackend={state.primerPrompt.fromBackend}

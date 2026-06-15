@@ -296,7 +296,8 @@ export class SessionManager {
       defaultBackend,
       memoryEntries: memTotals.totalEntries,
       memoryFiles: memTotals.totalFiles,
-      memoryByProvider: memTotals.byProvider
+      memoryByProvider: memTotals.byProvider,
+      showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true)
     };
     this.panel.post({ type: 'hydrate', state });
 

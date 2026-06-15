@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -260,6 +260,11 @@
           "type": "boolean",
           "default": false,
           "description": "Permit the 'bypass' permission mode. Security-sensitive; off by default."
+        },
+        "codeBuild.showActiveQuestionBanner": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a sticky banner under the chat header surfacing the user's current (or most recent) question. Helps keep the prompt visible while a long reply scrolls — matches Claude Code's pattern. Banner has an inline × to dismiss for the current session; this setting controls the global on/off."
         },
         "codeBuild.classifyTurns": {
           "type": "boolean",

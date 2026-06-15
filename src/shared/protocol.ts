@@ -66,6 +66,10 @@ export interface HydrateState {
   memoryEntries: number;
   memoryFiles: number;
   memoryByProvider: Record<string, number>;
+  /** Sticky-banner toggle from `codeBuild.showActiveQuestionBanner`.
+   * When false the ActiveQuestionBanner never renders even if a
+   * question is present. */
+  showActiveQuestionBanner: boolean;
 }
 
 /** Capability snapshot of one backend, served to the webview on hydrate. */

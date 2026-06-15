@@ -137,6 +137,11 @@ export interface ChatState {
   memoryEntries: number;
   memoryFiles: number;
   memoryByProvider: Record<string, number>;
+  /** Active-question banner master switch from
+   * `codeBuild.showActiveQuestionBanner`. Default true on first
+   * hydrate so users see the banner without opt-in; flipping the
+   * setting to false hides it permanently. */
+  showActiveQuestionBanner: boolean;
 }
 
 export const initialState: ChatState = {
@@ -155,7 +160,8 @@ export const initialState: ChatState = {
   primerPrompt: null,
   memoryEntries: 0,
   memoryFiles: 0,
-  memoryByProvider: {}
+  memoryByProvider: {},
+  showActiveQuestionBanner: true
 };
 
 let seq = 0;
@@ -177,7 +183,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         sessions: msg.state.sessions ?? [],
         memoryEntries: msg.state.memoryEntries ?? 0,
         memoryFiles: msg.state.memoryFiles ?? 0,
-        memoryByProvider: msg.state.memoryByProvider ?? {}
+        memoryByProvider: msg.state.memoryByProvider ?? {},
+        showActiveQuestionBanner: msg.state.showActiveQuestionBanner ?? true
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };

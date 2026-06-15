@@ -55,6 +55,67 @@ body {
   opacity: 0.7;
   font-size: 0.9em;
 }
+/* Active-question banner. Sticky just under the chat header,
+ * surfacing the user's current (or most recent) prompt so it stays
+ * visible while a long agent reply scrolls. Matches Claude Code's
+ * pattern. Dismissable per-session via the × button; permanent
+ * off-switch via `codeBuild.showActiveQuestionBanner = false`. */
+.active-question-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  margin: 0 12px;
+  margin-top: 6px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.05));
+  font-size: 0.85em;
+  line-height: 1.4;
+  overflow: hidden;
+}
+.active-question-banner-busy {
+  border-color: var(--vscode-focusBorder);
+  background: rgba(99, 102, 241, 0.06);
+}
+.active-question-eyebrow {
+  flex-shrink: 0;
+  font-size: 0.8em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.7;
+  font-variant-numeric: tabular-nums;
+}
+.active-question-text {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+  opacity: 0.95;
+}
+.active-question-time {
+  flex-shrink: 0;
+  font-size: 0.85em;
+  opacity: 0.6;
+  cursor: help;
+  font-variant-numeric: tabular-nums;
+}
+.active-question-dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--vscode-foreground);
+  font-size: 1.2em;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.5;
+  cursor: pointer;
+}
+.active-question-dismiss:hover {
+  opacity: 1;
+}
+
 /* Header memory chip — small clickable indicator of total memory
  * entries available to the agent. Hover for the per-provider
  * breakdown + pointer to the Code Sessions Memory tab. */

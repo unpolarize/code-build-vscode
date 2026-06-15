@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.0 — 2026-06-13
+
+### Active question banner
+
+A sticky one-line banner pinned under the chat header showing the user's CURRENT (or most recent) prompt. Matches Claude Code's pattern — keeps the user's question visible while a long agent reply scrolls past it. Hover the question text for the full prompt + the absolute timestamp.
+
+- Renders with two states: `⏳ active` while the agent is busy responding (subtle blue tint borrowed from `--vscode-focusBorder`), `↩︎ previous` once the turn is complete (neutral border).
+- Inline relative-time chip next to the question text (same `formatRelative` helper as the per-bubble `TimeChip`).
+- Per-session × dismiss button on the right; reappears on the next reload.
+- New `codeBuild.showActiveQuestionBanner` setting (default `true`) for permanent off-switch.
+- Plumbed through `HydrateState.showActiveQuestionBanner`, the webview store's `showActiveQuestionBanner` field, and a new `ActiveQuestionBanner.tsx` component rendered in `App.tsx` between the Header and PrimerBanner.
+- Cap on visible text: first non-empty line, 240 chars; full text in the hover tooltip.
+
+Per AGENTS.md: 0.4.1 → 0.5.0 (MINOR — new user-facing surface + new setting).
+
 ## 0.4.1 — 2026-06-13
 
 ### Fix: "+ New conversation" + external-session opens no longer split the editor
