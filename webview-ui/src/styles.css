@@ -946,6 +946,12 @@ body {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   padding: 8px 10px;
 }
+/* Highlight while a file is dragged over the chat (drop → @-mention). */
+.composer.drop-active {
+  outline: 2px dashed var(--vscode-focusBorder);
+  outline-offset: -2px;
+  background: var(--vscode-list-dropBackground, rgba(64, 128, 255, 0.08));
+}
 .composer textarea {
   width: 100%;
   resize: vertical;

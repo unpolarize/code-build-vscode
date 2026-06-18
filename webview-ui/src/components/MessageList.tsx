@@ -297,7 +297,6 @@ function ContextCard({
  * Each tile also exposes hover-revealed buttons to copy the image to the
  * system clipboard (PNG bytes when ClipboardItem is supported, base64
  * data-URL fallback otherwise) and to save the image to disk via the host. */
-import { useState } from 'react';
 import type { ImageAttachment } from '../store';
 
 function ImageAttachmentTile({ image, index }: { image: ImageAttachment; index: number }) {

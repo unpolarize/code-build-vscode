@@ -118,6 +118,10 @@ export type WebviewToHost =
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
   | { type: 'getFileSuggestions'; query: string }
+  /** Files dropped onto the chat from the Explorer (or OS). `uris` are raw
+   * `file://` strings; the host maps them to workspace-relative paths and
+   * base64-encodes images, replying with `droppedFilesResolved`. */
+  | { type: 'resolveDroppedUris'; uris: string[] }
   | { type: 'listSessions' }
   /** Resume a session by id. When `source` is set to 'claude' or 'grok',
    * the host loads the upstream transcript (cwd is required to locate it)
@@ -135,6 +139,13 @@ export type HostToWebview =
   | { type: 'sessionMeta'; session: SessionMeta }
   | { type: 'busy'; busy: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
+  /** Resolution of a `resolveDroppedUris` request. Non-image items carry a
+   * workspace-relative `path` to insert as `@path`; image items carry base64
+   * `data` + `mimeType` to attach as a tile (like paste). */
+  | {
+      type: 'droppedFilesResolved';
+      items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
+    }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
   | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
   /** Backend-swap primer Q&A. The webview shows a card picker above the

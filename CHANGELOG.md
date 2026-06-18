@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.0 — 2026-06-17
+
+### Better file context: drag-and-drop, caret-aware @-search, folder search
+
+Three improvements to how files get into the agent's context, plus two fixes to unblock the build.
+
+- **Drag-and-drop from the Explorer → `@`-mention.** Dropping files on the chat inserts `@relpath` at the cursor; dropped images attach as tiles (like paste). The webview parses `text/uri-list`; the new host `resolveDroppedUris` maps URIs to workspace-relative paths (rejecting anything outside the workspace) and base64-encodes images.
+- **Caret-aware `@`-trigger.** The suggestion menu now fires for an `@`-token at the cursor, not only when it sits at the very end of the input — editing mid-text triggers search again (the old end-anchored `/@(\S*)$/` silently did nothing). A bare `@` now lists recently-used (open) files instead of nothing.
+- **Folder-aware search.** `@classic/` lists every file under a `classic/` folder; `@classic/agent` narrows by name within it. Results rank open editor tabs first as a recency proxy, then path-prefix, substring, basename. New pure helpers `buildSuggestGlob` + `rankFileSuggestions` (`src/host/fileSuggest.ts`) and `findActiveMention` + `parseUriList` (`webview-ui/src/util/mentions.ts`), covered by 23 unit tests.
+- **Fix:** removed a stray duplicate `import { useState }` in `MessageList.tsx` that broke `tsc`.
+
+Pre-1.0 MINOR (`0.5.0 → 0.6.0`) — new user-facing capability (drag-and-drop + folder search). No protocol break.
+
 ## 0.5.0 — 2026-06-13
 
 ### Active question banner

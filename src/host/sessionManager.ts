@@ -9,6 +9,7 @@ import { detectAll, BACKENDS, resolveBin } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
+import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
 import { SessionStore } from './persistence/store';
 import {
   claudeJsonlPathFor,
@@ -131,6 +132,11 @@ export class SessionManager {
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
         this.panel.post({ type: 'fileSuggestions', suggestions });
+        break;
+      }
+      case 'resolveDroppedUris': {
+        const items = await this.resolveDroppedUris(msg.uris);
+        this.panel.post({ type: 'droppedFilesResolved', items });
         break;
       }
       case 'newSession':
@@ -1408,9 +1414,27 @@ export class SessionManager {
    * full workspace, pegging all cores on large repos like ~/docs. */
   private fileSuggestionAbort?: vscode.CancellationTokenSource;
 
-  /** Workspace file search for @-mentions. Supports paths with slashes (e.g. knowledge/tech/foo.md).
-   * Strategy: glob on the last path segment (filename), then JS-filter by full relative path containing the query.
-   */
+  /** Workspace-relative paths of files currently open in editor tabs. Used as
+   * a lightweight "recently used" signal to rank `@`-mention suggestions —
+   * there is no public MRU API, but open tabs are a good proxy for "in use". */
+  private openTabRelPaths(): Set<string> {
+    const out = new Set<string>();
+    for (const group of vscode.window.tabGroups.all) {
+      for (const tab of group.tabs) {
+        const input = tab.input as { uri?: vscode.Uri } | undefined;
+        const uri = input?.uri;
+        if (uri && uri.scheme === 'file') {
+          out.add(vscode.workspace.asRelativePath(uri, false));
+        }
+      }
+    }
+    return out;
+  }
+
+  /** Workspace file search for @-mentions. Supports plain names (`foo.md`),
+   * partial paths (`knowledge/tech/foo`), and folder queries (`classic/` →
+   * everything under a `classic` folder). Globs via `buildSuggestGlob`, then
+   * filters + ranks (open files first) via `rankFileSuggestions`. */
   private async getFileSuggestions(query: string): Promise<Array<{ path: string; label?: string }>> {
     // Cancel any previous in-flight search before issuing a new one. The
     // previous ripgrep subprocess gets killed promptly so it doesn't keep
@@ -1421,51 +1445,81 @@ export class SessionManager {
     this.fileSuggestionAbort = tokenSource;
     const token = tokenSource.token;
 
+    const openPaths = this.openTabRelPaths();
     const q = query.trim();
     if (!q) {
-      // Empty query (just `@` was typed) used to fire a full-workspace
-      // scan — slow and useless because the dropdown shows 25 arbitrary
-      // files. Return empty; the user will type a character and we'll
-      // search properly. Composer-side debounce + lastSentQuery filter
-      // already suppress most of the spam on the way in.
-      return [];
+      // Bare `@`: a full-workspace scan would just show 25 arbitrary files.
+      // Instead surface the recently-used (open) files as defaults.
+      return [...openPaths].slice(0, 25).map((rel) => ({ path: rel, label: path.basename(rel) }));
     }
 
-    const lastSegment = q.includes('/') ? (q.split('/').pop() || q) : q;
-    const max = 60;
-    const pattern = `**/*${this.globEscape(lastSegment)}*`;
+    const max = 200;
+    const pattern = buildSuggestGlob(q);
 
     try {
-      const uris = await vscode.workspace.findFiles(
-        pattern,
-        '**/node_modules/**',
-        max,
-        token
-      );
+      const uris = await vscode.workspace.findFiles(pattern, '**/node_modules/**', max, token);
       if (token.isCancellationRequested) return [];
-      const results = uris.map((uri) => {
+      const candidates = uris.map((uri) => {
         const rel = vscode.workspace.asRelativePath(uri, false);
         return { path: rel, label: path.basename(rel) };
       });
-
-      const qLower = q.toLowerCase();
-      // Keep only those whose full path matches the typed query (supports folders + partial filenames)
-      const filtered = results.filter((r) => r.path.toLowerCase().includes(qLower));
-
-      // If the typed query looks like a full path that exists exactly, make sure it surfaces even if filter was strict
-      if (filtered.length === 0) {
-        // Fallback: return the ones whose basename matches the last segment
-        return results.filter((r) => r.path.toLowerCase().endsWith(qLower) || r.label?.toLowerCase().includes(lastSegment.toLowerCase()));
-      }
-      return filtered.slice(0, 25);
+      return rankFileSuggestions(q, candidates, openPaths).slice(0, 25);
     } catch {
       return [];
     }
   }
 
-  private globEscape(s: string): string {
-    // Very light escaping for common specials in a **/*...* glob fragment
-    return s.replace(/[?*{}[\]()!]/g, (ch) => `\\${ch}`);
+  /** Map dropped `file://` URIs to workspace-relative paths (rejecting any that
+   * escape the workspace). Images are base64-encoded so the webview can show a
+   * tile; other files are returned as `@path` insertions. */
+  private async resolveDroppedUris(
+    uris: string[]
+  ): Promise<Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>> {
+    const out: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }> = [];
+    for (const raw of uris) {
+      let uri: vscode.Uri;
+      try {
+        uri = vscode.Uri.parse(raw, true);
+      } catch {
+        continue;
+      }
+      if (uri.scheme !== 'file') continue;
+      const rel = vscode.workspace.asRelativePath(uri, false);
+      // asRelativePath returns the original absolute path when the file is
+      // outside every workspace folder — skip those (constrain to resources).
+      if (path.isAbsolute(rel)) continue;
+      try {
+        const stat = await fs.stat(uri.fsPath);
+        if (!stat.isFile()) continue;
+      } catch {
+        continue;
+      }
+      const name = path.basename(rel);
+      if (isImagePath(rel)) {
+        try {
+          const bytes = await fs.readFile(uri.fsPath);
+          out.push({
+            path: rel,
+            isImage: true,
+            mimeType: this.imageMimeFor(rel),
+            data: bytes.toString('base64'),
+            name
+          });
+          continue;
+        } catch {
+          // Fall through to a plain @path insertion if the read fails.
+        }
+      }
+      out.push({ path: rel, isImage: false, name });
+    }
+    return out;
+  }
+
+  private imageMimeFor(p: string): string {
+    const ext = path.extname(p).toLowerCase();
+    if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+    if (ext === '.svg') return 'image/svg+xml';
+    return `image/${ext.slice(1) || 'png'}`;
   }
 
   /** Resolve an @-mention token to an absolute file path: absolute > cwd-relative

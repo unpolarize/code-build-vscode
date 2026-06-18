@@ -1,5 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ImageAttachment } from '../store';
+import { findActiveMention, parseUriList } from '../util/mentions';
+import { post } from '../vscodeApi';
+
+/** A file resolved by the host from a drag-and-drop onto the chat. */
+interface DroppedItem {
+  path: string;
+  isImage: boolean;
+  mimeType?: string;
+  data?: string;
+  name?: string;
+}
 
 interface SlashCommand {
   name: string;
@@ -32,6 +43,8 @@ export function Composer({
 }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
+  const [caret, setCaret] = useState(0);
+  const [dragActive, setDragActive] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -45,20 +58,17 @@ export function Composer({
       ? commands.filter((c) => c.name.startsWith(slashMatch[1]))
       : [];
 
-  // @-mention file suggestions (triggered when @word at end of input).
-  // Debounced + de-duplicated to avoid spawning a `workspace.findFiles`
-  // (and thus a ripgrep subprocess) on every keystroke. A flurry of
-  // typing like "@hello world" was creating 11+ concurrent ripgreps,
-  // each scanning the whole workspace from scratch — easily 28+
-  // simultaneous ripgreps observed on `~/docs`, pegging all 8 cores.
-  // Now: wait 200 ms of idle, skip if the query didn't actually change
-  // since last request, and skip the empty-query case entirely (no
-  // point burning a full-workspace scan to show "all files").
-  const atMatch = /@(\S*)$/.exec(text);
-  const atQuery = atMatch ? atMatch[1] : '';
+  // @-mention file suggestions. Caret-aware: the menu fires for an @-token at
+  // the cursor, not only when it sits at the very end of the input — so editing
+  // mid-text still triggers search (the old /@(\S*)$/ silently did nothing).
+  // Debounced + de-duplicated to avoid spawning a `workspace.findFiles` (and
+  // thus a ripgrep subprocess) on every keystroke. A bare `@` (empty query) is
+  // allowed now: the host answers with recently-used files instead of nothing.
+  const mention = findActiveMention(text, caret);
+  const atQuery = mention ? mention.query : null;
   const lastSentQuery = useRef<string | null>(null);
   useEffect(() => {
-    if (!atMatch) {
+    if (atQuery === null) {
       // Reset so the next "@" fires a fresh request even if the previous
       // query was the same string before we left at-mention mode.
       lastSentQuery.current = null;
@@ -75,14 +85,77 @@ export function Composer({
       onRequestFileSuggestions(atQuery);
     }, 200);
     return () => window.clearTimeout(handle);
-  }, [atQuery, atMatch != null, onRequestFileSuggestions]);
+  }, [atQuery, onRequestFileSuggestions]);
 
   // Filter client-side as fallback; host ideally already filters
-  const atSuggestions = atMatch
+  const atSuggestions = mention
     ? fileSuggestions.filter((f) =>
-        (f.label || f.path).toLowerCase().includes(atQuery.toLowerCase())
+        (f.label || f.path).toLowerCase().includes(mention.query.toLowerCase())
       )
     : [];
+
+  /** Insert text at the current caret, replacing the active @-token span (from
+   * the `@` through the end of the token, which may extend past the caret). */
+  function replaceMentionWith(insert: string) {
+    if (!mention) return;
+    const before = text.slice(0, mention.start);
+    let tokenEnd = caret;
+    while (tokenEnd < text.length && !/\s/.test(text[tokenEnd])) tokenEnd++;
+    const after = text.slice(tokenEnd);
+    const next = before + insert + after;
+    const pos = (before + insert).length;
+    setText(next);
+    setCaret(pos);
+    setTimeout(() => {
+      if (ref.current) {
+        ref.current.focus();
+        ref.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  }
+
+  /** Apply files the host resolved from a drop: images become tiles, other
+   * files are inserted as `@path` mentions at the caret. */
+  const applyRef = useRef<(items: DroppedItem[]) => void>(() => {});
+  applyRef.current = (items: DroppedItem[]) => {
+    const paths: string[] = [];
+    for (const it of items) {
+      if (it.isImage && it.data) {
+        setImages((cur) => [
+          ...cur,
+          { mimeType: it.mimeType || 'image/png', data: it.data!, name: it.name }
+        ]);
+      } else {
+        paths.push(it.path);
+      }
+    }
+    if (paths.length === 0) return;
+    const insert = paths.map((p) => `@${p}`).join(' ') + ' ';
+    const before = text.slice(0, caret);
+    const after = text.slice(caret);
+    const pos = (before + insert).length;
+    setText(before + insert + after);
+    setCaret(pos);
+    setTimeout(() => {
+      if (ref.current) {
+        ref.current.focus();
+        ref.current.setSelectionRange(pos, pos);
+      }
+    }, 0);
+  };
+
+  // The host replies to a drop with `droppedFilesResolved`. App's store ignores
+  // unknown host messages, so a dedicated listener here keeps drop state local.
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      const m = e.data;
+      if (m && m.type === 'droppedFilesResolved') {
+        applyRef.current((m.items ?? []) as DroppedItem[]);
+      }
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
 
   function submit() {
     const t = text.trim();
@@ -93,12 +166,66 @@ export function Composer({
     onSend(t, images);
     setText('');
     setImages([]);
+    setCaret(0);
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       submit();
+    }
+  }
+
+  /** Keep `caret` in sync so the @-mention detector knows where the cursor is.
+   * Reads from the textarea after the browser has applied the selection. */
+  function syncCaret(e: React.SyntheticEvent<HTMLTextAreaElement>) {
+    setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
+  }
+
+  /** Drag-and-drop from the Explorer (or OS). Explorer drags expose resources
+   * as `text/uri-list`; the host maps those to `@path` mentions. OS image drags
+   * carry no workspace path, so we read them inline like a paste. */
+  function onDrop(e: React.DragEvent) {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    let uris = parseUriList(dt.getData('text/uri-list'));
+    if (uris.length === 0) {
+      const ru = dt.getData('resourceurls');
+      if (ru) {
+        try {
+          uris = (JSON.parse(ru) as string[]).map((u) => decodeURIComponent(u));
+        } catch {
+          /* not the format we expected — ignore */
+        }
+      }
+    }
+    const imageFiles: File[] = [];
+    if (dt.files) {
+      for (let i = 0; i < dt.files.length; i++) {
+        const f = dt.files[i];
+        if (f.type.startsWith('image/')) imageFiles.push(f);
+      }
+    }
+    if (uris.length === 0 && imageFiles.length === 0) return; // let the browser handle it
+    e.preventDefault();
+    setDragActive(false);
+    if (uris.length > 0) {
+      post({ type: 'resolveDroppedUris', uris });
+    } else {
+      for (const file of imageFiles) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result !== 'string') return;
+          const comma = result.indexOf(',');
+          const data = comma >= 0 ? result.slice(comma + 1) : result;
+          setImages((current) => [
+            ...current,
+            { mimeType: file.type || 'image/png', data, name: file.name || `dropped-${current.length + 1}` }
+          ]);
+        };
+        reader.readAsDataURL(file);
+      }
     }
   }
 
@@ -143,7 +270,16 @@ export function Composer({
   }
 
   return (
-    <div className="composer">
+    <div
+      className={`composer${dragActive ? ' drop-active' : ''}`}
+      onDragOver={(e) => {
+        // preventDefault is required for the drop event to fire at all.
+        e.preventDefault();
+        if (!dragActive) setDragActive(true);
+      }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={onDrop}
+    >
       {slashSuggestions.length > 0 && (
         <div className="slash-menu">
           {slashSuggestions.map((c) => (
@@ -173,19 +309,9 @@ export function Composer({
                 key={idx}
                 className="at-item"
                 onClick={() => {
-                  // Insert the FULL workspace-relative path (not just the filename).
-                  const before = text.slice(0, atMatch!.index);
-                  const after = text.slice(atMatch!.index! + atMatch![0].length);
-                  const insert = `@${f.path} `;
-                  setText(before + insert + after);
-                  // move cursor after insert on next tick
-                  setTimeout(() => {
-                    if (ref.current) {
-                      const pos = (before + insert).length;
-                      ref.current.focus();
-                      ref.current.setSelectionRange(pos, pos);
-                    }
-                  }, 0);
+                  // Insert the FULL workspace-relative path (not just the
+                  // filename), replacing the active @-token at the caret.
+                  replaceMentionWith(`@${f.path} `);
                 }}
               >
                 <span className="at-icon">📄</span>
@@ -222,9 +348,15 @@ export function Composer({
       <textarea
         ref={ref}
         value={text}
-        placeholder="Ask the agent to build something…  (Enter to send, Shift+Enter for newline; @file for context, paste images)"
-        onChange={(e) => setText(e.target.value)}
+        placeholder="Ask the agent to build something…  (Enter to send, Shift+Enter for newline; @file for context, drag files in, paste images)"
+        onChange={(e) => {
+          setText(e.target.value);
+          setCaret(e.target.selectionStart ?? e.target.value.length);
+        }}
         onKeyDown={onKeyDown}
+        onKeyUp={syncCaret}
+        onClick={syncCaret}
+        onSelect={syncCaret}
         onPaste={onPaste}
         rows={3}
       />
