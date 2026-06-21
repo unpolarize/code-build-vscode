@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.8.0 — 2026-06-19
+
+### Fix: stuck "working…" turns now warn + auto-recover; Stop actually stops
+
+CB could sit on the "working…" spinner forever when the underlying claude CLI stalled mid-turn — no output, no tokens, and Stop appeared to do nothing. Root cause (from field transcripts in `~/.codebuild/sessions` + `~/.claude/projects`): an intermittent claude 2.1.x `result subtype=error_during_execution` that produces **zero** assistant output and burns **zero** tokens, against a CB that had no mid-turn liveness check and a cancel that couldn't kill a wedged process. New sessions hit the same stall, so it looked like the whole agent was dead (and Code Sessions showed no progress, since nothing was written).
+
+- **Stall watchdog (D1).** Each turn is now watched for total silence. At `codeBuild.stallWarnSeconds` (default 45) CB posts a "may be stuck" notice explaining the options (Stop now / keep waiting). At `codeBuild.stallAutoCancelSeconds` (default 120) it auto-stops the turn so the UI never stays frozen. The silence clock resets on real agent progress (assistant/thought chunks, tool calls, usage) and is **suppressed while a tool/command is running** — a long build or test suite is silent by design and is never auto-killed (you Stop those yourself). New `src/host/turnWatchdog.ts` (pure, 8 unit tests).
+- **Hardened cancel (D2).** `StreamJsonTransport.cancel()` now escalates: SIGINT first (graceful interrupt, preserves the session for `--resume`), then SIGKILL after a 2.5s grace if the process ignores it. The `exit` handler emits a synthetic `result`, so the webview always leaves "working…" even when the process was wedged. The watchdog's auto-stop also force-clears `busy` independently of the transport.
+- **`system_init` spam fix (D3).** The claude normalizer emitted a `system_init` for **every** `system` line (claude re-emits them throughout a turn) — measured 258–1109 bogus events per session, each triggering a synchronous `appendFileSync` and, critically, masking stalls by looking like fresh progress. Now deduped to one emission per backend session id (the host still gets the first one to persist the `--resume` id). Fixes a pre-existing failing test and adds dedup coverage.
+- New settings: `codeBuild.stallWarnSeconds`, `codeBuild.stallAutoCancelSeconds` (set warn to 0 to disable; set auto-cancel ≤ warn for warn-only).
+- Note: the watchdog is transport-agnostic, so the UI-recovery guarantee covers all backends; the SIGINT→SIGKILL hardening is currently claude-only (grok ACP already has `session/cancel`; codex remains SIGINT-only — follow-up).
+
+Pre-1.0 MINOR (`0.7.0 → 0.8.0`) — new user-facing recovery behavior + two new settings. No protocol break.
+
+## 0.7.0 — 2026-06-19
+
+### Bypass permission mode is now the default
+
+New conversations start in **bypass** mode — the agent runs autonomously with no per-action approval prompts (the Claude Code `--dangerously-skip-permissions` / terminal "YOLO" workflow). The previous default was `default` (approve every action) with bypass gated off.
+
+- `codeBuild.initialPermissionMode` default: `default` → **`bypass`**.
+- `codeBuild.allowDangerouslySkipPermissions` default: `false` → **`true`**. Both had to flip together — `initialPermissionMode = bypass` is silently downgraded to `default` at session start unless the capability gate is open (`sessionManager.rememberedConfig`: `if (mode === 'bypass' && !this.allowBypass) mode = 'default'`).
+- In bypass mode the user's `$HOME` is trusted by default (existing `trustedDirs()` behavior), so the agent isn't locked to the workspace folder. Narrow this with `codeBuild.additionalTrustedDirs`.
+- **Security note:** with bypass on, the agent reads/writes files and runs commands without asking. To restore approval-based behavior, set `codeBuild.allowDangerouslySkipPermissions` to `false` (disables bypass entirely) or choose `default` / `plan` / `acceptEdits` in the header. Per-session choices stay sticky via `globalState.lastMode`, so an existing install keeps whatever mode it last used — the new default applies to fresh state.
+- Locked by `test/unit/permissionDefaults.test.ts` (shipped defaults + buildArgs honoring bypass only when the gate is open, and refusing the dangerous flag when it isn't).
+
+Pre-1.0 MINOR (`0.6.0 → 0.7.0`) — user-facing default behavior change, no protocol break.
+
 ## 0.6.0 — 2026-06-17
 
 ### Better file context: drag-and-drop, caret-aware @-search, folder search

@@ -25,6 +25,9 @@ export class StreamJsonTransport extends BaseAgentSession {
    * resume attempt. Prevents an infinite retry loop if the no-resume
    * spawn itself fails. */
   private resumeFallbackAttempted = false;
+  /** Pending SIGKILL escalation armed by cancel(). Cleared when the process
+   * exits (the graceful SIGINT landed) so we don't kill a respawned proc. */
+  private cancelEscalation?: ReturnType<typeof setTimeout>;
 
   constructor(
     public readonly id: string,
@@ -98,6 +101,12 @@ export class StreamJsonTransport extends BaseAgentSession {
     const resumeIdHint = this.startOpts?.resumeId;
     this.proc.on('exit', (code) => {
       this.started = false;
+      // The process is gone — the graceful SIGINT (or a real exit) landed,
+      // so cancel the pending force-kill escalation.
+      if (this.cancelEscalation) {
+        clearTimeout(this.cancelEscalation);
+        this.cancelEscalation = undefined;
+      }
       if (code && code !== 0) {
         const stderr = stderrBuf.trim();
         // Try to extract a structured error from claude's last stream-json
@@ -215,8 +224,34 @@ export class StreamJsonTransport extends BaseAgentSession {
   }
 
   cancel(): void {
-    // Closing stdin / SIGINT interrupts the current turn.
-    this.proc?.kill('SIGINT');
+    const proc = this.proc;
+    if (!proc) return;
+    // Graceful interrupt first: claude treats SIGINT like an interactive
+    // Ctrl+C — it aborts the current turn, logs "[Request interrupted by
+    // user]", emits a result, and (in -p mode) exits. That path preserves
+    // the session for `--resume` on the next prompt.
+    try {
+      proc.kill('SIGINT');
+    } catch {
+      /* already dead */
+    }
+    // Escalation backstop: if the process is wedged badly enough to ignore
+    // SIGINT — the stalled-turn case the user reported as "Stop doesn't
+    // work" — force-kill after a short grace so control ALWAYS returns. The
+    // 'exit' handler then emits a synthetic `result`, flipping the webview
+    // out of "working…". Cleared in the exit handler when SIGINT already
+    // landed, so a healthy interrupt never gets SIGKILLed.
+    if (this.cancelEscalation) clearTimeout(this.cancelEscalation);
+    this.cancelEscalation = setTimeout(() => {
+      this.cancelEscalation = undefined;
+      if (this.proc === proc && this.started) {
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          /* noop */
+        }
+      }
+    }, 2500);
   }
 
   setMode(mode: PermissionMode): void {
@@ -231,6 +266,10 @@ export class StreamJsonTransport extends BaseAgentSession {
 
   override dispose(): void {
     super.dispose();
+    if (this.cancelEscalation) {
+      clearTimeout(this.cancelEscalation);
+      this.cancelEscalation = undefined;
+    }
     if (this.proc) {
       try {
         this.proc.stdin.end();

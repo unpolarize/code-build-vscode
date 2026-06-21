@@ -29,6 +29,7 @@ import {
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
+import { TurnWatchdog } from './turnWatchdog';
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -96,6 +97,21 @@ export class SessionManager {
    * Invoked when the first agent event arrives or the session is torn
    * down, so the timer doesn't fire after we're already responsive. */
   private startupNoticeCleanup?: () => void;
+
+  /** Per-turn stall watchdog (D1). Armed when a prompt is sent, reset on
+   * real agent progress, cleared on result/error. Surfaces a "looks stuck"
+   * notice and — as a backstop so the UI never stays frozen — auto-cancels
+   * a silent, tool-less turn. Rebuilt each prompt so the thresholds pick up
+   * config changes. */
+  private watchdog?: TurnWatchdog;
+  /** Tool-call ids the agent has opened but not yet finished this turn. A
+   * turn with an open tool is doing a (possibly long, silent) command, so
+   * the watchdog warns but does NOT auto-cancel it. */
+  private readonly openToolCalls = new Set<string>();
+  /** True while a permission_request is outstanding (the agent is blocked on a
+   * human decision). Combined with pending AskUserQuestions, this tells the
+   * stall watchdog the turn is legitimately paused on the user, not stuck. */
+  private awaitingPermission = false;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -177,6 +193,10 @@ export class SessionManager {
         }
         await this.ensureSession();
         this.panel.post({ type: 'busy', busy: true });
+        // Arm the stall watchdog for this turn (D1). The silence clock starts
+        // now, at submission, so a turn that produces NO output at all (the
+        // claude `error_during_execution`/0-token stall) is still caught.
+        this.armWatchdog();
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
         if (originalText) {
           // First real prompt: promote to history + derive a title from it.
@@ -240,6 +260,8 @@ export class SessionManager {
         this.setEffort(msg.effort);
         break;
       case 'respondPermission':
+        // User decided — resume normal stall watching for the continuation.
+        this.awaitingPermission = false;
         this.session?.respondPermission(msg.requestId, msg.outcome);
         break;
       case 'openDiff':
@@ -345,6 +367,7 @@ export class SessionManager {
     // previous conversation thread, if no new messages were added."
     if (prevBackend && prevId && prevBackend !== backend) {
       this.previousSessionByBackend.set(prevBackend, prevId);
+      this.persistBackendMap();
     }
 
     // Fast path: the user previously had a session in this target
@@ -354,10 +377,11 @@ export class SessionManager {
     // off across agents.
     const restoreId = this.previousSessionByBackend.get(backend);
     if (restoreId && restoreId !== this.meta?.id) {
-      // Drop the entry so a SECOND flip-back gets fresh behaviour
-      // (if the user wanted continued restore-on-flip, they can
-      // pick from the history picker explicitly).
-      this.previousSessionByBackend.delete(backend);
+      // Keep the entry: the conversation already has a native thread in this
+      // backend, so EVERY switch back should resume it natively (not just the
+      // first). Previously we deleted it here, which made the 2nd flip-back
+      // re-summarize — exactly the "no need to summarize when switching back"
+      // case. The map is durable (persisted on meta + re-hydrated on load).
       this.panel.post({
         type: 'notice',
         text: `Restoring your earlier **${backendLabel(backend)}** thread (\`${restoreId.slice(0, 8)}\`) — no carry-over needed, the agent already has its own context.`,
@@ -438,6 +462,23 @@ export class SessionManager {
     }
 
     await this.openSession(backend);
+    // The freshly-spawned session inherits the conversation's per-backend
+    // native-session memory so a later flip back here resumes natively.
+    this.persistBackendMap();
+  }
+
+  /** Persist the per-backend native-session map onto the current session's meta
+   * (durable across panel reopen) so switch-back can resume natively instead of
+   * re-summarizing. No-op until a session exists. */
+  private persistBackendMap(): void {
+    if (!this.meta) return;
+    if (this.previousSessionByBackend.size === 0) return;
+    this.meta.backendSessions = Object.fromEntries(this.previousSessionByBackend) as SessionMeta['backendSessions'];
+    try {
+      this.store.updateMeta(this.meta);
+    } catch {
+      /* best-effort durability; in-memory map still works this session */
+    }
   }
 
   /** Resolve the carry-over banner. Three paths:
@@ -693,6 +734,7 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      this.watchTurnLiveness(update);
       // First time we see anything from the agent — surface the spawn
       // time so the user knows whether the slowness is in our spawn (a
       // few hundred ms) or in the agent's first-event latency (often
@@ -944,6 +986,98 @@ export class SessionManager {
    * openExternalSession / loadExistingSession share this so the
    * behaviour is identical across spawn paths). Off by default —
    * gated by `codeBuild.classifyTurns`. */
+  /** Build + arm the per-turn stall watchdog (D1). Rebuilt each prompt so the
+   * thresholds (codeBuild.stallWarnSeconds / .stallAutoCancelSeconds) take
+   * effect on the next turn without a reload. */
+  private armWatchdog(): void {
+    this.watchdog?.clear();
+    this.openToolCalls.clear();
+    this.awaitingPermission = false;
+    const warnMs = Math.max(0, this.config.get<number>('stallWarnSeconds', 45)) * 1000;
+    const autoCancelMs = Math.max(0, this.config.get<number>('stallAutoCancelSeconds', 120)) * 1000;
+    const be = this.meta?.backend ?? 'agent';
+    this.watchdog = new TurnWatchdog({
+      warnMs,
+      autoCancelMs,
+      hasOpenTool: () => this.openToolCalls.size > 0,
+      isAwaitingUser: () => this.pendingAskUserQuestions.size > 0 || this.awaitingPermission,
+      onWarn: (silentMs) => {
+        const secs = Math.round(silentMs / 1000);
+        const running = this.openToolCalls.size > 0;
+        this.panel.post({
+          type: 'notice',
+          key: 'turn-stall',
+          text: running
+            ? `**${be}** has been running a command with no output for ${secs}s. If it looks stuck, click **Stop** to cancel — the session is preserved and your next message resumes it.`
+            : `**${be}** has produced no output for ${secs}s and may be stuck (a known intermittent CLI failure that burns no tokens). Click **Stop** to cancel now, or wait — CB will auto-recover the UI if the silence continues.`,
+          detail:
+            `No assistant output or tokens have arrived for ${secs}s.\n` +
+            `• Stop — cancel this turn now (the agent process is killed; the session resumes on your next message).\n` +
+            `• Wait — keep going if you expect a long reply or a long-running command.\n` +
+            (autoCancelMs > warnMs && !running
+              ? `CB will auto-stop the turn after ${Math.round(autoCancelMs / 1000)}s of total silence so the UI never stays frozen.`
+              : `Auto-stop is off for this turn — use Stop to recover.`)
+        });
+      },
+      onAutoCancel: (silentMs) => {
+        const secs = Math.round(silentMs / 1000);
+        // Hardened recovery: kill the wedged process (transport cancel now
+        // escalates SIGINT→SIGKILL) AND force the UI out of "working…",
+        // independent of whether the transport ever emits a result.
+        this.session?.cancel();
+        this.panel.post({ type: 'busy', busy: false });
+        this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
+        this.panel.post({
+          type: 'notice',
+          text: `Auto-stopped **${be}** after ${secs}s of silence — it looked stuck (no output, no tokens). Nothing was lost; resend your message or keep typing and the session resumes.`
+        });
+      }
+    });
+    this.watchdog.arm();
+  }
+
+  /** Feed the stall watchdog from the live event stream (D1). Resets the
+   * silence clock on REAL agent progress, tracks open tool calls so a
+   * legitimately long command isn't auto-killed, and stops the watchdog when
+   * the turn ends. system_init / available_commands_update / current_mode_update
+   * are deliberately NOT treated as progress — claude emits them while idle. */
+  private watchTurnLiveness(update: SessionUpdate): void {
+    if (!this.watchdog) return;
+    switch (update.kind) {
+      case 'tool_call':
+        this.openToolCalls.add(update.toolCall.toolCallId);
+        this.watchdog.progress();
+        break;
+      case 'tool_call_update':
+        if (update.toolCall.status === 'completed' || update.toolCall.status === 'failed') {
+          this.openToolCalls.delete(update.toolCall.toolCallId);
+        }
+        this.watchdog.progress();
+        break;
+      case 'agent_message_chunk':
+      case 'agent_thought_chunk':
+      case 'user_message_chunk':
+      case 'usage':
+      case 'usage_breakdown':
+      case 'plan':
+      case 'permission_request':
+        // The agent is now blocked on a human decision — pause stall
+        // escalation so we don't warn/auto-cancel before the user responds.
+        this.awaitingPermission = true;
+        this.watchdog.progress();
+        break;
+      case 'result':
+      case 'error':
+        this.openToolCalls.clear();
+        this.awaitingPermission = false;
+        this.watchdog.clear();
+        this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
+        break;
+      default:
+        break;
+    }
+  }
+
   private onTurnEvent(update: SessionUpdate): void {
     if (update.kind === 'agent_message_chunk' && update.content?.type === 'text') {
       this.currentAssistantBuf += update.content.text ?? '';
@@ -1149,6 +1283,7 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      this.watchTurnLiveness(update);
       if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
         firstEventAt = Date.now();
         const ms = firstEventAt - spawnStart;
@@ -1313,6 +1448,11 @@ export class SessionManager {
     // session it described.
     this.startupNoticeCleanup?.();
     this.startupNoticeCleanup = undefined;
+    // Stop the stall watchdog so its timer can't fire against a torn-down
+    // or replaced session.
+    this.watchdog?.clear();
+    this.watchdog = undefined;
+    this.openToolCalls.clear();
   }
 
   /** Emit a structured startup notice with diagnostic detail (resolved
@@ -1653,6 +1793,7 @@ export class SessionManager {
     this.unsubscribe = this.session.onEvent((update) => {
       this.store.appendUpdate(id, update);
       this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
+      this.watchTurnLiveness(update);
       if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
         firstEventAt = Date.now();
         const ms = firstEventAt - spawnStart;
@@ -1670,6 +1811,14 @@ export class SessionManager {
     });
 
     this.meta = loaded.meta;
+    // Re-hydrate the per-backend native-session memory so a panel reopened on
+    // this conversation knows which backends already have a native thread — and
+    // resumes them natively instead of re-summarizing on switch.
+    if (this.meta.backendSessions) {
+      for (const [b, id] of Object.entries(this.meta.backendSessions)) {
+        if (id) this.previousSessionByBackend.set(b as BackendId, id);
+      }
+    }
     this.titled = true; // existing session already has its title
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });

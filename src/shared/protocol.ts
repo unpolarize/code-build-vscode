@@ -44,6 +44,12 @@ export interface SessionMeta {
    * the agent itself wrote. Set the first time the backend emits a
    * `system_init` event; never reassigned. */
   backendSessionId?: string;
+  /** Durable per-backend native-session memory for THIS conversation: maps a
+   * backend id -> the CB local session id that already holds that backend's
+   * native thread. Lets a switch back to a backend the conversation has
+   * already used resume natively (via that session's `--resume`) instead of
+   * re-summarizing. Survives panel reopen (persisted on the meta line). */
+  backendSessions?: Partial<Record<BackendId, string>>;
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */

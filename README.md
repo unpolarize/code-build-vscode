@@ -106,6 +106,7 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
 1. Click the **Code Build** icon in the Activity Bar for the sidebar chat, **or** run
    **Code Build: New Conversation** (`Cmd/Ctrl+N`) to open a chat as an editor tab.
 2. Pick a backend (Claude / Grok / Codex / …) and a permission mode in the header.
+   > **Default is `bypass` (autonomous).** Out of the box, new conversations run the agent without per-action approval prompts (Claude Code's `--dangerously-skip-permissions` workflow), and in bypass mode your `$HOME` is trusted. To require approvals, set `codeBuild.allowDangerouslySkipPermissions` to `false` or pick `default` / `plan` / `acceptEdits`.
 3. Type a request and press **Enter**. Type `/` to see backend-provided slash commands (per-agent).
    Type `@` (or pick from suggestions) to reference a workspace file as context; `@browser` or
    `@web` for browser/web context hints. File references become `resource_link` blocks (or

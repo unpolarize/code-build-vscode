@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.6.0",
+  "version": "0.9.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -253,13 +253,13 @@
             "acceptEdits",
             "bypass"
           ],
-          "default": "default",
-          "description": "Initial permission mode for new conversations."
+          "default": "bypass",
+          "description": "Initial permission mode for new conversations. Defaults to 'bypass' — the agent runs autonomously without per-action approval prompts (Claude Code's --dangerously-skip-permissions / terminal 'YOLO' workflow). Requires codeBuild.allowDangerouslySkipPermissions to stay enabled, otherwise bypass is downgraded to 'default' at session start. Choose 'default', 'plan', or 'acceptEdits' for an approval-based flow."
         },
         "codeBuild.allowDangerouslySkipPermissions": {
           "type": "boolean",
-          "default": false,
-          "description": "Permit the 'bypass' permission mode. Security-sensitive; off by default."
+          "default": true,
+          "description": "Permit the 'bypass' permission mode, which runs the agent with no confirmation prompts. Enabled by default so new conversations start in autonomous (bypass) mode. SECURITY-SENSITIVE: while on, the agent can read/write files and run commands without asking — and in bypass mode your home directory is trusted by default (see codeBuild.additionalTrustedDirs). Turn this off to disable bypass and fall back to approval-based modes."
         },
         "codeBuild.showActiveQuestionBanner": {
           "type": "boolean",
@@ -278,7 +278,9 @@
         },
         "codeBuild.additionalTrustedDirs": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "Extra directories the agent's tools are allowed to read/write beyond the workspace folder (passed to claude as --add-dir, mirrored for ACP backends in bypass mode). Without this, even 'bypass' permission mode keeps the agent scoped to the workspace. Leave empty to use defaults: in bypass mode the user's $HOME is automatically trusted (matches terminal-claude behaviour); in other modes only the workspace is in scope."
         },
@@ -291,6 +293,18 @@
           "type": "boolean",
           "default": true,
           "description": "Connect to the default backend as soon as a chat opens (so slash commands and the agent are ready immediately, like Claude Code). Disable to start only on first prompt."
+        },
+        "codeBuild.stallWarnSeconds": {
+          "type": "number",
+          "default": 45,
+          "minimum": 0,
+          "description": "Seconds of total silence (no agent output and no tokens) during a turn before CB warns that the agent may be stuck and offers a Stop. Catches the intermittent claude CLI 'error_during_execution' stall that leaves the 'working…' spinner frozen. Set to 0 to disable the stall watchdog entirely."
+        },
+        "codeBuild.stallAutoCancelSeconds": {
+          "type": "number",
+          "default": 120,
+          "minimum": 0,
+          "description": "Seconds of total silence before CB auto-stops a stuck turn so the UI never stays frozen. Suppressed while a tool/command is running (long builds are silent by design — you Stop those yourself). Must exceed stallWarnSeconds; set to 0 (or ≤ stallWarnSeconds) for warn-only, where you always click Stop."
         },
         "codeBuild.defaultModel": {
           "type": "string",
@@ -322,7 +336,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.6.0.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.8.0.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

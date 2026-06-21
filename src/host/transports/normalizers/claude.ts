@@ -30,17 +30,24 @@ export class ClaudeNormalizer {
 
   parseLine(obj: ClaudeMessage): SessionUpdate[] {
     switch (obj.type) {
-      case 'system':
-        if (obj.session_id) {
-          this.sessionId = obj.session_id;
-          // Surface the native session id so the host can persist it on
-          // SessionMeta. Without this, a panel reload can't `--resume`
-          // and the agent spawns blank ("I don't have prior context"
-          // bug). Emitted only on the first system line — subsequent
-          // ones (claude does occasionally re-emit) carry the same id.
-          return [{ kind: 'system_init', backendSessionId: obj.session_id }];
-        }
-        return [];
+      case 'system': {
+        if (!obj.session_id) return [];
+        // Capture the native session id for `--resume` regardless of how
+        // many system lines claude emits.
+        const firstForId = obj.session_id !== this.sessionId;
+        this.sessionId = obj.session_id;
+        // Emit the `system_init` UPDATE only ONCE per backend session id.
+        // Claude re-emits `system` lines throughout a turn (subtype
+        // 'thinking_tokens', status pings, etc.), each carrying the SAME
+        // session_id. The previous code surfaced a system_init for EVERY
+        // one — hundreds-to->1000 per session (measured 1109 in the field)
+        // — which (a) spammed the store's synchronous appendFileSync on the
+        // hot path and (b) defeated mid-turn stall detection, because each
+        // bogus event looked like fresh agent progress and reset the
+        // watchdog. The host still needs the FIRST one to persist the
+        // resume id on SessionMeta (sessionManager.captureBackendSessionId).
+        return firstForId ? [{ kind: 'system_init', backendSessionId: obj.session_id }] : [];
+      }
       case 'assistant':
         return this.fromAssistant(obj);
       case 'user':
