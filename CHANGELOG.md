@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 — 2026-06-24
+
+### Fix: session titles no longer show raw slash-command wrapper tags
+
+Sessions started with a slash command titled as `<command-message>load</command-message>…`.
+`deriveTitle` now runs the first prompt through `cleanCommandText` (shared util): a
+`/command` becomes a readable `/load <args>`, and harness wrapper blocks
+(`<command-message>`, `<system-reminder>`, …) are stripped from plain prompts.
+
 ## 0.9.2 — 2026-06-24
 
 ### Composer / webview UI refinements

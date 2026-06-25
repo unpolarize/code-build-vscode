@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
+import { cleanCommandText } from '../shared/cleanCommandText';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll, BACKENDS, resolveBin } from './backendRegistry';
 import type { AgentSession } from './agentSession';
@@ -1957,7 +1958,8 @@ function backendLabel(id: BackendId): string {
 
 /** Make a short, human-readable session title from the first user message. */
 function deriveTitle(text: string): string {
-  const firstLine = text.trim().split('\n').find((l) => l.trim().length > 0) ?? text.trim();
+  const base = cleanCommandText(text);
+  const firstLine = base.trim().split('\n').find((l) => l.trim().length > 0) ?? base.trim();
   const cleaned = firstLine.replace(/\s+/g, ' ').trim();
   const max = 60;
   return cleaned.length > max ? cleaned.slice(0, max - 1).trimEnd() + '…' : cleaned || 'New chat';
