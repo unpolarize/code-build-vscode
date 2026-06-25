@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.4 — 2026-06-24
+
+### Fix: external/native Claude session titles also stripped of wrapper tags
+
+0.9.3 cleaned titles derived from the composer, but sessions opened/continued from
+the history picker still showed `<command-message>load</command-message>…` — those
+titles come from `externalSources` reading the Claude transcript's first user
+message. Now run through `cleanCommandText` at the source.
+
 ## 0.9.3 — 2026-06-24
 
 ### Fix: session titles no longer show raw slash-command wrapper tags

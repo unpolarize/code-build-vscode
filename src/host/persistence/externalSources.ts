@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import type { BackendId } from '../../shared/acpTypes';
 import type { SessionMeta, SessionSource } from '../../shared/protocol';
+import { cleanCommandText } from '../../shared/cleanCommandText';
 
 const CLAUDE_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const GROK_ROOT = path.join(os.homedir(), '.grok', 'sessions');
@@ -102,7 +103,8 @@ export function listClaudeSessions(): SessionMeta[] {
         continue;
       }
       const sessionId = file.replace(/\.jsonl$/, '');
-      const title = truncateTitle(firstClaudeUserText(filePath)) || `claude · ${sessionId.slice(0, 8)}`;
+      const title =
+        truncateTitle(cleanCommandText(firstClaudeUserText(filePath))) || `claude · ${sessionId.slice(0, 8)}`;
       out.push({
         id: sessionId,
         backend: 'claude',
