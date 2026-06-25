@@ -12,6 +12,9 @@ not listed.
 | Effort / thinking-budget picker | Claude `--effort`, Codex `--reasoning-effort`. Hidden for grok (not honored). New setting `codeBuild.defaultEffort`. Five steps + `default`. |
 | Per-turn files-changed list (robust) | `collectModifiedFiles` now extracts paths from tool-name + rawInput for Edit/Write/MultiEdit/NotebookEdit (claude) and search_replace/write/str_replace_editor/edit_file/apply_patch (grok/codex). Previously only diff content blocks counted, so most edit tools produced no entry. |
 | Imported-session model pre-fill | When opening a claude session via "Open in Code Build", the dominant model (highest output-token volume) is read from the transcript and pre-selected in the picker. |
+| Drag-drop files into composer | App-level `onDrop` (`webview-ui/src/App.tsx`) intercepts `text/uri-list` / `application/vnd.code.uri-list` / `resourceurls` / raw `Files` from Explorer + OS drags. Drop anywhere in the chat panel (not just the composer strip) → `@path` mention; image files attach as tiles via the `cb-app-drop-files` CustomEvent. Required `preventDefault()` in the dragover handler to stop VS Code's workbench-level "open file / open folder" fallback. |
+| Reasoning trace expand-on-click | Thinking renders as a `<details>` element with the first line of thought as the summary preview; click expands the full trace. Per-message timestamp chip + auto-refresh. Empty thoughts filtered. |
+| Active question banner | Sticky banner pinned under the header with the current/previous prompt — matches Claude Code's "scroll past but still see what you asked" pattern. Toggle: `codeBuild.showActiveQuestionBanner`. |
 
 ## Confirmed gaps — high value, not done yet
 
@@ -21,8 +24,6 @@ not listed.
 | Compact / clear-context action | Claude has `/compact`; users will want a one-click equivalent here. | Built-in `/compact` slash command that posts a synthetic prompt; SessionManager spawns a fresh process at the same id with the previous transcript summarised. |
 | Subagent indicator | claude-code panel highlights when a Task subagent is running. Code-build today shows the tool call but doesn't distinguish "the agent spawned a sub-task". | `tool_call_update.title == 'Task'` → render with a different icon + collapse the inner trace. |
 | Branch / cwd badge | Each backend's behaviour depends on the workspace folder + git branch. claude-code shows the cwd in the header; grok-build-vscode shows the branch on session card. | Show `cwd basename · branch` in the header (run `git rev-parse --abbrev-ref HEAD` in cwd at hydrate). |
-| Reasoning trace expand-on-click | claude-code shows a collapsed "Thought for 14s · click to expand" pill on every thinking pass. Code-build emits `agent_thought_chunk` items but renders them inline italics — no toggle. | Collapse thoughts into a single pill per turn; expand on click. |
-| Drag-drop files into composer | Already accepts paste; both upstream extensions accept drag too. | Composer textarea `onDrop` handler — same code path as paste; reuse `ImageAttachment` shape for binary, `resource_link` for any other file. |
 | Session rename | Right-click row in history dropdown → rename. claude-code and grok-build both have it. | Add `renameSession(id, title)` to SessionStore; right-click handler on `.history-item`. |
 | Export / share transcript | Both upstreams have it. | Existing `jsonlExporter.ts` already produces a per-session JSONL — wire a "Copy as Markdown" / "Save as…" command on the history menu. |
 | Stop-and-correct mid-stream | Claude has a "Stop" button that the user can interrupt + send a new prompt. Code-build's Stop only cancels; doesn't queue. | Composer "Stop and edit" variant: cancel + clear input only after partial response is rendered. |

@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",

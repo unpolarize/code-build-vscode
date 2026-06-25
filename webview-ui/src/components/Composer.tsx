@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ImageAttachment } from '../store';
-import { findActiveMention, parseUriList } from '../util/mentions';
+import { findActiveMention } from '../util/mentions';
 import { post } from '../vscodeApi';
 
 /** A file resolved by the host from a drag-and-drop onto the chat. */
@@ -44,7 +44,6 @@ export function Composer({
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [caret, setCaret] = useState(0);
-  const [dragActive, setDragActive] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -153,8 +152,34 @@ export function Composer({
         applyRef.current((m.items ?? []) as DroppedItem[]);
       }
     }
+    // App-level drop forwards image files via a CustomEvent so we don't
+    // duplicate the FileReader→base64 pipeline up there. App handles
+    // workspace-path URIs directly (posts `resolveDroppedUris`); only
+    // raw image bytes need to flow through this composer-local path.
+    function onAppDropFiles(ev: Event) {
+      const files = (ev as CustomEvent<File[]>).detail ?? [];
+      for (const file of files) {
+        if (!file.type.startsWith('image/')) continue;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result;
+          if (typeof result !== 'string') return;
+          const comma = result.indexOf(',');
+          const data = comma >= 0 ? result.slice(comma + 1) : result;
+          setImages((current) => [
+            ...current,
+            { mimeType: file.type || 'image/png', data, name: file.name || `dropped-${current.length + 1}` }
+          ]);
+        };
+        reader.readAsDataURL(file);
+      }
+    }
     window.addEventListener('message', onMsg);
-    return () => window.removeEventListener('message', onMsg);
+    window.addEventListener('cb-app-drop-files', onAppDropFiles as EventListener);
+    return () => {
+      window.removeEventListener('message', onMsg);
+      window.removeEventListener('cb-app-drop-files', onAppDropFiles as EventListener);
+    };
   }, []);
 
   function submit() {
@@ -182,52 +207,13 @@ export function Composer({
     setCaret(e.currentTarget.selectionStart ?? e.currentTarget.value.length);
   }
 
-  /** Drag-and-drop from the Explorer (or OS). Explorer drags expose resources
-   * as `text/uri-list`; the host maps those to `@path` mentions. OS image drags
-   * carry no workspace path, so we read them inline like a paste. */
-  function onDrop(e: React.DragEvent) {
-    const dt = e.dataTransfer;
-    if (!dt) return;
-    let uris = parseUriList(dt.getData('text/uri-list'));
-    if (uris.length === 0) {
-      const ru = dt.getData('resourceurls');
-      if (ru) {
-        try {
-          uris = (JSON.parse(ru) as string[]).map((u) => decodeURIComponent(u));
-        } catch {
-          /* not the format we expected — ignore */
-        }
-      }
-    }
-    const imageFiles: File[] = [];
-    if (dt.files) {
-      for (let i = 0; i < dt.files.length; i++) {
-        const f = dt.files[i];
-        if (f.type.startsWith('image/')) imageFiles.push(f);
-      }
-    }
-    if (uris.length === 0 && imageFiles.length === 0) return; // let the browser handle it
-    e.preventDefault();
-    setDragActive(false);
-    if (uris.length > 0) {
-      post({ type: 'resolveDroppedUris', uris });
-    } else {
-      for (const file of imageFiles) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result;
-          if (typeof result !== 'string') return;
-          const comma = result.indexOf(',');
-          const data = comma >= 0 ? result.slice(comma + 1) : result;
-          setImages((current) => [
-            ...current,
-            { mimeType: file.type || 'image/png', data, name: file.name || `dropped-${current.length + 1}` }
-          ]);
-        };
-        reader.readAsDataURL(file);
-      }
-    }
-  }
+  // Drop handling moved to App.tsx so drops anywhere in the chat
+  // panel (not just the composer strip) become @-mentions. App posts
+  // `resolveDroppedUris` to the host; the host's reply
+  // `droppedFilesResolved` is caught by the message listener above
+  // and applied via applyRef → @path inserts. Raw image files come
+  // back via the `cb-app-drop-files` CustomEvent the listener above
+  // also subscribes to.
 
   /** Cmd/Ctrl-V handler: intercept image clipboard items, convert each to
    * base64, and attach as a tile preview. Multiple images per paste are
@@ -270,16 +256,7 @@ export function Composer({
   }
 
   return (
-    <div
-      className={`composer${dragActive ? ' drop-active' : ''}`}
-      onDragOver={(e) => {
-        // preventDefault is required for the drop event to fire at all.
-        e.preventDefault();
-        if (!dragActive) setDragActive(true);
-      }}
-      onDragLeave={() => setDragActive(false)}
-      onDrop={onDrop}
-    >
+    <div className="composer">
       {slashSuggestions.length > 0 && (
         <div className="slash-menu">
           {slashSuggestions.map((c) => (

@@ -47,4 +47,19 @@ export function webviewOptions(extensionUri: vscode.Uri): vscode.WebviewOptions 
   };
 }
 
+// Note on drag-drop: VS Code's webview panel uses native HTML5 drag
+// events — there's no dropMimeTypes setting to advertise (that's a
+// WebviewView/registerWebviewViewProvider field, not a WebviewOptions
+// field). The trick to making Explorer drags work as @-mentions
+// instead of "open in editor" is twofold:
+//   1. The webview MUST call `preventDefault()` in its dragover
+//      handler. Without it the drop event never fires and VS Code
+//      falls back to its workbench-level handler (open file / open
+//      folder).
+//   2. The handler must be wide enough — attaching to a small
+//      strip like the composer leaves the rest of the panel
+//      passing the drop through to VS Code.
+// Both are now handled in webview-ui/src/App.tsx at the root .app
+// container level.
+
 export { isWebviewToHost };

@@ -946,8 +946,14 @@ body {
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   padding: 8px 10px;
 }
-/* Highlight while a file is dragged over the chat (drop → @-mention). */
-.composer.drop-active {
+/* Highlight while a file is being dragged over the entire chat
+ * panel. Drop targets used to be the small composer strip only —
+ * which left every other area of the panel passing the drop
+ * through to VS Code's workbench (so it opened the file in an
+ * editor instead of producing an @-mention). The drop target is
+ * now the whole .app root; the highlight outlines the panel so
+ * users see exactly what's accepting the drop. */
+.app.app-drop-active {
   outline: 2px dashed var(--vscode-focusBorder);
   outline-offset: -2px;
   background: var(--vscode-list-dropBackground, rgba(64, 128, 255, 0.08));

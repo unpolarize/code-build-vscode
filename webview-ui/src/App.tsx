@@ -1,7 +1,8 @@
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
 import { post, setState } from './vscodeApi';
+import { parseUriList } from './util/mentions';
 import { appendUser, initialState, markAskUserAnswered, reduce, type ChatState, type ImageAttachment } from './store';
 import { BUILTIN_COMMANDS, BUILTIN_NAMES } from './builtinCommands';
 import { Header } from './components/Header';
@@ -34,6 +35,79 @@ function appReducer(state: ChatState, action: Action): ChatState {
 
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const [dragActive, setDragActive] = useState(false);
+
+  // App-level drop handler. The Composer used to handle drops itself,
+  // but that left every other area of the panel (chat history, header,
+  // banners) as a non-drop target — VS Code's default workbench
+  // handler then opened the dragged file in an editor / new window
+  // instead of producing an @-mention. Hoisting the handler to the
+  // root `.app` div catches drops anywhere in the webview and routes
+  // them through the existing `resolveDroppedUris` → host →
+  // `droppedFilesResolved` round-trip the Composer's message listener
+  // already handles. Reported in notes.md as the drag-from-Explorer
+  // bug.
+  function onAppDragOver(e: React.DragEvent) {
+    // preventDefault is required for the drop event to actually fire.
+    e.preventDefault();
+    if (!dragActive) setDragActive(true);
+  }
+  function onAppDragLeave(e: React.DragEvent) {
+    // Only flip off when the drag actually leaves the app root, not
+    // when it crosses a child boundary (relatedTarget would be a
+    // descendant). currentTarget.contains() filters those out.
+    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setDragActive(false);
+    }
+  }
+  function onAppDrop(e: React.DragEvent) {
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    let uris = parseUriList(dt.getData('text/uri-list'));
+    if (uris.length === 0) {
+      // VS Code's Explorer also exposes drops via the
+      // application/vnd.code.uri-list MIME type and the legacy
+      // `resourceurls` JSON payload. Try both before giving up.
+      const codeMime = dt.getData('application/vnd.code.uri-list');
+      if (codeMime) {
+        uris = parseUriList(codeMime);
+      }
+      if (uris.length === 0) {
+        const ru = dt.getData('resourceurls');
+        if (ru) {
+          try {
+            uris = (JSON.parse(ru) as string[]).map((u) => decodeURIComponent(u));
+          } catch {
+            /* not the format we expected — ignore */
+          }
+        }
+      }
+    }
+    // OS image drags carry no workspace path but DO carry the file
+    // object on dt.files. Forward to the Composer via a custom event
+    // so the existing image-tile path keeps working from anywhere
+    // in the panel.
+    const files: File[] = [];
+    if (dt.files) {
+      for (let i = 0; i < dt.files.length; i++) {
+        files.push(dt.files[i]);
+      }
+    }
+    if (uris.length === 0 && files.length === 0) return; // let VS Code handle it
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (uris.length > 0) {
+      post({ type: 'resolveDroppedUris', uris });
+    }
+    if (files.length > 0) {
+      // Composer already has the FileReader → base64 logic wired
+      // for its inline drop handler. Re-use it by emitting a
+      // CustomEvent the Composer listens for. Keeps the
+      // image-attachment state in one place.
+      window.dispatchEvent(new CustomEvent('cb-app-drop-files', { detail: files }));
+    }
+  }
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -144,7 +218,12 @@ export function App() {
   }
 
   return (
-    <div className="app">
+    <div
+      className={`app${dragActive ? ' app-drop-active' : ''}`}
+      onDragOver={onAppDragOver}
+      onDragLeave={onAppDragLeave}
+      onDrop={onAppDrop}
+    >
       <Header
         state={state}
         onPickBackend={onPickBackend}

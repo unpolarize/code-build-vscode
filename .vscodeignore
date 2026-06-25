@@ -4,6 +4,7 @@ src/**
 webview-ui/**
 test/**
 node_modules/**
+../agent-memory-core/**
 **/*.ts
 **/*.map
 esbuild.js

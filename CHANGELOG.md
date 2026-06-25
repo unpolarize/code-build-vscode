@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2 — 2026-06-24
+
+### Composer / webview UI refinements
+
+Reapplied in-progress webview UI work on top of 0.9.1 — composer layout and input
+handling (`Composer.tsx`), `App.tsx` wiring, `webviewHtml.ts`, and styles — plus
+`docs/` (DATA-STORES, parity-gaps) and `.vscodeignore` updates. No host/protocol changes.
+
 ## 0.8.0 — 2026-06-19
 
 ### Fix: stuck "working…" turns now warn + auto-recover; Stop actually stops

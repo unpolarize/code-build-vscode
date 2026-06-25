@@ -18,14 +18,14 @@ What it persists locally:
 - A **session store** under `~/.codebuild/` — one JSONL transcript per chat plus an
   `index.json` history list (`src/host/persistence/store.ts`).
 - Sticky UI selections (last mode/model/effort) in VS Code **`globalState`**
-  (`src/host/sessionManager.ts:286`) — not on disk in `~/.codebuild`.
+  (`src/host/sessionManager.ts:640`) — not on disk in `~/.codebuild`.
 
 Relationship to **Code Sessions**: the two extensions are complementary. **Code Build
 *produces* sessions** (it runs the agents and writes transcripts); **Code Sessions
 *analyzes* them** (it indexes and visualizes transcripts). Code Build exports a
 Claude-Code-style turn JSONL (`src/host/persistence/jsonlExporter.ts`) shaped to be
 readable by the Code Sessions indexer, and cross-links into Code Sessions via the
-`codeSessions.viewConversation` command (`src/extension.ts:154`).
+`codeSessions.viewConversation` command (`src/extension.ts:174`).
 
 ---
 
