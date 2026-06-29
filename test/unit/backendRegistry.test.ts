@@ -1,6 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BACKENDS } from '../../src/host/backendRegistry';
+import { BACKENDS, claudeFamilyAlias } from '../../src/host/backendRegistry';
+
+test('claudeFamilyAlias collapses pinned / ARN / vendor-prefixed claude ids to a family alias', () => {
+  // version-pinned ids leaked from a transcript → alias the CLI resolves per-environment
+  assert.equal(claudeFamilyAlias('claude-opus-4-8'), 'opus');
+  assert.equal(claudeFamilyAlias('us.anthropic.claude-opus-4-1-20250805-v1:0'), 'opus');
+  assert.equal(claudeFamilyAlias('global.anthropic.claude-haiku-4-5-20251001-v1:0'), 'haiku');
+  assert.equal(claudeFamilyAlias('claude-sonnet-4-6'), 'sonnet');
+  // already an alias → unchanged
+  assert.equal(claudeFamilyAlias('opus'), 'opus');
+  // opaque inference-profile ARN carries no family → undefined (caller uses the env default)
+  assert.equal(claudeFamilyAlias('arn:aws:bedrock:us-west-2:387769110234:application-inference-profile/xn8omlpdqv2w'), undefined);
+  // non-claude / empty → undefined
+  assert.equal(claudeFamilyAlias('grok-4'), undefined);
+  assert.equal(claudeFamilyAlias(undefined), undefined);
+});
 
 const grok = (opts: Parameters<(typeof BACKENDS)['grok']['buildArgs']>[0]) =>
   BACKENDS.grok.buildArgs(opts);

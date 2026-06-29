@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.5 — 2026-06-29
+
+### Resume across differently-provisioned Claude installs
+
+- **Fix:** resuming a session no longer passes the transcript's version-pinned model id
+  (e.g. `claude-opus-4-8`) to `claude --model`. On a differently-provisioned install —
+  Bedrock that only serves Opus 4.1, an older account — that id is rejected with
+  *"The provided model identifier is invalid"*. The resume path now collapses the model
+  to its family **alias** (`opus`/`sonnet`/`haiku`), which the CLI resolves to whatever
+  that environment actually provides (`claudeFamilyAlias`); an unrecognizable id (opaque
+  inference-profile ARN) falls back to the environment default.
+
 ## 0.9.4 — 2026-06-24
 
 ### Fix: external/native Claude session titles also stripped of wrapper tags

@@ -6,7 +6,7 @@ import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll, BACKENDS, resolveBin } from './backendRegistry';
+import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -1335,7 +1335,13 @@ export class SessionManager {
       // For claude, the highest-token-volume model in `byModel` wins (a
       // session that mostly used Opus shouldn't suddenly switch to
       // Sonnet on resume).
-      const dominantModel = pickDominantModel(replay.byModel ?? []);
+      // For claude, collapse the transcript's version-pinned model id to a family
+      // alias so resuming on a differently-provisioned install (e.g. Bedrock that
+      // only serves Opus 4.1) resolves it instead of rejecting "model identifier is
+      // invalid". An unrecognizable id (opaque ARN) → undefined → keep the validated
+      // default rather than forcing a bad `--model`.
+      const rawDominant = pickDominantModel(replay.byModel ?? []);
+      const dominantModel = args.source === 'claude' ? claudeFamilyAlias(rawDominant) : rawDominant;
       if (dominantModel && this.meta) {
         this.meta.model = dominantModel;
         this.store.updateMeta(this.meta);

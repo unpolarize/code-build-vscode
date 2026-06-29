@@ -15,6 +15,26 @@ export type EffortLevel = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max
  * supports effort). Kept here so the webview and host agree on the set. */
 export const EFFORT_LEVELS: EffortLevel[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
+/**
+ * Collapse any claude model id — version-pinned (`claude-opus-4-8`), vendor-prefixed
+ * (`us.anthropic.claude-opus-4-1-…`), or bare — to its family alias (`opus`/`sonnet`/
+ * `haiku`). The `claude` CLI resolves these aliases to whatever model each environment
+ * actually provisions, so they're portable across installs. Resuming a session must
+ * pass the alias, NOT the transcript's pinned id: a differently-provisioned install
+ * (e.g. Bedrock that only serves Opus 4.1) rejects an unknown pinned id with
+ * "The provided model identifier is invalid". Returns undefined for ids with no
+ * recognizable family (opaque ARNs, non-claude models) so the caller falls back to
+ * the environment default.
+ */
+export function claudeFamilyAlias(modelId: string | undefined): string | undefined {
+  if (!modelId) return undefined;
+  const m = modelId.toLowerCase();
+  if (m.includes('opus')) return 'opus';
+  if (m.includes('sonnet')) return 'sonnet';
+  if (m.includes('haiku')) return 'haiku';
+  return undefined;
+}
+
 export interface BackendSpec {
   id: BackendId;
   label: string;
