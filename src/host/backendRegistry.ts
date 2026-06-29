@@ -97,7 +97,15 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
         'stream-json',
         '--verbose'
       ];
-      if (model && model !== 'default') args.push('--model', model);
+      // Always hand claude a portable FAMILY ALIAS (opus/sonnet/haiku), never a
+      // version-pinned id. A pinned id baked into a resumed session (`--resume`)
+      // can reach a Bedrock/enterprise backend untranslated and be rejected with
+      // "The provided model identifier is invalid" — even when the same id worked
+      // on a fresh turn (where modelOverrides translate it). The alias resolves to
+      // whatever model the environment actually provisions. Unknown ids (opaque
+      // inference-profile ARNs) pass through unchanged.
+      const claudeModel = claudeFamilyAlias(model) ?? model;
+      if (claudeModel && claudeModel !== 'default') args.push('--model', claudeModel);
       // Permission handling. In bypass mode we hand claude full autonomy via
       // --dangerously-skip-permissions (the only flag that actually stops ALL
       // prompts in headless -p mode — --permission-mode bypassPermissions

@@ -48,3 +48,23 @@ test('grok: max maps to xhigh (grok has no `max` level)', () => {
 test('grok: default model and default effort add no flags', () => {
   assert.deepEqual(grok({ ...base, model: 'default', effort: 'default' }), ['agent', 'stdio']);
 });
+
+const claude = (opts: Parameters<(typeof BACKENDS)['claude']['buildArgs']>[0]) =>
+  BACKENDS.claude.buildArgs(opts);
+
+test('claude: passes a family alias for --model, never a version-pinned id (Bedrock-safe resume)', () => {
+  const a = claude({ ...base, model: 'claude-opus-4-8' });
+  const i = a.indexOf('--model');
+  assert.notEqual(i, -1);
+  assert.equal(a[i + 1], 'opus'); // pinned id collapsed to the portable alias
+});
+
+test('claude: a vendor-prefixed pinned id also collapses to its family alias', () => {
+  const a = claude({ ...base, model: 'us.anthropic.claude-sonnet-4-6' });
+  assert.equal(a[a.indexOf('--model') + 1], 'sonnet');
+});
+
+test('claude: an already-aliased model is passed through; default adds no --model', () => {
+  assert.equal(claude({ ...base, model: 'opus' })[claude({ ...base, model: 'opus' }).indexOf('--model') + 1], 'opus');
+  assert.ok(!claude({ ...base, model: 'default' }).includes('--model'));
+});

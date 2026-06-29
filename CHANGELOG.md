@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.6 — 2026-06-29
+
+### Bedrock-safe model on every turn (fixes mid-session "invalid model identifier")
+
+- **Fix:** the model alias is now applied at the spawn choke point (`buildArgs`), so
+  **every** claude turn — including `--resume` continuations (2nd input onward) — passes a
+  portable family alias (`opus`/`sonnet`/`haiku`), never a version-pinned id. On
+  Bedrock/enterprise installs a pinned id (e.g. `claude-opus-4-8`) can reach the backend
+  untranslated on resume and be rejected with *"The provided model identifier is invalid"*,
+  even when the same id worked on the first (fresh) turn where `modelOverrides` translate it.
+  Opaque inference-profile ARNs pass through unchanged. (Supersedes 0.9.5's resume-only fix.)
+
 ## 0.9.5 — 2026-06-29
 
 ### Resume across differently-provisioned Claude installs
