@@ -68,3 +68,71 @@ test('claude: an already-aliased model is passed through; default adds no --mode
   assert.equal(claude({ ...base, model: 'opus' })[claude({ ...base, model: 'opus' }).indexOf('--model') + 1], 'opus');
   assert.ok(!claude({ ...base, model: 'default' }).includes('--model'));
 });
+
+test('claude: a discovered pinned id with no family alias passes through as-is (e.g. fable)', () => {
+  // fable isn't opus/sonnet/haiku, so claudeFamilyAlias() returns undefined and
+  // the real id is used — which is exactly why a fable-configured machine can run it.
+  const a = claude({ ...base, model: 'claude-fable-5' });
+  assert.equal(a[a.indexOf('--model') + 1], 'claude-fable-5');
+});
+
+// ── dynamic model discovery ─────────────────────────────────────────────────
+import { modelsFor } from '../../src/host/backendRegistry';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir, homedir } from 'node:os';
+import { join } from 'node:path';
+
+function withFakeHome(fn: (home: string) => void): void {
+  const home = mkdtempSync(join(tmpdir(), 'cb-home-'));
+  const prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  process.env.HOME = home;
+  process.env.USERPROFILE = home; // os.homedir() on win32
+  try {
+    fn(home);
+  } finally {
+    process.env.HOME = prev.HOME;
+    process.env.USERPROFILE = prev.USERPROFILE;
+    rmSync(home, { recursive: true, force: true });
+  }
+}
+
+test('claude: discovers the configured model + session-transcript models, merged with aliases', () => {
+  // Skip if this platform's homedir() ignores env (rare); the assertions below
+  // only hold when we can redirect HOME.
+  withFakeHome((home) => {
+    if (homedir() !== home) return;
+    const cdir = join(home, '.claude');
+    mkdirSync(cdir, { recursive: true });
+    // configured default carries a [1m] context tag that must be stripped
+    writeFileSync(join(cdir, 'settings.json'), JSON.stringify({ model: 'claude-fable-5[1m]' }));
+    const proj = join(cdir, 'projects', 'repo-a');
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(
+      join(proj, 's1.jsonl'),
+      '{"type":"x","model":"claude-opus-4-8"}\n{"model":"<synthetic>"}\n{"model":"claude-fable-5"}\n'
+    );
+
+    const models = modelsFor('claude');
+    assert.equal(models[0], 'default', 'default leads');
+    for (const alias of ['opus', 'sonnet', 'haiku']) assert.ok(models.includes(alias), `keeps alias ${alias}`);
+    assert.ok(models.includes('claude-fable-5'), 'surfaces the configured/used model the old array could not');
+    assert.ok(models.includes('claude-opus-4-8'), 'surfaces a model seen in transcripts');
+    assert.ok(!models.includes('<synthetic>'), 'drops synthetic placeholder');
+    assert.equal(new Set(models).size, models.length, 'no duplicates');
+  });
+});
+
+test('claude: discovery miss falls back to the curated aliases (never worse than static)', () => {
+  withFakeHome((home) => {
+    if (homedir() !== home) return;
+    // empty fake home — no ~/.claude at all
+    assert.deepEqual(modelsFor('claude'), ['default', 'opus', 'sonnet', 'haiku']);
+  });
+});
+
+test('grok: discovery miss falls back to the static list', () => {
+  withFakeHome((home) => {
+    if (homedir() !== home) return;
+    assert.deepEqual(modelsFor('grok'), ['default', 'grok-build']);
+  });
+});

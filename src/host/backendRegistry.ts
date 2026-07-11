@@ -270,35 +270,181 @@ export async function detectAll(
   return results;
 }
 
-/** Resolve the model list for a backend at detection time. Grok ships a
- * `~/.grok/models_cache.json` the CLI keeps fresh — we read it so the picker
- * reflects what the user can actually select (and picks up new xAI models
- * without a code change). Other backends fall back to the static list on the
- * spec. Always prepends 'default' so the user can defer to the CLI. */
+/** Resolve the model list for a backend at detection time.
+ *
+ * Every backend now discovers what's actually available on THIS machine, so a
+ * newer model (e.g. `claude-fable-5`) shows up in the picker without a code
+ * change. Discovery is best-effort and additive: whatever a backend finds is
+ * merged with its curated aliases and de-duplicated, so a discovery miss never
+ * makes the picker worse than the static list. `default` always leads. */
 function discoverModels(spec: BackendSpec): string[] {
-  if (spec.id === 'grok') {
-    const fromCache = readGrokModels();
-    if (fromCache.length > 0) return ['default', ...fromCache];
-  }
-  return spec.models ?? [];
+  const discovered =
+    spec.id === 'grok' ? readGrokModels() : spec.id === 'claude' ? readClaudeModels() : spec.id === 'codex' ? readCodexModels() : [];
+  return dedupeModels(['default', ...(spec.models ?? []).filter((m) => m !== 'default'), ...discovered]);
 }
 
-/** Read model ids out of grok's local cache. Returns [] on any failure
- * (missing file, malformed JSON, hidden models) so callers fall back to
- * the static list. */
+/** Discovered model list for a backend id — the same list the picker shows.
+ * Use this (not the static `BACKENDS[id].models`) anywhere a model needs to be
+ * validated, so a dynamically-discovered selection (e.g. `claude-fable-5`)
+ * survives session restore. */
+export function modelsFor(id: BackendId): string[] {
+  const spec = BACKENDS[id];
+  return spec ? discoverModels(spec) : [];
+}
+
+/** Order-preserving de-dupe, dropping empties. */
+function dedupeModels(models: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const m of models) {
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
+  }
+  return out;
+}
+
+/** Lazy node builtins — kept out of the import graph for environments that
+ * don't need them (webview bundle). */
+function nodeMods() {
+  return {
+    fs: require('node:fs') as typeof import('node:fs'),
+    os: require('node:os') as typeof import('node:os'),
+    path: require('node:path') as typeof import('node:path')
+  };
+}
+
+/** Read model ids out of grok's local cache (the CLI keeps it fresh). Returns
+ * [] on any failure so callers fall back to the static list. */
 function readGrokModels(): string[] {
   try {
-    // Lazy require keeps these node builtins out of the module's import
-    // graph for environments that don't need them.
-    const fsmod = require('node:fs') as typeof import('node:fs');
-    const osmod = require('node:os') as typeof import('node:os');
-    const pathmod = require('node:path') as typeof import('node:path');
-    const p = pathmod.join(osmod.homedir(), '.grok', 'models_cache.json');
-    const raw = fsmod.readFileSync(p, 'utf8');
-    const json = JSON.parse(raw) as { models?: Record<string, { info?: { hidden?: boolean } }> };
+    const { fs, os, path } = nodeMods();
+    const p = path.join(os.homedir(), '.grok', 'models_cache.json');
+    const json = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      models?: Record<string, { info?: { hidden?: boolean } }>;
+    };
     const models = json.models ?? {};
     return Object.keys(models).filter((id) => !models[id]?.info?.hidden);
   } catch {
     return [];
   }
+}
+
+/** Discover Claude models for THIS machine. The `claude` CLI has no `models`
+ * subcommand and no model cache, so we combine two local signals:
+ *   1. the configured default in ~/.claude/settings.json (`model`, and any
+ *      fallback), stripping a trailing context-window tag like `[1m]`; and
+ *   2. distinct model ids seen in recent session transcripts under
+ *      ~/.claude/projects/<...>/*.jsonl.
+ * This is why `claude-fable-5` shows up on a machine configured to use it —
+ * the old hardcoded [opus,sonnet,haiku] alias list never could. Returns [] on
+ * any failure. */
+function readClaudeModels(): string[] {
+  const found = new Set<string>();
+  try {
+    const { fs, os, path } = nodeMods();
+    const home = os.homedir();
+
+    // (1) configured model(s) from settings.json
+    try {
+      const s = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      for (const key of ['model', 'fallbackModel', 'fallback-model']) {
+        const v = s[key];
+        if (typeof v === 'string') {
+          const id = normalizeClaudeModel(v);
+          if (id) found.add(id);
+        }
+      }
+    } catch {
+      /* settings optional */
+    }
+
+    // (2) model ids used in recent session transcripts (last ~10 files)
+    const projects = path.join(home, '.claude', 'projects');
+    const files = recentJsonl(fs, path, projects, 10);
+    const re = /"model":"([^"]+)"/g;
+    for (const file of files) {
+      try {
+        const text = fs.readFileSync(file, 'utf8');
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(text))) {
+          const id = normalizeClaudeModel(m[1]);
+          if (id) found.add(id);
+        }
+      } catch {
+        /* skip unreadable file */
+      }
+    }
+  } catch {
+    return [];
+  }
+  return [...found];
+}
+
+/** Keep real model ids (`claude-fable-5`, `claude-opus-4-8`), drop the CLI's
+ * `[1m]`-style context suffix and synthetic/placeholder markers. */
+function normalizeClaudeModel(raw: string): string | null {
+  const id = raw.replace(/\[[^\]]*\]\s*$/, '').trim();
+  if (!id || id.startsWith('<')) return null; // e.g. "<synthetic>"
+  return /^claude-/.test(id) ? id : null;
+}
+
+/** Codex has no `models` subcommand or cache; surface any ids hinted in
+ * ~/.codex/config.toml (e.g. the model-availability block). Additive to the
+ * curated list. */
+function readCodexModels(): string[] {
+  try {
+    const { fs, os, path } = nodeMods();
+    const toml = fs.readFileSync(path.join(os.homedir(), '.codex', 'config.toml'), 'utf8');
+    const ids = new Set<string>();
+    // `model = "gpt-5.5"` and quoted keys like `"gpt-5.5" = 1`
+    for (const m of toml.matchAll(/^\s*model\s*=\s*"([^"]+)"/gm)) ids.add(m[1]);
+    for (const m of toml.matchAll(/"(gpt-[^"]+|o[0-9][^"]*)"\s*=/g)) ids.add(m[1]);
+    return [...ids];
+  } catch {
+    return [];
+  }
+}
+
+/** N most-recently-modified *.jsonl files under a directory tree (shallow
+ * recurse, cheap: one level of project dirs). */
+function recentJsonl(
+  fs: typeof import('node:fs'),
+  path: typeof import('node:path'),
+  root: string,
+  limit: number
+): string[] {
+  const out: Array<{ file: string; mtime: number }> = [];
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(root).map((d) => path.join(root, d));
+  } catch {
+    return [];
+  }
+  for (const dir of dirs) {
+    let names: string[];
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith('.jsonl')) continue;
+      const file = path.join(dir, name);
+      try {
+        out.push({ file, mtime: fs.statSync(file).mtimeMs });
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return out
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, limit)
+    .map((e) => e.file);
 }

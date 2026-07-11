@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.7 — 2026-07-11
+
+### Dynamic model discovery for every backend (Claude picker now shows the real models)
+
+The model picker was hardcoded per backend: Claude was a fixed alias list `['default','opus','sonnet','haiku']`, so a distinctly-named model you actually run — e.g. `claude-fable-5` — could never appear, while Grok already discovered its models from `~/.grok/models_cache.json`. Reported: "on my home laptops the model list does not show fable for claude, but shows the proper one for grok."
+
+- **`discoverModels()` now runs per backend and is additive.** Whatever a backend discovers on THIS machine is merged with its curated aliases and de-duplicated; a discovery miss is never worse than the old static list. `default` always leads.
+- **Claude discovery** (new `readClaudeModels()`): the `claude` CLI has no `models` subcommand or cache, so we combine (1) the configured model in `~/.claude/settings.json` (stripping the `[1m]` context tag) and (2) distinct model ids seen in recent `~/.claude/projects/**/*.jsonl` session transcripts. That's why `claude-fable-5` now shows up where it's configured/used. It composes with 0.9.6's `claudeFamilyAlias`: family models (opus/sonnet/haiku) still collapse to portable aliases for Bedrock-safe resume, while a family-less id like `claude-fable-5` passes through as its real id.
+- **Codex discovery** (new `readCodexModels()`): surfaces ids hinted in `~/.codex/config.toml` (e.g. `gpt-5.5`) on top of the curated list.
+- **Restore fix:** session restore validated a remembered model against the *static* `BACKENDS[id].models`, which would silently drop a discovered selection on the next session. New exported `modelsFor(id)` returns the same list the picker shows; `sessionManager` now validates against it.
+- No webview change — the `<select>` already renders whatever the backend reports. 5 new unit tests.
+
+Pre-1.0 PATCH (`0.9.6 → 0.9.7`) — additive discovery, no protocol/settings change.
+
 ## 0.9.6 — 2026-06-29
 
 ### Bedrock-safe model on every turn (fixes mid-session "invalid model identifier")

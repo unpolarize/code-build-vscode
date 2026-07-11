@@ -6,7 +6,7 @@ import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias } from './backendRegistry';
+import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -767,7 +767,9 @@ export class SessionManager {
     const remembered = this.rememberedConfig();
     // A model remembered from a different backend (e.g. 'opus' carried into
     // grok) won't be valid — drop to the backend's default in that case.
-    const validModels = BACKENDS[be].models ?? [];
+    // Validate against the DISCOVERED list (matches the picker) so a
+    // dynamically-found model like 'claude-fable-5' isn't dropped on restore.
+    const validModels = modelsFor(be);
     const model =
       remembered.model && validModels.includes(remembered.model) ? remembered.model : undefined;
 
