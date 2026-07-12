@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.8 — 2026-07-12
+
+- Global keybinding `⌘⌃⇧C` (win/linux `ctrl+alt+shift+c`) → **New Conversation** — start a Code Build chat from anywhere, not just inside the chat webview (`⌘N` there still works).
+
 ## 0.9.7 — 2026-07-11
 
 ### Dynamic model discovery for every backend (Claude picker now shows the real models)

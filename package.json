@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.9.7",
+  "version": "0.9.8",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -144,6 +144,11 @@
         "mac": "cmd+escape",
         "win": "ctrl+escape",
         "when": "activeWebviewPanelId == codeBuild.chat"
+      },
+      {
+        "command": "codeBuild.newConversation",
+        "key": "ctrl+alt+shift+c",
+        "mac": "ctrl+shift+cmd+c"
       }
     ],
     "menus": {
