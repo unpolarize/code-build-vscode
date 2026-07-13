@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.9 — 2026-07-13
+
+- Activate on `onCommand:codeBuild.newConversation` (+ open-in-tab/window) so external callers (e.g. the Code Sessions planning dashboard "Run in Code Build") reliably launch a chat even when Code Build hasn't been opened yet this session.
+
 ## 0.9.8 — 2026-07-12
 
 - Global keybinding `⌘⌃⇧C` (win/linux `ctrl+alt+shift+c`) → **New Conversation** — start a Code Build chat from anywhere, not just inside the chat webview (`⌘N` there still works).
