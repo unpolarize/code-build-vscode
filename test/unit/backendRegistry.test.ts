@@ -69,11 +69,17 @@ test('claude: an already-aliased model is passed through; default adds no --mode
   assert.ok(!claude({ ...base, model: 'default' }).includes('--model'));
 });
 
-test('claude: a discovered pinned id with no family alias passes through as-is (e.g. fable)', () => {
-  // fable isn't opus/sonnet/haiku, so claudeFamilyAlias() returns undefined and
-  // the real id is used — which is exactly why a fable-configured machine can run it.
+test('claude: a pinned fable id collapses to the fable family alias', () => {
+  // The CLI resolves 'fable' to the latest Fable/Mythos model (verified:
+  // `claude --model fable` works), so pinned ids collapse like other families —
+  // portable across installs instead of passing a version-pinned id through.
   const a = claude({ ...base, model: 'claude-fable-5' });
-  assert.equal(a[a.indexOf('--model') + 1], 'claude-fable-5');
+  assert.equal(a[a.indexOf('--model') + 1], 'fable');
+});
+
+test('claude: a truly unknown pinned id still passes through as-is', () => {
+  const a = claude({ ...base, model: 'claude-nova-9' });
+  assert.equal(a[a.indexOf('--model') + 1], 'claude-nova-9');
 });
 
 // ── dynamic model discovery ─────────────────────────────────────────────────
@@ -114,7 +120,7 @@ test('claude: discovers the configured model + session-transcript models, merged
 
     const models = modelsFor('claude');
     assert.equal(models[0], 'default', 'default leads');
-    for (const alias of ['opus', 'sonnet', 'haiku']) assert.ok(models.includes(alias), `keeps alias ${alias}`);
+    for (const alias of ['fable', 'opus', 'sonnet', 'haiku']) assert.ok(models.includes(alias), `keeps alias ${alias}`);
     assert.ok(models.includes('claude-fable-5'), 'surfaces the configured/used model the old array could not');
     assert.ok(models.includes('claude-opus-4-8'), 'surfaces a model seen in transcripts');
     assert.ok(!models.includes('<synthetic>'), 'drops synthetic placeholder');
@@ -126,7 +132,7 @@ test('claude: discovery miss falls back to the curated aliases (never worse than
   withFakeHome((home) => {
     if (homedir() !== home) return;
     // empty fake home — no ~/.claude at all
-    assert.deepEqual(modelsFor('claude'), ['default', 'opus', 'sonnet', 'haiku']);
+    assert.deepEqual(modelsFor('claude'), ['default', 'fable', 'opus', 'sonnet', 'haiku']);
   });
 });
 

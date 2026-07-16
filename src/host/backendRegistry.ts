@@ -29,6 +29,7 @@ export const EFFORT_LEVELS: EffortLevel[] = ['default', 'low', 'medium', 'high',
 export function claudeFamilyAlias(modelId: string | undefined): string | undefined {
   if (!modelId) return undefined;
   const m = modelId.toLowerCase();
+  if (m.includes('fable') || m.includes('mythos')) return 'fable';
   if (m.includes('opus')) return 'opus';
   if (m.includes('sonnet')) return 'sonnet';
   if (m.includes('haiku')) return 'haiku';
@@ -79,11 +80,11 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: 'Claude Code',
     bin: 'claude',
     transport: 'stream-json',
-    // Aliases, not version-pinned ids. The `claude` CLI resolves 'opus' /
-    // 'sonnet' / 'haiku' to the latest model in each family, so these never
-    // go stale (e.g. 'opus' → Opus 4.8 today). detectAll() may replace this
-    // with a dynamically-discovered list when available.
-    models: ['default', 'opus', 'sonnet', 'haiku'],
+    // Aliases, not version-pinned ids. The `claude` CLI resolves 'fable' /
+    // 'opus' / 'sonnet' / 'haiku' to the latest model in each family, so these
+    // never go stale (e.g. 'fable' → Fable 5, 'opus' → Opus 4.8 today).
+    // detectAll() may replace this with a dynamically-discovered list.
+    models: ['default', 'fable', 'opus', 'sonnet', 'haiku'],
     supportsEffort: true,
     // claude -p --resume <session-id> reads the jsonl claude itself
     // wrote at ~/.claude/projects/<...>/<id>.jsonl on a clean restart.

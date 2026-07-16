@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -364,13 +364,22 @@
           "description": "MCP servers passed to ACP backends (Grok, OpenCode, Cline) on session/new. Each item: { name, command, args? }. Empty array = inject default personal-browser stack (chrome-devtools --autoConnect + playwright) so agents can use the zhirafovod@gmail.com Chrome profile via CDP. Set explicitly to []-with-dummy or override entries to customize; to disable MCP pass-through entirely, set one disabled dummy is not supported — pass a no-op server or fork.",
           "items": {
             "type": "object",
-            "required": ["name", "command"],
+            "required": [
+              "name",
+              "command"
+            ],
             "properties": {
-              "name": { "type": "string" },
-              "command": { "type": "string" },
+              "name": {
+                "type": "string"
+              },
+              "command": {
+                "type": "string"
+              },
               "args": {
                 "type": "array",
-                "items": { "type": "string" }
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }
