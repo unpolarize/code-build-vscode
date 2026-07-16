@@ -31,6 +31,20 @@ import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
+import {
+  SessionPerfCollector,
+  type PerfDebugMode
+} from './perf/sessionPerf';
+import * as fsSync from 'node:fs';
+
+/** Shared Output channel for the flight recorder (one per extension host). */
+let perfOutput: vscode.OutputChannel | undefined;
+function getPerfOutput(): vscode.OutputChannel {
+  if (!perfOutput) {
+    perfOutput = vscode.window.createOutputChannel('Code Build: Flight Recorder');
+  }
+  return perfOutput;
+}
 
 /**
  * Owns one chat panel + its live AgentSession. (P5 will generalize to N panels.)
@@ -45,6 +59,14 @@ export class SessionManager {
   private webviewReady = false;
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
+  private readonly perf = new SessionPerfCollector();
+  /** Coalesced SessionUpdates waiting for the next IPC flush. */
+  private ipcQueue: SessionUpdate[] = [];
+  private ipcTimer: ReturnType<typeof setTimeout> | undefined;
+  private ipcSessionId?: string;
+  /** Live duration of the open perf panel (webviews asks for snapshots). */
+  private perfPanelOpen = false;
+  private perfHudTimer: ReturnType<typeof setInterval> | undefined;
 
   /** Records captured from the OLD session right before a backend switch,
    * held until the user answers the carry-over prompt. `sourceBackendId`
@@ -119,6 +141,11 @@ export class SessionManager {
     private readonly context: vscode.ExtensionContext
   ) {
     this.panel.onMessage((msg) => void this.handle(msg));
+  }
+
+  /** Let extension commands (toggle perf, copy report) inject webview-shaped messages. */
+  postWebviewCommand(msg: WebviewToHost): void {
+    void this.handle(msg);
   }
 
   private get config() {
@@ -198,6 +225,14 @@ export class SessionManager {
         // now, at submission, so a turn that produces NO output at all (the
         // claude `error_during_execution`/0-token stall) is still caught.
         this.armWatchdog();
+        this.perf.onPromptSent();
+        this.perf.setSessionMeta({
+          sessionId: this.meta?.id,
+          backend: this.meta?.backend,
+          model: this.meta?.model,
+          modePerm: this.meta?.mode
+        });
+        this.pushPerfHud();
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
         if (originalText) {
           // First real prompt: promote to history + derive a title from it.
@@ -249,7 +284,10 @@ export class SessionManager {
       }
       case 'cancel':
         this.session?.cancel();
+        this.flushIpcImmediate();
+        this.perf.onCancel();
         this.panel.post({ type: 'busy', busy: false });
+        this.pushPerfHud();
         break;
       case 'setMode':
         this.setMode(msg.mode);
@@ -303,6 +341,52 @@ export class SessionManager {
           await this.loadExistingSession(msg.id);
         }
         break;
+      case 'perfSample': {
+        for (const s of msg.samples) {
+          this.perf.recordWebviewSample(s.paintLagMs, s.renderMs, s.items);
+        }
+        if (this.perf.mode !== 'off') {
+          this.pushPerfHud();
+        }
+        break;
+      }
+      case 'togglePerfPanel':
+        this.perfPanelOpen = !this.perfPanelOpen;
+        this.panel.post({ type: 'perfPanelOpen', open: this.perfPanelOpen });
+        if (this.perfPanelOpen) {
+          this.refreshDualStore();
+          this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+        }
+        break;
+      case 'requestPerfSnapshot':
+        this.refreshDualStore();
+        this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+        break;
+      case 'copyPerfReport': {
+        const report = this.perf.formatFlightReport();
+        await vscode.env.clipboard.writeText(report);
+        getPerfOutput().appendLine(report);
+        getPerfOutput().appendLine('---');
+        void vscode.window.showInformationMessage('Code Build: flight report copied to clipboard');
+        break;
+      }
+      case 'exportPerf': {
+        if (!this.meta) {
+          void vscode.window.showWarningMessage('Code Build: no active session to export perf for');
+          break;
+        }
+        this.refreshDualStore();
+        const pkg = this.context.extension.packageJSON as { version?: string };
+        const data = this.perf.toExportJson(pkg.version ?? '0.0.0');
+        const outPath = this.store.writePerfExport(this.meta.id, data);
+        getPerfOutput().appendLine(`Exported perf → ${outPath}`);
+        void vscode.window.showInformationMessage(`Perf exported: ${outPath}`, 'Reveal').then((c) => {
+          if (c === 'Reveal') {
+            void vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(outPath));
+          }
+        });
+        break;
+      }
     }
   }
 
@@ -326,8 +410,11 @@ export class SessionManager {
       memoryEntries: memTotals.totalEntries,
       memoryFiles: memTotals.totalFiles,
       memoryByProvider: memTotals.byProvider,
-      showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true)
+      showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true),
+      perfDebug: this.perfDebugMode()
     };
+    this.perf.setMode(state.perfDebug ?? 'off');
+    this.ensurePerfHudTimer();
     this.panel.post({ type: 'hydrate', state });
 
     // Eager-start the default backend session (like Claude Code connects on open) so
@@ -732,34 +819,20 @@ export class SessionManager {
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
+    this.perf.setSessionMeta({ sessionId: id, backend: be });
     this.unsubscribe = this.session.onEvent((update) => {
-      this.store.appendUpdate(id, update);
-      this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
-      this.watchTurnLiveness(update);
-      // First time we see anything from the agent — surface the spawn
-      // time so the user knows whether the slowness is in our spawn (a
-      // few hundred ms) or in the agent's first-event latency (often
-      // seconds, especially with --resume on a long history). Also
-      // cancels the "still waiting" follow-up nudge so it doesn't fire
-      // after we've already become responsive.
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
-        firstEventAt = Date.now();
-        const ms = firstEventAt - spawnStart;
-        cancelNudge();
-        this.panel.post({
-          type: 'notice',
-          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
-        });
-      }
-      // Side-channel: intercept structured tool calls (AskUserQuestion,
-      // TodoWrite) so the webview can render purpose-built UI instead of
-      // a generic tool card.
-      this.interceptToolCall(update);
-      this.onTurnEvent(update);
-      this.captureBackendSessionId(update);
-      if (update.kind === 'result' || update.kind === 'error') {
-        this.panel.post({ type: 'busy', busy: false });
-      }
+      this.routeAgentUpdate(id, update, {
+        onFirstEvent: () => {
+          if (firstEventAt) return;
+          firstEventAt = Date.now();
+          const ms = firstEventAt - spawnStart;
+          cancelNudge();
+          this.panel.post({
+            type: 'notice',
+            text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+          });
+        }
+      });
     });
 
     // Restore the user's last-used mode / model / effort so a fresh session
@@ -1283,24 +1356,20 @@ export class SessionManager {
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
+    this.perf.setSessionMeta({ sessionId: id, backend: be });
     this.unsubscribe = this.session.onEvent((update) => {
-      this.store.appendUpdate(id, update);
-      this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
-      this.watchTurnLiveness(update);
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
-        firstEventAt = Date.now();
-        const ms = firstEventAt - spawnStart;
-        cancelNudge();
-        this.panel.post({
-          type: 'notice',
-          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
-        });
-      }
-      this.interceptToolCall(update);
-      this.onTurnEvent(update);
-      if (update.kind === 'result' || update.kind === 'error') {
-        this.panel.post({ type: 'busy', busy: false });
-      }
+      this.routeAgentUpdate(id, update, {
+        onFirstEvent: () => {
+          if (firstEventAt) return;
+          firstEventAt = Date.now();
+          const ms = firstEventAt - spawnStart;
+          cancelNudge();
+          this.panel.post({
+            type: 'notice',
+            text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+          });
+        }
+      });
     });
 
     this.meta = {
@@ -1448,6 +1517,8 @@ export class SessionManager {
   }
 
   private teardownSession(): void {
+    this.flushIpcImmediate();
+    this.store.flushSync();
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.session?.dispose();
@@ -1462,6 +1533,159 @@ export class SessionManager {
     this.watchdog?.clear();
     this.watchdog = undefined;
     this.openToolCalls.clear();
+  }
+
+  // ── Performance + hot-path coalesce ──────────────────────────────────
+
+  private perfDebugMode(): PerfDebugMode {
+    const v = this.config.get<string>('perfDebug', 'hud');
+    if (v === 'full' || v === 'hud' || v === 'off') return v;
+    return 'hud';
+  }
+
+  private ensurePerfHudTimer(): void {
+    if (this.perfHudTimer) return;
+    this.perf.setMode(this.perfDebugMode());
+    this.perfHudTimer = setInterval(() => {
+      // Pick up setting changes without reload.
+      this.perf.setMode(this.perfDebugMode());
+      if (this.perf.mode === 'off') return;
+      this.pushPerfHud();
+      if (this.perfPanelOpen) {
+        this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+      }
+    }, 500);
+  }
+
+  private pushPerfHud(): void {
+    if (this.perf.mode === 'off') return;
+    const hud = this.perf.getHud();
+    this.panel.post({ type: 'perfHud', hud });
+    const turn = this.perf.getCurrentTurn();
+    if (turn) {
+      const dur = Date.now() - turn.promptSentAt;
+      this.panel.post({
+        type: 'activityStrip',
+        segments: turn.segments,
+        turnDurationMs: Math.max(dur, 1)
+      });
+    }
+  }
+
+  private refreshDualStore(): void {
+    if (!this.meta) return;
+    const cb = this.store.statTranscript(this.meta.id);
+    const dual: {
+      codebuildPath?: string;
+      codebuildBytes?: number;
+      codebuildMtimeMs?: number;
+      claudePath?: string;
+      claudeBytes?: number;
+      claudeMtimeMs?: number;
+    } = {};
+    if (cb) {
+      dual.codebuildPath = cb.path;
+      dual.codebuildBytes = cb.bytes;
+      dual.codebuildMtimeMs = cb.mtimeMs;
+    }
+    if (this.meta.backend === 'claude' && this.meta.backendSessionId) {
+      try {
+        const p = claudeJsonlPathFor(this.meta.cwd || this.cwd, this.meta.backendSessionId);
+        if (p && fsSync.existsSync(p)) {
+          const st = fsSync.statSync(p);
+          dual.claudePath = p;
+          dual.claudeBytes = st.size;
+          dual.claudeMtimeMs = st.mtimeMs;
+        }
+      } catch {
+        /* optional */
+      }
+    }
+    this.perf.setDualStore(dual);
+  }
+
+  /**
+   * Shared agent-event path: async disk queue + IPC coalesce + perf + side effects.
+   * Result/error/permission flush IPC immediately so the UI leaves "working…" promptly.
+   */
+  private routeAgentUpdate(
+    sessionId: string,
+    update: SessionUpdate,
+    opts?: { onFirstEvent?: () => void }
+  ): void {
+    const t0 = performance.now();
+    this.store.appendUpdate(sessionId, update);
+    // lastDiskMs is enqueue cost until flush; use wall for the hot path sample.
+    const diskMs = Math.max(this.store.lastDiskMs, performance.now() - t0);
+    this.perf.onUpdate(update, { diskMs });
+
+    this.watchTurnLiveness(update);
+    if (
+      update.kind === 'agent_message_chunk' ||
+      update.kind === 'agent_thought_chunk' ||
+      update.kind === 'tool_call' ||
+      update.kind === 'available_commands_update' ||
+      update.kind === 'system_init'
+    ) {
+      opts?.onFirstEvent?.();
+    }
+    this.interceptToolCall(update);
+    this.onTurnEvent(update);
+    this.captureBackendSessionId(update);
+
+    const immediate =
+      update.kind === 'result' ||
+      update.kind === 'error' ||
+      update.kind === 'permission_request';
+    this.enqueueIpc(sessionId, update, immediate);
+
+    if (update.kind === 'result' || update.kind === 'error') {
+      this.panel.post({ type: 'busy', busy: false });
+      this.pushPerfHud();
+      if (this.perf.mode === 'full' || this.perfPanelOpen) {
+        getPerfOutput().appendLine(this.perf.formatFlightReport());
+        getPerfOutput().appendLine('---');
+      }
+      if (this.perfPanelOpen) {
+        this.refreshDualStore();
+        this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+      }
+    } else if (this.perf.mode !== 'off') {
+      const ec = this.perf.getCurrentTurn()?.eventCount;
+      if (ec != null && ec > 0 && ec % 20 === 0) this.pushPerfHud();
+    }
+  }
+
+  private enqueueIpc(sessionId: string, update: SessionUpdate, immediate: boolean): void {
+    // If the session id changes mid-queue (shouldn't), flush first.
+    if (this.ipcSessionId && this.ipcSessionId !== sessionId) {
+      this.flushIpcImmediate();
+    }
+    this.ipcSessionId = sessionId;
+    this.ipcQueue.push(update);
+    if (immediate) {
+      this.flushIpcImmediate();
+      return;
+    }
+    if (this.ipcTimer === undefined) {
+      this.ipcTimer = setTimeout(() => this.flushIpcImmediate(), 24);
+    }
+  }
+
+  private flushIpcImmediate(): void {
+    if (this.ipcTimer !== undefined) {
+      clearTimeout(this.ipcTimer);
+      this.ipcTimer = undefined;
+    }
+    if (this.ipcQueue.length === 0) return;
+    const sessionId = this.ipcSessionId ?? this.meta?.id ?? '';
+    const batch = this.ipcQueue.splice(0, this.ipcQueue.length);
+    this.perf.recordIpcFlush(batch.length);
+    if (batch.length === 1) {
+      this.panel.post({ type: 'sessionUpdate', sessionId, update: batch[0] });
+    } else {
+      this.panel.post({ type: 'sessionUpdates', sessionId, updates: batch });
+    }
   }
 
   /** Emit a structured startup notice with diagnostic detail (resolved
@@ -1752,7 +1976,12 @@ export class SessionManager {
   }
 
   dispose(): void {
+    if (this.perfHudTimer) {
+      clearInterval(this.perfHudTimer);
+      this.perfHudTimer = undefined;
+    }
     this.teardownSession();
+    this.store.dispose();
     // Reset per-session classifier state so a fresh chat starts the
     // turn counter at 0.
     this.userTurnsSent = 0;
@@ -1799,24 +2028,25 @@ export class SessionManager {
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
+    this.perf.setSessionMeta({
+      sessionId: id,
+      backend: loaded.meta.backend,
+      model: loaded.meta.model,
+      modePerm: loaded.meta.mode
+    });
     this.unsubscribe = this.session.onEvent((update) => {
-      this.store.appendUpdate(id, update);
-      this.panel.post({ type: 'sessionUpdate', sessionId: id, update });
-      this.watchTurnLiveness(update);
-      if (!firstEventAt && (update.kind === 'agent_message_chunk' || update.kind === 'agent_thought_chunk' || update.kind === 'tool_call' || update.kind === 'available_commands_update' || update.kind === 'system_init')) {
-        firstEventAt = Date.now();
-        const ms = firstEventAt - spawnStart;
-        cancelNudge();
-        this.panel.post({
-          type: 'notice',
-          text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
-        });
-      }
-      this.interceptToolCall(update);
-      this.onTurnEvent(update);
-      if (update.kind === 'result' || update.kind === 'error') {
-        this.panel.post({ type: 'busy', busy: false });
-      }
+      this.routeAgentUpdate(id, update, {
+        onFirstEvent: () => {
+          if (firstEventAt) return;
+          firstEventAt = Date.now();
+          const ms = firstEventAt - spawnStart;
+          cancelNudge();
+          this.panel.post({
+            type: 'notice',
+            text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`
+          });
+        }
+      });
     });
 
     this.meta = loaded.meta;

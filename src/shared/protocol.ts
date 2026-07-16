@@ -76,6 +76,8 @@ export interface HydrateState {
    * When false the ActiveQuestionBanner never renders even if a
    * question is present. */
   showActiveQuestionBanner: boolean;
+  /** Performance debug level from `codeBuild.perfDebug`. */
+  perfDebug?: 'off' | 'hud' | 'full';
 }
 
 /** Capability snapshot of one backend, served to the webview on hydrate. */
@@ -136,14 +138,104 @@ export type WebviewToHost =
   | { type: 'resumeSession'; id: string; source?: SessionSource; cwd?: string }
   /** User's click on an AskUserQuestion option card. The host translates
    * this into the upstream tool_result the backend is waiting for. */
-  | { type: 'askUserAnswer'; toolCallId: string; answers: Record<string, string> };
+  | { type: 'askUserAnswer'; toolCallId: string; answers: Record<string, string> }
+  /** Webview paint / reduce samples while busy (perf debug). */
+  | {
+      type: 'perfSample';
+      samples: Array<{ t: number; renderMs: number; items: number; paintLagMs?: number }>;
+    }
+  /** Toggle the in-chat Session Performance panel. */
+  | { type: 'togglePerfPanel' }
+  /** Request a full perf snapshot (panel refresh / /perf). */
+  | { type: 'requestPerfSnapshot' }
+  /** Copy flight report to clipboard (host-side). */
+  | { type: 'copyPerfReport' }
+  /** Write ~/.codebuild/sessions/<id>.perf.json and reveal it. */
+  | { type: 'exportPerf' };
 
 // ---- Host -> Webview events ----
+/** Compact HUD fields for the chat header. */
+export interface PerfHudMsg {
+  enabled: boolean;
+  ttfeMs?: number;
+  ttftMs?: number;
+  hostTaxMs: number;
+  eventsPerSec?: number;
+  paintLagMs?: number;
+  openTools: number;
+  phase: string;
+}
+
+/** One segment of the activity strip (relative to turn start). */
+export interface ActivitySegmentMsg {
+  kind: 'think' | 'text' | 'tool' | 'wait' | 'error' | 'idle';
+  label: string;
+  startMs: number;
+  endMs: number;
+  toolCallId?: string;
+}
+
+/** Full snapshot for the Performance panel / event inspector. */
+export interface PerfSnapshotMsg {
+  mode: 'off' | 'hud' | 'full';
+  sessionId?: string;
+  backend?: string;
+  model?: string;
+  modePerm?: string;
+  currentTurn?: {
+    turnId: string;
+    promptSentAt: number;
+    firstEventAt?: number;
+    firstTokenAt?: number;
+    firstThoughtAt?: number;
+    firstToolAt?: number;
+    resultAt?: number;
+    eventCount: number;
+    byKind: Record<string, number>;
+    diskWriteCount: number;
+    diskMsTotal: number;
+    maxDiskMs: number;
+    ipcPostCount: number;
+    ipcBatchMax: number;
+    silenceMaxMs: number;
+    openToolsMax: number;
+    segments: ActivitySegmentMsg[];
+    paintLagMs?: number;
+    renderMsAvg?: number;
+    itemsAtEnd?: number;
+  };
+  previousTurns: PerfSnapshotMsg['currentTurn'][];
+  eventRing: Array<{
+    t: number;
+    kind: string;
+    preview: string;
+    bytes: number;
+    diskMs?: number;
+    rawPreview?: string;
+  }>;
+  dualStore?: {
+    codebuildPath?: string;
+    codebuildBytes?: number;
+    codebuildMtimeMs?: number;
+    claudePath?: string;
+    claudeBytes?: number;
+    claudeMtimeMs?: number;
+  };
+  hud: PerfHudMsg;
+  flightReport: string;
+}
+
 export type HostToWebview =
   | { type: 'hydrate'; state: HydrateState }
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
+  /** Batched stream updates (IPC coalesce, 16–32ms window). */
+  | { type: 'sessionUpdates'; sessionId: string; updates: SessionUpdate[] }
   | { type: 'sessionMeta'; session: SessionMeta }
   | { type: 'busy'; busy: boolean }
+  | { type: 'perfHud'; hud: PerfHudMsg }
+  | { type: 'activityStrip'; segments: ActivitySegmentMsg[]; turnDurationMs: number }
+  | { type: 'perfSnapshot'; snapshot: PerfSnapshotMsg }
+  | { type: 'perfPanelOpen'; open: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
   /** Resolution of a `resolveDroppedUris` request. Non-image items carry a
    * workspace-relative `path` to insert as `@path`; image items carry base64

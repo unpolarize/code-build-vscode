@@ -1,0 +1,14 @@
+# Grok Build browser MCP (project scope) — personal Chrome profile workflows
+# Prefer chrome-devtools after: ~/docs/scripts/chrome-personal-debug.sh
+
+[mcp_servers.chrome-devtools]
+command = "npx"
+args = ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
+enabled = true
+startup_timeout_sec = 45
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+enabled = true
+startup_timeout_sec = 45

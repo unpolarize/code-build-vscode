@@ -9,15 +9,23 @@ import type { SessionMeta, SessionSource } from './shared/protocol';
 
 export function activate(context: vscode.ExtensionContext): void {
   const managers = new Set<SessionManager>();
+  /** Most recently created manager — used by global perf commands. */
+  let latestMgr: SessionManager | undefined;
 
   function attach(panel: ChatPanel): SessionManager {
     const mgr = new SessionManager(panel, context);
     managers.add(mgr);
+    latestMgr = mgr;
     panel.panel.onDidDispose(() => {
       mgr.dispose();
       managers.delete(mgr);
+      if (latestMgr === mgr) latestMgr = [...managers].at(-1);
     });
     return mgr;
+  }
+
+  function lastManager(set: Set<SessionManager>): SessionManager | undefined {
+    return latestMgr ?? [...set].at(-1);
   }
 
   function openChat(column?: vscode.ViewColumn): void {
@@ -62,7 +70,22 @@ export function activate(context: vscode.ExtensionContext): void {
         const mgr = attach(panel);
         mgr.queueExternal(args);
       }
-    )
+    ),
+    // Perf debug commands operate on the most recently attached live manager.
+    vscode.commands.registerCommand('codeBuild.togglePerfPanel', () => {
+      const mgr = lastManager(managers);
+      mgr?.postWebviewCommand({ type: 'togglePerfPanel' });
+      mgr?.postWebviewCommand({ type: 'requestPerfSnapshot' });
+    }),
+    vscode.commands.registerCommand('codeBuild.copyPerfReport', () => {
+      lastManager(managers)?.postWebviewCommand({ type: 'copyPerfReport' });
+    }),
+    vscode.commands.registerCommand('codeBuild.exportPerf', () => {
+      lastManager(managers)?.postWebviewCommand({ type: 'exportPerf' });
+    }),
+    vscode.commands.registerCommand('codeBuild.showFlightRecorder', () => {
+      vscode.window.createOutputChannel('Code Build: Flight Recorder').show(true);
+    })
   );
 
   // Sidebar surface: same React bundle, hosted in the activity-bar view.

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.1 — 2026-07-15
+
+### Personal browser MCP for Grok / ACP
+
+- ACP `session/new` no longer passes empty `mcpServers: []`. Empty `codeBuild.mcpServers` injects the **default personal-browser stack**: `chrome-devtools` (`--autoConnect`) + `playwright`, so Grok can drive the live Chrome profile (`zhirafovod@gmail.com` via CDP).
+- New setting `codeBuild.mcpServers` to override the list.
+- `@browser` / `browser://current` expands to an explicit personal-profile instruction (Claude path).
+- Project `.grok/config.toml` registers the same MCP servers for native Grok TUI.
+
+Companion docs/scripts live in `~/docs` (`deploy-grok-browser-stack.sh`, `browser-personal` skill).
+
+## 0.10.0 — 2026-07-15
+
+### Session performance debug + streaming hot-path fixes
+
+Addresses “Claude in Code Build feels slower than native Claude Code” by (1) measuring host vs webview vs model latency and (2) removing the worst synchronous costs on every stream chunk.
+
+**Observability (P0/P2)**
+
+- Setting `codeBuild.perfDebug`: `off` | `hud` (default) | `full`.
+- Header **perf HUD**: TTFT · host tax · events/s · paint lag · phase — click opens the panel.
+- **`/perf`** slash command + commands: Toggle Session Performance Panel, Copy Flight Report, Export Performance JSON, Show Flight Recorder Output.
+- **Activity strip** under the header while busy (think / text / tool segments).
+- **Session Performance panel**: waterfall, event inspector, dual-store sizes (`~/.codebuild` + Claude native jsonl), copyable flight report + decision tree.
+- Output channel **Code Build: Flight Recorder** (always on copy/export; auto-append after each turn when `full`).
+- Export writes `~/.codebuild/sessions/<id>.perf.json` next to the transcript.
+
+**Hot-path fixes (P1)**
+
+- Session store: **batched async appends** (~50ms coalesce) instead of `appendFileSync` per event; readers flush first so load/list stay consistent.
+- Host→webview: **24ms IPC coalesce** via `sessionUpdates` batch message (immediate flush on result/error/permission).
+- Streaming markdown: throttle marked+DOMPurify to ~100ms while the last assistant bubble is streaming.
+- Auto-scroll uses `behavior: 'auto'` while busy (smooth only when idle).
+- Message `Item` is `React.memo`’d so unchanged bubbles skip re-render.
+
 ## 0.9.9 — 2026-07-13
 
 - Activate on `onCommand:codeBuild.newConversation` (+ open-in-tab/window) so external callers (e.g. the Code Sessions planning dashboard "Run in Code Build") reliably launch a chat even when Code Build hasn't been opened yet this session.

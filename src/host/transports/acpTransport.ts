@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import * as vscode from 'vscode';
 import type {
   BackendId,
   ContentBlock,
@@ -13,6 +14,14 @@ import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
 import { confineToRoot } from '../pathGuard';
+import {
+  defaultBrowserMcpServers,
+  normalizeMcpServerConfig,
+  type AcpMcpServer
+} from './mcpServers';
+
+export type { AcpMcpServer };
+export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
 
 interface InitializeResult {
   protocolVersion: number;
@@ -23,6 +32,17 @@ interface NewSessionResult {
 }
 interface PromptResult {
   stopReason: string;
+}
+
+/**
+ * Resolve MCP servers to pass on ACP session/new.
+ * Setting `codeBuild.mcpServers` overrides; when empty, inject the personal-browser stack
+ * so Grok (and other ACP backends) can drive the user's real Chrome profile.
+ */
+export function resolveAcpMcpServers(): AcpMcpServer[] {
+  const cfg = vscode.workspace.getConfiguration('codeBuild');
+  const raw = cfg.get<unknown>('mcpServers');
+  return normalizeMcpServerConfig(raw) ?? defaultBrowserMcpServers();
 }
 
 /**
@@ -103,9 +123,13 @@ export class AcpTransport extends BaseAgentSession {
           clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
           clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
         });
+        // Pass MCP servers (default: chrome-devtools autoConnect + playwright)
+        // so Grok ACP can drive the personal Chrome profile without relying only
+        // on ~/.grok/config.toml. User override: codeBuild.mcpServers.
+        const mcpServers = resolveAcpMcpServers();
         const session = await this.rpc!.request<NewSessionResult>('session/new', {
           cwd: opts.cwd,
-          mcpServers: []
+          mcpServers
         });
         this.acpSessionId = session.sessionId;
         // Emit for parity with the Claude path. This lets SessionManager

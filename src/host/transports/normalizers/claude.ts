@@ -204,9 +204,22 @@ export class ClaudeNormalizer {
         return { type: 'text', text: b.text };
       case 'resource_link': {
         // Strip a leading file:// scheme so the @-mention reads as a
-        // plain workspace path. browser://current / web://... fall
-        // through to the raw uri (the model knows what to make of
-        // "@browser://current" — most just ignore it gracefully).
+        // plain workspace path. browser://current is expanded into an
+        // explicit personal-profile instruction (zhirafovod@gmail.com).
+        if (
+          b.uri === 'browser://current' ||
+          b.uri === 'web://current' ||
+          b.uri.startsWith('browser:')
+        ) {
+          return {
+            type: 'text',
+            text:
+              '[Browser context: use the user\'s real Chrome profile ' +
+              '(zhirafovod@gmail.com). Prefer chrome-devtools MCP with autoConnect/CDP ' +
+              'or playwright attached to that profile — never a fresh isolated Chromium. ' +
+              'If CDP is down, run ~/docs/scripts/chrome-personal-debug.sh after quitting Chrome once.]'
+          };
+        }
         const ref = b.uri.startsWith('file://') ? b.uri.slice('file://'.length) : b.uri;
         return { type: 'text', text: `@${ref}` };
       }

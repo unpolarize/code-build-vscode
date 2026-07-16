@@ -1,5 +1,12 @@
 import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTypes';
-import type { HostToWebview, HydrateState, SessionMeta } from '../../src/shared/protocol';
+import type {
+  ActivitySegmentMsg,
+  HostToWebview,
+  HydrateState,
+  PerfHudMsg,
+  PerfSnapshotMsg,
+  SessionMeta
+} from '../../src/shared/protocol';
 import { diffStats } from './diff';
 
 /** Image attachment shown alongside a user message — base64 payload so it
@@ -142,6 +149,13 @@ export interface ChatState {
    * hydrate so users see the banner without opt-in; flipping the
    * setting to false hides it permanently. */
   showActiveQuestionBanner: boolean;
+  /** From `codeBuild.perfDebug` via hydrate. */
+  perfDebug: 'off' | 'hud' | 'full';
+  perfHud: PerfHudMsg | null;
+  activitySegments: ActivitySegmentMsg[];
+  activityTurnDurationMs: number;
+  perfSnapshot: PerfSnapshotMsg | null;
+  perfPanelOpen: boolean;
 }
 
 export const initialState: ChatState = {
@@ -161,7 +175,13 @@ export const initialState: ChatState = {
   memoryEntries: 0,
   memoryFiles: 0,
   memoryByProvider: {},
-  showActiveQuestionBanner: true
+  showActiveQuestionBanner: true,
+  perfDebug: 'hud',
+  perfHud: null,
+  activitySegments: [],
+  activityTurnDurationMs: 0,
+  perfSnapshot: null,
+  perfPanelOpen: false
 };
 
 let seq = 0;
@@ -184,10 +204,30 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         memoryEntries: msg.state.memoryEntries ?? 0,
         memoryFiles: msg.state.memoryFiles ?? 0,
         memoryByProvider: msg.state.memoryByProvider ?? {},
-        showActiveQuestionBanner: msg.state.showActiveQuestionBanner ?? true
+        showActiveQuestionBanner: msg.state.showActiveQuestionBanner ?? true,
+        perfDebug: msg.state.perfDebug ?? 'hud'
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
+    case 'perfHud':
+      return { ...state, perfHud: msg.hud };
+    case 'activityStrip':
+      return {
+        ...state,
+        activitySegments: msg.segments,
+        activityTurnDurationMs: msg.turnDurationMs
+      };
+    case 'perfSnapshot':
+      return { ...state, perfSnapshot: msg.snapshot };
+    case 'perfPanelOpen':
+      return { ...state, perfPanelOpen: msg.open };
+    case 'sessionUpdates': {
+      let next = state;
+      for (const u of msg.updates) {
+        next = applyUpdate(next, u);
+      }
+      return next;
+    }
     case 'notice': {
       const items = state.items.slice();
       items.push({
@@ -294,6 +334,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return applyUpdate(state, msg.update);
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
+    // sessionUpdates handled above (batch)
     case 'historyLoaded': {
       // Replay a previous transcript into the local ChatItem list + update
       // meta. Usage events bundled in the records (sent at the end by

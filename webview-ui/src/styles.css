@@ -1288,3 +1288,196 @@ body {
 .msg-context-mention { border-left-color: var(--vscode-charts-blue, #60a5fa); }
 .msg-context-image { border-left-color: var(--vscode-charts-purple, #a78bfa); }
 .msg-context-tool_result { border-left-color: var(--vscode-charts-green, #4ade80); }
+
+/* ── Performance HUD / strip / panel ───────────────────────────── */
+.perf-hud {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78em;
+  opacity: 0.85;
+  background: var(--vscode-badge-background, rgba(128,128,128,0.15));
+  color: var(--vscode-badge-foreground, inherit);
+  border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
+  border-radius: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  max-width: 42vw;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.perf-hud:hover {
+  opacity: 1;
+}
+.perf-hud-phase {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  opacity: 0.9;
+}
+
+.activity-strip {
+  position: relative;
+  height: 4px;
+  margin: 0;
+  background: var(--vscode-panel-border, rgba(128,128,128,0.2));
+  flex-shrink: 0;
+}
+.activity-seg {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  min-width: 2px;
+  opacity: 0.9;
+}
+
+.perf-panel {
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.3));
+  background: var(--vscode-editorWidget-background, rgba(128,128,128,0.06));
+  padding: 8px 12px 10px;
+  max-height: 42vh;
+  overflow: auto;
+  font-size: 0.85em;
+  flex-shrink: 0;
+}
+.perf-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.perf-panel-meta {
+  opacity: 0.7;
+  flex: 1;
+}
+.perf-panel-actions {
+  display: flex;
+  gap: 4px;
+}
+.perf-panel-actions .btn {
+  background: var(--vscode-button-secondaryBackground, rgba(128,128,128,0.15));
+  color: var(--vscode-button-secondaryForeground, inherit);
+  border: none;
+  border-radius: 3px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 0.9em;
+}
+.perf-panel-actions .btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128,128,128,0.25));
+}
+.perf-kpis {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 8px;
+  opacity: 0.95;
+}
+.perf-section-title {
+  font-weight: 600;
+  margin: 6px 0 4px;
+  opacity: 0.85;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.8em;
+}
+.perf-wf-row {
+  display: grid;
+  grid-template-columns: 88px 1fr 56px;
+  gap: 6px;
+  align-items: center;
+  margin: 2px 0;
+}
+.perf-wf-label {
+  opacity: 0.75;
+  font-size: 0.9em;
+}
+.perf-wf-track {
+  height: 6px;
+  background: rgba(128,128,128,0.15);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.perf-wf-bar {
+  height: 100%;
+  background: var(--vscode-charts-blue, #60a5fa);
+  border-radius: 3px;
+}
+.perf-wf-ms {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.perf-hotpath,
+.perf-kinds {
+  margin-top: 4px;
+  opacity: 0.75;
+  font-size: 0.9em;
+}
+.perf-dual-row {
+  opacity: 0.85;
+  margin: 2px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perf-dual-row code {
+  font-size: 0.9em;
+  margin-right: 6px;
+  opacity: 0.7;
+}
+.perf-event-list {
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+  border-radius: 3px;
+  background: var(--vscode-editor-background);
+}
+.perf-event-row {
+  display: grid;
+  grid-template-columns: 120px 1fr 48px auto;
+  gap: 6px;
+  padding: 2px 6px;
+  border-bottom: 1px solid rgba(128,128,128,0.08);
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.85em;
+}
+.perf-event-kind {
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.perf-event-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.perf-event-bytes,
+.perf-event-disk {
+  opacity: 0.6;
+  text-align: right;
+}
+.perf-empty {
+  padding: 8px;
+  opacity: 0.6;
+}
+.perf-report {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 120px;
+  overflow: auto;
+  background: var(--vscode-textBlockQuote-background, rgba(128,128,128,0.08));
+  border-radius: 3px;
+  white-space: pre-wrap;
+  font-size: 0.85em;
+  font-family: var(--vscode-editor-font-family, monospace);
+}
+.markdown-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: inherit;
+}

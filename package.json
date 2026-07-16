@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.9.9",
+  "version": "0.10.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -125,6 +125,22 @@
         "command": "codeBuild.openPreviousSession",
         "title": "Code Build: Open Previous Conversation...",
         "icon": "$(history)"
+      },
+      {
+        "command": "codeBuild.togglePerfPanel",
+        "title": "Code Build: Toggle Session Performance Panel"
+      },
+      {
+        "command": "codeBuild.copyPerfReport",
+        "title": "Code Build: Copy Performance Flight Report"
+      },
+      {
+        "command": "codeBuild.exportPerf",
+        "title": "Code Build: Export Performance JSON"
+      },
+      {
+        "command": "codeBuild.showFlightRecorder",
+        "title": "Code Build: Show Flight Recorder Output"
       }
     ],
     "keybindings": [
@@ -331,6 +347,33 @@
           ],
           "default": "default",
           "description": "Default effort / thinking-budget level. Claude Code and Grok map this to --effort; Codex (o-series) maps it to --reasoning-effort. 'default' = let the backend pick."
+        },
+        "codeBuild.perfDebug": {
+          "type": "string",
+          "enum": [
+            "off",
+            "hud",
+            "full"
+          ],
+          "default": "hud",
+          "description": "Session performance debug. 'off' = no HUD/sampling. 'hud' = header chip (TTFT · host tax · ev/s · paint) + activity strip while busy + /perf panel. 'full' = also appends a flight report to the 'Code Build: Flight Recorder' output channel after every turn. Use this to separate model latency from CB host/webview tax."
+        },
+        "codeBuild.mcpServers": {
+          "type": "array",
+          "default": [],
+          "description": "MCP servers passed to ACP backends (Grok, OpenCode, Cline) on session/new. Each item: { name, command, args? }. Empty array = inject default personal-browser stack (chrome-devtools --autoConnect + playwright) so agents can use the zhirafovod@gmail.com Chrome profile via CDP. Set explicitly to []-with-dummy or override entries to customize; to disable MCP pass-through entirely, set one disabled dummy is not supported — pass a no-op server or fork.",
+          "items": {
+            "type": "object",
+            "required": ["name", "command"],
+            "properties": {
+              "name": { "type": "string" },
+              "command": { "type": "string" },
+              "args": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
         }
       }
     }
@@ -344,7 +387,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.8.0.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.10.1.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

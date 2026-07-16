@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
@@ -19,18 +19,25 @@ interface Props {
 
 export function MessageList({ items, busy, onAskUserAnswer }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const last = items[items.length - 1];
+  const lastId = last?.id ?? '';
+  const lastLen =
+    last && (last.kind === 'assistant' || last.kind === 'thought') ? last.text.length : 0;
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [items, busy]);
+    // Instant scroll while streaming — smooth fights high-rate chunks.
+    endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' });
+  }, [lastId, lastLen, busy, items.length]);
 
   // Show the working indicator only when we're busy AND the agent hasn't
   // started streaming a response yet (last item is the user's message or a
   // tool call still in flight). Once assistant text starts arriving the
   // streaming text itself is the feedback, so we hide the pill.
-  const last = items[items.length - 1];
   const awaitingFirstToken =
     busy === true && (!last || last.kind === 'user' || last.kind === 'tool');
+
+  const streamingId =
+    busy && last && (last.kind === 'assistant' || last.kind === 'thought') ? last.id : null;
 
   return (
     <div className="messages">
@@ -41,7 +48,12 @@ export function MessageList({ items, busy, onAskUserAnswer }: Props) {
         </div>
       )}
       {items.map((item) => (
-        <Item key={item.id} item={item} onAskUserAnswer={onAskUserAnswer} />
+        <Item
+          key={item.id}
+          item={item}
+          onAskUserAnswer={onAskUserAnswer}
+          streaming={item.id === streamingId}
+        />
       ))}
       {awaitingFirstToken && (
         <div className="msg msg-assistant">
@@ -76,12 +88,15 @@ function TimeChip({ createdAt, updatedAt }: { createdAt: number; updatedAt?: num
   );
 }
 
-function Item({
+const Item = memo(function Item({
   item,
-  onAskUserAnswer
+  onAskUserAnswer,
+  streaming
 }: {
   item: ChatItem;
   onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
+  /** True while this is the live streaming assistant/thought bubble. */
+  streaming?: boolean;
 }) {
   switch (item.kind) {
     case 'user':
@@ -124,7 +139,7 @@ function Item({
             Agent
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
           </div>
-          <Markdown className="msg-body" text={item.text} />
+          <Markdown className="msg-body" text={item.text} streaming={streaming} />
         </div>
       );
     case 'thought': {
@@ -141,7 +156,7 @@ function Item({
             {preview && <span className="msg-thought-preview">— {preview}</span>}
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
           </summary>
-          <Markdown className="msg-body" text={item.text} />
+          <Markdown className="msg-body" text={item.text} streaming={streaming} />
         </details>
       );
     }
@@ -252,7 +267,7 @@ function Item({
     default:
       return null;
   }
-}
+});
 
 /** Collapsible audit card showing exactly what the host injected into
  * the agent's stdin on a given turn — the carry-over primer, resolved

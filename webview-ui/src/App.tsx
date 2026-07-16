@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
 import { post, setState } from './vscodeApi';
@@ -12,6 +12,8 @@ import { PermissionPrompt } from './components/PermissionPrompt';
 import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
+import { ActivityStrip } from './components/ActivityStrip';
+import { PerfPanel } from './components/PerfPanel';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
@@ -36,6 +38,8 @@ function appReducer(state: ChatState, action: Action): ChatState {
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [dragActive, setDragActive] = useState(false);
+  const lastHostMsgAt = useRef(performance.now());
+  const reduceMsBuf = useRef<number[]>([]);
 
   // App-level drop handler. The Composer used to handle drops itself,
   // but that left every other area of the panel (chat history, header,
@@ -111,12 +115,41 @@ export function App() {
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
+      const t0 = performance.now();
+      lastHostMsgAt.current = t0;
       dispatch({ kind: 'host', msg: e.data as HostToWebview });
+      const ms = performance.now() - t0;
+      reduceMsBuf.current.push(ms);
+      if (reduceMsBuf.current.length > 30) reduceMsBuf.current.shift();
     };
     window.addEventListener('message', handler);
     post({ type: 'ready' });
     return () => window.removeEventListener('message', handler);
   }, []);
+
+  // While busy, report paint lag + reduce cost to the host (perf debug).
+  useEffect(() => {
+    if (state.perfDebug === 'off') return;
+    if (!state.busy) return;
+    const id = window.setInterval(() => {
+      const samples = reduceMsBuf.current;
+      const renderMs =
+        samples.length > 0 ? samples.reduce((a, b) => a + b, 0) / samples.length : 0;
+      const paintLagMs = Math.max(0, performance.now() - lastHostMsgAt.current);
+      post({
+        type: 'perfSample',
+        samples: [
+          {
+            t: Date.now(),
+            renderMs,
+            items: state.items.length,
+            paintLagMs
+          }
+        ]
+      });
+    }, 500);
+    return () => clearInterval(id);
+  }, [state.busy, state.perfDebug, state.items.length]);
 
   // Persist the active session id to webview state. VS Code returns this
   // blob to the panel serializer on the next deserialize, so a reload /
@@ -154,6 +187,10 @@ export function App() {
         break;
       case 'window':
         post({ type: 'openInNewWindow' });
+        break;
+      case 'perf':
+        post({ type: 'togglePerfPanel' });
+        post({ type: 'requestPerfSnapshot' });
         break;
     }
     return true;
@@ -235,6 +272,23 @@ export function App() {
         onOpenInNewWindow={() => post({ type: 'openInNewWindow' })}
         onResumeSession={onResumeSession}
         onRefreshSessions={() => post({ type: 'listSessions' })}
+        onTogglePerf={() => {
+          post({ type: 'togglePerfPanel' });
+          post({ type: 'requestPerfSnapshot' });
+        }}
+      />
+      <ActivityStrip
+        segments={state.activitySegments}
+        turnDurationMs={state.activityTurnDurationMs}
+        visible={state.perfDebug !== 'off' && state.busy}
+      />
+      <PerfPanel
+        open={state.perfPanelOpen}
+        snapshot={state.perfSnapshot}
+        onClose={() => post({ type: 'togglePerfPanel' })}
+        onRefresh={() => post({ type: 'requestPerfSnapshot' })}
+        onCopy={() => post({ type: 'copyPerfReport' })}
+        onExport={() => post({ type: 'exportPerf' })}
       />
       {(() => {
         // Find the most recent user item to surface in the banner.

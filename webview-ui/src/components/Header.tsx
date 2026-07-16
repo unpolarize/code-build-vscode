@@ -17,6 +17,13 @@ interface Props {
   onOpenInNewWindow: () => void;
   onResumeSession: (id: string, source?: 'codebuild' | 'claude' | 'grok', cwd?: string) => void;
   onRefreshSessions: () => void;
+  onTogglePerf?: () => void;
+}
+
+function fmtHudMs(ms?: number): string {
+  if (ms == null || Number.isNaN(ms)) return '—';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
 }
 
 export function Header({
@@ -29,7 +36,8 @@ export function Header({
   onOpenInNewTab,
   onOpenInNewWindow,
   onResumeSession,
-  onRefreshSessions
+  onRefreshSessions,
+  onTogglePerf
 }: Props) {
   const current = state.session?.backend ?? '';
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -106,6 +114,25 @@ export function Header({
       )}
 
       <div className="header-spacer" />
+
+      {state.perfDebug !== 'off' && state.perfHud?.enabled && (
+        <button
+          type="button"
+          className="perf-hud"
+          title="Session performance — click for panel (/perf)"
+          onClick={onTogglePerf}
+        >
+          <span>TTFT {fmtHudMs(state.perfHud.ttftMs)}</span>
+          <span>host {fmtHudMs(state.perfHud.hostTaxMs)}</span>
+          <span>
+            {state.perfHud.eventsPerSec != null
+              ? `${state.perfHud.eventsPerSec.toFixed(0)}/s`
+              : '—/s'}
+          </span>
+          <span>paint {fmtHudMs(state.perfHud.paintLagMs)}</span>
+          <span className="perf-hud-phase">{state.perfHud.phase}</span>
+        </button>
+      )}
 
       {state.memoryEntries > 0 && (
         <span
