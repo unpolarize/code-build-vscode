@@ -396,7 +396,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.10.2.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.10.3.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

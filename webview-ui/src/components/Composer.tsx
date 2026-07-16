@@ -194,11 +194,34 @@ export function Composer({
     setCaret(0);
   }
 
-  function onKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+  function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key !== 'Enter') return;
+    // Claude Code: Option+Enter (altKey) inserts a newline; Shift+Enter also.
+    // Plain Enter sends. (Meta/Ctrl+Enter still send for muscle-memory.)
+    if (e.altKey) {
       e.preventDefault();
-      submit();
+      const el = e.currentTarget;
+      const start = el.selectionStart ?? text.length;
+      const end = el.selectionEnd ?? start;
+      const next = text.slice(0, start) + '\n' + text.slice(end);
+      setText(next);
+      // Restore caret after React re-render
+      requestAnimationFrame(() => {
+        try {
+          el.selectionStart = el.selectionEnd = start + 1;
+          setCaret(start + 1);
+        } catch {
+          /* ignore */
+        }
+      });
+      return;
     }
+    if (e.shiftKey) {
+      // Default browser behavior inserts a newline
+      return;
+    }
+    e.preventDefault();
+    submit();
   }
 
   /** Keep `caret` in sync so the @-mention detector knows where the cursor is.
@@ -325,7 +348,7 @@ export function Composer({
       <textarea
         ref={ref}
         value={text}
-        placeholder="Ask the agent to build something…  (Enter to send, Shift+Enter for newline; @file for context, drag files in, paste images)"
+        placeholder="Ask the agent to build something…  (Enter to send · Option/Shift+Enter newline · @file · drag files · paste images)"
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart ?? e.target.value.length);

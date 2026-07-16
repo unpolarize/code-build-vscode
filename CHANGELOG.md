@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.3 — 2026-07-16
+
+### Composer: Option+Enter for newline (Claude-like)
+
+- **Option+Enter** (Alt+Enter) inserts a newline in the chat composer, matching Claude Code muscle memory. **Shift+Enter** still inserts a newline; plain **Enter** sends.
+
 ## 0.10.2 — 2026-07-16
 
 ### Fix: Grok session restore / ACP `Invalid params`
