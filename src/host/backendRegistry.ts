@@ -146,10 +146,11 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     // yet. grok ACP takes the model on the spawn command line via -m.
     models: ['default', 'grok-build'],
     supportsEffort: true,
-    // ACP transports don't expose a session id the host can hand back
-    // to a new process. The host auto-injects the conversation history
-    // as a primer on the first prompt instead.
-    supportsResume: false,
+    // Grok ACP advertises loadSession and accepts session/load with the
+    // native session UUID from ~/.grok/sessions. AcpTransport uses
+    // session/load when resumeId is set (see 0.10.2). Primer injection
+    // remains a fallback if load fails or loadSession is false.
+    supportsResume: true,
     // grok's reasoning options belong to the `grok agent` command and MUST
     // precede the `stdio` subcommand, which itself accepts no flags. The flag
     // is `--reasoning-effort` (NOT `--effort`), and grok's accepted levels are

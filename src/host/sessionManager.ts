@@ -2015,8 +2015,14 @@ export class SessionManager {
     // hoisted so the startup notice's hover tooltip shows the actual
     // --resume <id> we're about to use (or "(none)" when we have
     // nothing to resume with).
+    // Prefer the native agent session id we captured at system_init.
+    // For external imports the local id *is* the upstream id (claude jsonl
+    // name / grok session folder UUID).
     const earlyResumeId =
-      loaded.meta.backendSessionId ?? (loaded.meta.source === 'claude' ? loaded.meta.id : undefined);
+      loaded.meta.backendSessionId ??
+      (loaded.meta.source === 'claude' || loaded.meta.source === 'grok'
+        ? loaded.meta.id
+        : undefined);
     const spawnStart = Date.now();
     const cancelNudge = this.postStartupNotice({
       be,

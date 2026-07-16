@@ -118,25 +118,39 @@ export class AcpTransport extends BaseAgentSession {
     // prompt simply waits until session/new resolves and then proceeds.
     this.readyPromise = (async () => {
       try {
-        await this.rpc!.request<InitializeResult>('initialize', {
+        const init = await this.rpc!.request<InitializeResult>('initialize', {
           protocolVersion: 1,
           clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
           clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
         });
-        // Pass MCP servers (default: chrome-devtools autoConnect + playwright)
-        // so Grok ACP can drive the personal Chrome profile without relying only
-        // on ~/.grok/config.toml. User override: codeBuild.mcpServers.
+        // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
+        // Each entry MUST include `env: []` — ACP's untagged McpServer enum
+        // rejects objects without env (Invalid params → broken Grok restore).
         const mcpServers = resolveAcpMcpServers();
-        const session = await this.rpc!.request<NewSessionResult>('session/new', {
-          cwd: opts.cwd,
-          mcpServers
-        });
-        this.acpSessionId = session.sessionId;
-        // Emit for parity with the Claude path. This lets SessionManager
-        // captureBackendSessionId persist the native grok ACP session id
-        // into SessionMeta, powering "Open in Code Sessions", history
-        // cross-links, and any future load/resume using the agent's own id.
-        this.emit({ kind: "system_init", backendSessionId: session.sessionId });
+        const canLoad =
+          !!init.agentCapabilities?.loadSession && !!opts.resumeId;
+
+        if (canLoad) {
+          // True native resume: Grok (and any ACP agent with loadSession)
+          // restores on-disk transcript + context. History may also stream
+          // as session/update notifications; CB already replays from disk.
+          await this.rpc!.request('session/load', {
+            sessionId: opts.resumeId,
+            cwd: opts.cwd,
+            mcpServers
+          });
+          this.acpSessionId = opts.resumeId;
+          this.emit({ kind: 'system_init', backendSessionId: opts.resumeId });
+        } else {
+          const session = await this.rpc!.request<NewSessionResult>('session/new', {
+            cwd: opts.cwd,
+            mcpServers
+          });
+          this.acpSessionId = session.sessionId;
+          // Emit for parity with the Claude path. SessionManager persists
+          // this as meta.backendSessionId for later session/load resume.
+          this.emit({ kind: 'system_init', backendSessionId: session.sessionId });
+        }
       } catch (err) {
         // Surface handshake failures in the chat (the message handler's
         // .catch only sees the start() rejection; if start() itself

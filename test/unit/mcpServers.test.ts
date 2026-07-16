@@ -27,17 +27,22 @@ describe('DEFAULT_BROWSER_MCP_SERVERS', () => {
     assert.equal(normalizeMcpServerConfig(undefined), null);
   });
 
-  it('normalizeMcpServerConfig accepts valid entries', () => {
+  it('normalizeMcpServerConfig accepts valid entries and forces env array', () => {
     const n = normalizeMcpServerConfig([
       { name: 'x', command: 'echo', args: ['hi'] }
     ]);
     assert.ok(n);
     assert.equal(n![0].name, 'x');
     assert.deepEqual(n![0].args, ['hi']);
+    // ACP requires env even when the user omits it
+    assert.deepEqual(n![0].env, []);
   });
 
-  it('defaultBrowserMcpServers clones args', () => {
+  it('defaultBrowserMcpServers includes env:[] on every server (ACP requirement)', () => {
     const a = defaultBrowserMcpServers();
+    for (const s of a) {
+      assert.ok(Array.isArray(s.env), `${s.name} missing env array`);
+    }
     const b = defaultBrowserMcpServers();
     assert.notEqual(a[0].args, b[0].args);
     assert.deepEqual(a[0].args, b[0].args);

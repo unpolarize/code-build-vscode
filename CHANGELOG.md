@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.2 — 2026-07-16
+
+### Fix: Grok session restore / ACP `Invalid params`
+
+- **Root cause:** 0.10.1 injected browser MCP servers on ACP `session/new` without the required `env: []` field. Grok's agent-client-protocol untagged `McpServer` enum rejected the params (`Invalid params`), so every Grok start — including history restore — failed at handshake.
+- **Fix:** always serialize `env` as an array on MCP server objects.
+- **Grok native resume:** when the agent advertises `loadSession` and the host has a `resumeId`, call ACP `session/load` instead of `session/new`. `supportsResume: true` for the grok backend; external `[GR]` rows pass the session UUID as resume id.
+
 ## 0.10.1 — 2026-07-15
 
 ### Personal browser MCP for Grok / ACP
