@@ -130,18 +130,36 @@ export class AcpTransport extends BaseAgentSession {
         const canLoad =
           !!init.agentCapabilities?.loadSession && !!opts.resumeId;
 
+        let loaded = false;
         if (canLoad) {
           // True native resume: Grok (and any ACP agent with loadSession)
           // restores on-disk transcript + context. History may also stream
           // as session/update notifications; CB already replays from disk.
-          await this.rpc!.request('session/load', {
-            sessionId: opts.resumeId,
-            cwd: opts.cwd,
-            mcpServers
-          });
-          this.acpSessionId = opts.resumeId;
-          this.emit({ kind: 'system_init', backendSessionId: opts.resumeId });
-        } else {
+          try {
+            await this.rpc!.request('session/load', {
+              sessionId: opts.resumeId,
+              cwd: opts.cwd,
+              mcpServers
+            });
+            this.acpSessionId = opts.resumeId;
+            this.emit({ kind: 'system_init', backendSessionId: opts.resumeId! });
+            loaded = true;
+          } catch (err) {
+            // session/load can reject for reasons that don't doom the
+            // process: the on-disk session dir was deleted, the id came
+            // from a different machine, or a grok update changed the
+            // session schema. Mirror StreamJsonTransport's --resume
+            // auto-fallback: tell the host (so it can arm the transcript
+            // primer + notify the user) and continue into session/new
+            // instead of killing the whole handshake.
+            this.emit({
+              kind: 'resume_fallback',
+              requestedSessionId: opts.resumeId!,
+              reason: err instanceof Error ? err.message : String(err)
+            });
+          }
+        }
+        if (!loaded) {
           const session = await this.rpc!.request<NewSessionResult>('session/new', {
             cwd: opts.cwd,
             mcpServers
@@ -149,6 +167,8 @@ export class AcpTransport extends BaseAgentSession {
           this.acpSessionId = session.sessionId;
           // Emit for parity with the Claude path. SessionManager persists
           // this as meta.backendSessionId for later session/load resume.
+          // After a resume_fallback this OVERWRITES the stale id, so the
+          // next reload resumes the session that actually exists.
           this.emit({ kind: 'system_init', backendSessionId: session.sessionId });
         }
       } catch (err) {

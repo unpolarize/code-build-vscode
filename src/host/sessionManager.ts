@@ -81,6 +81,13 @@ export class SessionManager {
   /** Text primer to prepend to the user's NEXT prompt (one-shot). Set when
    * the user chooses Full/Summary in the carry-over banner. */
   private pendingPrimer?: string;
+  /** Primer held in RESERVE while we attempt a native resume. When the
+   * transport reports `resume_fallback` (Grok session/load rejected, so
+   * the agent came up fresh with zero memory), this is promoted to
+   * pendingPrimer so the user's first message still carries the
+   * conversation context. Unused (and harmless) when the native resume
+   * succeeds. */
+  private fallbackPrimer?: string;
   /** True from the moment the user clicks the backend dropdown until
    * the carry-over decision is fully applied (incl. async LLM
    * summarisation). Used to hold a user prompt across the entire
@@ -1201,6 +1208,34 @@ export class SessionManager {
     this.panel.post({ type: 'sessionMeta', session: this.meta });
   }
 
+  /** Native resume failed (grok session/load rejected — deleted session
+   * dir, foreign id, schema drift after a grok update) and the transport
+   * fell back to session/new. The fresh agent has zero memory even though
+   * the UI shows the transcript, so promote the reserve primer (armed in
+   * the resume paths whenever a native resume is attempted with records
+   * on hand) and tell the user what happened. The follow-up system_init
+   * overwrites meta.backendSessionId with the NEW id via
+   * captureBackendSessionId, so the next reload doesn't retry the dead
+   * one. */
+  private handleResumeFallback(update: SessionUpdate): void {
+    if (update.kind !== 'resume_fallback') return;
+    const be = this.meta?.backend ?? 'agent';
+    const hadPrimer = !!this.fallbackPrimer && !this.pendingPrimer;
+    if (hadPrimer) {
+      this.pendingPrimer = this.fallbackPrimer;
+    }
+    this.fallbackPrimer = undefined;
+    this.panel.post({
+      type: 'notice',
+      text:
+        `Native resume of \`${update.requestedSessionId.slice(0, 8)}\` failed — started a fresh ${be} session instead.` +
+        (hadPrimer
+          ? ` The last 10 turns will be prepended to your first message so the agent keeps context.`
+          : ''),
+      detail: `session/load rejected: ${update.reason}\n\nThe on-disk session may have been deleted, created on another machine, or written by an incompatible ${be} version. Code Build fell back to session/new${hadPrimer ? ' and armed the transcript primer (one-shot, fires on your FIRST message)' : ''}; the new native session id replaces the stale one so future reloads resume cleanly.`
+    });
+  }
+
   /** Translate a webview-side click on an AskUserQuestion option card into
    * the upstream tool_result the backend is waiting for.
    *
@@ -1478,19 +1513,25 @@ export class SessionManager {
     // mean — let me search the files" because the agent literally
     // doesn't know.
     const nativeResume = BACKENDS[be].supportsResume && !!resumeId;
-    if (!nativeResume && replay && replay.records.length > 0) {
+    if (replay && replay.records.length > 0) {
       const primer = serializeSelfResumePrimer({
         records: replay.records as any,
         lastNTurns: 10,
         backendLabel: backendLabel(be)
       });
-      if (primer) {
+      if (primer && !nativeResume) {
         this.pendingPrimer = primer;
         this.panel.post({
           type: 'notice',
           text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
           detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
         });
+      } else if (primer) {
+        // Native resume (grok session/load) is about to be attempted. Keep
+        // the primer in reserve: if the transport reports resume_fallback,
+        // handleResumeFallback promotes it so the fresh agent still gets
+        // the conversation context.
+        this.fallbackPrimer = primer;
       }
     }
 
@@ -1519,6 +1560,9 @@ export class SessionManager {
   private teardownSession(): void {
     this.flushIpcImmediate();
     this.store.flushSync();
+    // A reserve primer belongs to the resume attempt that armed it; never
+    // let it leak into a later session's fallback.
+    this.fallbackPrimer = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.session?.dispose();
@@ -1632,6 +1676,7 @@ export class SessionManager {
     this.interceptToolCall(update);
     this.onTurnEvent(update);
     this.captureBackendSessionId(update);
+    this.handleResumeFallback(update);
 
     const immediate =
       update.kind === 'result' ||
@@ -2079,19 +2124,23 @@ export class SessionManager {
     // skips this — its own `--resume` already feeds the jsonl back to
     // the model. See [[serializeSelfResumePrimer]].
     const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
-    if (!nativeResume && loaded.records.length > 0) {
+    if (loaded.records.length > 0) {
       const primer = serializeSelfResumePrimer({
         records: loaded.records as any,
         lastNTurns: 10,
         backendLabel: backendLabel(be)
       });
-      if (primer) {
+      if (primer && !nativeResume) {
         this.pendingPrimer = primer;
         this.panel.post({
           type: 'notice',
           text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
           detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
         });
+      } else if (primer) {
+        // Native resume attempt (grok session/load or claude --resume).
+        // Held in reserve for handleResumeFallback — see fallbackPrimer.
+        this.fallbackPrimer = primer;
       }
     }
 
