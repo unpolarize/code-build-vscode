@@ -253,6 +253,14 @@ export class SessionManager {
         this.lastUserText = originalText;
         this.currentAssistantBuf = '';
         const enriched = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        // Wait for the transport handshake to settle BEFORE snapshotting
+        // the primer. A prompt sent while "Resuming…" is still in flight
+        // would otherwise capture pendingPrimer before a resume_fallback
+        // promotes the reserve primer — the first message would go out
+        // contextless and the primer would misfire on the second. ready()
+        // never rejects (handshake errors surface via the event stream)
+        // and is instant once the session is up.
+        await this.session!.ready();
         let blocks = enriched;
         const usedPrimer = this.pendingPrimer;
         // One-shot context handoff: if the user switched backend and chose to

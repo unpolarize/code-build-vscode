@@ -131,6 +131,7 @@ export class AcpTransport extends BaseAgentSession {
           !!init.agentCapabilities?.loadSession && !!opts.resumeId;
 
         let loaded = false;
+        let loadFailure: string | undefined;
         if (canLoad) {
           // True native resume: Grok (and any ACP agent with loadSession)
           // restores on-disk transcript + context. History may also stream
@@ -149,14 +150,12 @@ export class AcpTransport extends BaseAgentSession {
             // process: the on-disk session dir was deleted, the id came
             // from a different machine, or a grok update changed the
             // session schema. Mirror StreamJsonTransport's --resume
-            // auto-fallback: tell the host (so it can arm the transcript
-            // primer + notify the user) and continue into session/new
-            // instead of killing the whole handshake.
-            this.emit({
-              kind: 'resume_fallback',
-              requestedSessionId: opts.resumeId!,
-              reason: err instanceof Error ? err.message : String(err)
-            });
+            // auto-fallback: continue into session/new instead of killing
+            // the whole handshake. resume_fallback is emitted only AFTER
+            // session/new succeeds — emitting it here would tell the user
+            // "started a fresh session" moments before a hard error if
+            // session/new also rejects.
+            loadFailure = err instanceof Error ? err.message : String(err);
           }
         }
         if (!loaded) {
@@ -165,6 +164,15 @@ export class AcpTransport extends BaseAgentSession {
             mcpServers
           });
           this.acpSessionId = session.sessionId;
+          if (loadFailure !== undefined) {
+            // Now that the fresh session exists, tell the host so it can
+            // arm the transcript primer + notify the user.
+            this.emit({
+              kind: 'resume_fallback',
+              requestedSessionId: opts.resumeId!,
+              reason: loadFailure
+            });
+          }
           // Emit for parity with the Claude path. SessionManager persists
           // this as meta.backendSessionId for later session/load resume.
           // After a resume_fallback this OVERWRITES the stale id, so the
@@ -190,6 +198,14 @@ export class AcpTransport extends BaseAgentSession {
     })();
 
     await this.readyPromise;
+  }
+
+  /** Settled (never rejecting) view of the ACP handshake. The host awaits
+   * this before snapshotting primer state so a prompt sent while
+   * "Resuming…" is still in flight can't race the resume_fallback
+   * promotion. Handshake errors were already surfaced from start(). */
+  override ready(): Promise<void> {
+    return this.readyPromise?.catch(() => undefined) ?? Promise.resolve();
   }
 
   private onNotification(method: string, params: unknown): void {
