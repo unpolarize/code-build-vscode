@@ -335,22 +335,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
     // sessionUpdates handled above (batch)
-    case 'historyLoaded': {
-      // Replay a previous transcript into the local ChatItem list + update
-      // meta. Usage events bundled in the records (sent at the end by
-      // external transcript loaders) are extracted here so the header's
-      // cost display + per-model tooltip reflect the imported session's
-      // lifetime spend immediately on open.
-      const { usage, usageBreakdown } = extractUsageFromRecords(msg.records);
-      return {
-        ...state,
-        session: msg.meta,
-        items: replayRecordsToItems(msg.records),
-        usage: usage ?? null,
-        usageBreakdown,
-        busy: false
-      };
-    }
+    case 'historyLoaded':
+      return replayRecords(state, msg.meta, msg.records);
     default:
       return state;
   }
@@ -581,46 +567,93 @@ function collectModifiedFiles(items: ChatItem[]): FileChange[] {
   return Array.from(map.values());
 }
 
-/** Convert stored transcript records (from SessionStore.load) into the UI ChatItem list. */
-/** Pull usage info out of a historyLoaded records[] payload. The transcript
- * loader appends a final `usage_breakdown` (per-model array) + `usage`
- * (totals) so this function just looks for the last occurrence of each. */
-function extractUsageFromRecords(
-  records: Array<{ type: string; text?: string; update?: any }>
-): { usage?: UsageInfo; usageBreakdown: UsageInfo[] } {
-  let usage: UsageInfo | undefined;
-  let usageBreakdown: UsageInfo[] = [];
-  for (const rec of records) {
-    if (rec.type !== 'update' || !rec.update) continue;
-    const u = rec.update;
-    if (u.kind === 'usage' && u.usage) usage = u.usage;
-    else if (u.kind === 'usage_breakdown' && Array.isArray(u.entries)) usageBreakdown = u.entries;
-  }
-  return { usage, usageBreakdown };
-}
+/** One element of a `historyLoaded` records[] payload — a persisted user
+ * prompt or a raw SessionUpdate, exactly as SessionStore wrote them. */
+type ReplayRecord = { type: string; text?: string; update?: SessionUpdate };
 
-function replayRecordsToItems(records: Array<{ type: string; text?: string; update?: any }>): ChatItem[] {
-  const items: ChatItem[] = [];
+/**
+ * Rebuild ChatState from a persisted transcript by routing every stored
+ * update through the SAME `applyUpdate` reducer the live stream uses —
+ * thought chunks, tool_call_update result/diff patches, usage events and
+ * the end-of-turn files-changed summary (collectModifiedFiles runs inside
+ * the `result` case) all restore for free. The only extra work is
+ * mirroring the host's interceptToolCall: AskUserQuestion / TodoWrite
+ * arrive as tool_call records (their structured `askUserQuestion` /
+ * `taskList` host messages are never persisted), so we reconstruct those
+ * cards here before applyUpdate suppresses the raw tool row.
+ */
+function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecord[]): ChatState {
+  let next: ChatState = {
+    ...state,
+    session: meta,
+    items: [],
+    usage: null,
+    usageBreakdown: [],
+    permission: null,
+    busy: false
+  };
   for (const rec of records) {
     if (rec.type === 'user' && rec.text) {
-      items.push({ kind: 'user', id: nextId(), createdAt: now(), text: rec.text });
-    } else if (rec.type === 'update' && rec.update) {
-      const u = rec.update;
-      if (u.kind === 'agent_message_chunk' && u.content?.text) {
-        const last = items[items.length - 1];
-        if (last && last.kind === 'assistant') {
-          items[items.length - 1] = { ...last, text: last.text + (u.content.text || ''), updatedAt: now() };
-        } else {
-          items.push({ kind: 'assistant', id: nextId(), createdAt: now(), text: u.content.text || '' });
-        }
-      } else if (u.kind === 'tool_call') {
-        items.push({ kind: 'tool', id: nextId(), createdAt: now(), tool: u.toolCall });
-      } else if (u.kind === 'plan') {
-        items.push({ kind: 'plan', id: nextId(), createdAt: now(), entries: u.entries || [] });
-      } else if (u.kind === 'error') {
-        items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message || 'Error' });
-      }
+      next = {
+        ...next,
+        items: [...next.items, { kind: 'user', id: nextId(), createdAt: now(), text: rec.text }]
+      };
+      continue;
     }
+    if (rec.type !== 'update' || !rec.update) continue;
+    const u = rec.update;
+    // A restored transcript must never resurrect a live interaction:
+    // permission modals can't be answered (the agent process is gone)
+    // and the meta header already carries the session's current mode.
+    if (u.kind === 'permission_request' || u.kind === 'current_mode_update') continue;
+    next = applyUpdate(replayStructuredCard(next, u) ?? next, u);
   }
-  return items;
+  return { ...next, busy: false };
+}
+
+/** Webview-side mirror of SessionManager.interceptToolCall for replay:
+ * turn persisted AskUserQuestion / TodoWrite tool_call records back into
+ * their structured cards. Returns null when the update isn't one of
+ * those (caller falls through to plain applyUpdate). */
+function replayStructuredCard(state: ChatState, u: SessionUpdate): ChatState | null {
+  if (u.kind !== 'tool_call') return null;
+  const name = u.toolCall.title;
+  const input = u.toolCall.rawInput as any;
+  if (!name || !input) return null;
+
+  if (name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+    const questions: AskUserQuestionEntry[] = (input.questions as Array<any>).map((q) => ({
+      question: String(q.question ?? ''),
+      header: q.header ? String(q.header) : undefined,
+      multiSelect: !!q.multiSelect,
+      options: Array.isArray(q.options)
+        ? q.options.map((o: any) => ({
+            label: String(o.label ?? ''),
+            description: o.description ? String(o.description) : undefined,
+            preview: o.preview ? String(o.preview) : undefined
+          }))
+        : []
+    }));
+    const asked = reduce(state, {
+      type: 'askUserQuestion',
+      toolCallId: u.toolCall.toolCallId,
+      questions
+    });
+    // The user's picks aren't persisted (they travel to the agent as a
+    // tool_result prompt block) — mark the card answered with an empty
+    // map so it renders as an inert submitted view, never a live picker
+    // pointing at a dead agent process.
+    return markAskUserAnswered(asked, u.toolCall.toolCallId, {});
+  }
+
+  if ((name === 'TodoWrite' || name === 'todo_write') && Array.isArray(input.todos)) {
+    const tasks: TaskEntry[] = (input.todos as Array<any>).map((t) => ({
+      content: String(t.content ?? ''),
+      status: (t.status ?? 'pending') as TaskEntry['status'],
+      activeForm: t.activeForm ? String(t.activeForm) : undefined
+    }));
+    return reduce(state, { type: 'taskList', toolCallId: u.toolCall.toolCallId, tasks });
+  }
+
+  return null;
 }

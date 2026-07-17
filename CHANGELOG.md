@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4 — 2026-07-17
+
+### Lossless history restore: replay through the live reducer
+
+- **Root cause:** reopened sessions looked broken — `replayRecordsToItems` was a second, impoverished reimplementation of the live `applyUpdate` reducer that silently dropped `agent_thought_chunk` (all thinking gone), `tool_call_update` (tool cards stuck at *pending* with no result/diff), TodoWrite task lists, AskUserQuestion cards, and the end-of-turn files-changed summary. The data was on disk all along; only the restore path was crippled.
+- **Fix:** `historyLoaded` now folds persisted records through the same `applyUpdate` reducer as the live stream, plus a webview-side mirror of the host's AskUserQuestion/TodoWrite interception (their structured cards are never persisted — they're rebuilt from the `tool_call` records). Reopened and imported (Claude/Grok) sessions restore completed tool cards with results/diffs, thinking blocks, task lists, and per-turn files-changed summaries. Replay never resurrects permission modals; restored AskUserQuestion cards render inert (answered), not as live pickers on a dead agent.
+- **Tests:** first webview reducer suite (`test/unit/webviewStore.test.ts`, 14 tests) — chunk merge, `tool_call_update` matching, turn-boundary file aggregation, TodoWrite snapshot-replace, and live/replay parity.
+
 ## 0.10.3 — 2026-07-16
 
 ### Composer: Option+Enter for newline (Claude-like)
