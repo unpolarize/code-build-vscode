@@ -53,6 +53,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
       await doOpenPreviousSession();
     }),
+    vscode.commands.registerCommand('codeBuild.handoff', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to hand off.'
+        );
+        return;
+      }
+      await mgr.writeHandoffPack();
+    }),
     // Programmatic entry point for cross-extension session import — code-sessions
     // calls this when the user clicks "Open in Code Build" on a claude or grok
     // session row. We spawn a fresh code-build session bound to the matching

@@ -192,6 +192,9 @@ export function App() {
         post({ type: 'togglePerfPanel' });
         post({ type: 'requestPerfSnapshot' });
         break;
+      case 'handoff':
+        post({ type: 'handoff' });
+        break;
     }
     return true;
   }

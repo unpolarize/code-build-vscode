@@ -68,6 +68,10 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "codeBuild.handoff",
+        "title": "Code Build: Write Handoff Pack (HANDOFF.md)"
+      },
+      {
         "command": "codeBuild.memory.refresh",
         "title": "Refresh",
         "icon": "$(refresh)",

@@ -151,7 +151,10 @@ export type WebviewToHost =
   /** Copy flight report to clipboard (host-side). */
   | { type: 'copyPerfReport' }
   /** Write ~/.codebuild/sessions/<id>.perf.json and reveal it. */
-  | { type: 'exportPerf' };
+  | { type: 'exportPerf' }
+  /** /handoff — write a structured HANDOFF.md pack for continuing this
+   * work on another backend. */
+  | { type: 'handoff' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */

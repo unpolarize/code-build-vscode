@@ -14,7 +14,8 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'history', description: 'Browse previous conversations', builtin: true },
   { name: 'tab', description: 'Open this chat in a new editor tab', builtin: true },
   { name: 'window', description: 'Open this chat in a new window', builtin: true },
-  { name: 'perf', description: 'Toggle Session Performance panel (HUD / waterfall / events)', builtin: true }
+  { name: 'perf', description: 'Toggle Session Performance panel (HUD / waterfall / events)', builtin: true },
+  { name: 'handoff', description: 'Write a HANDOFF.md pack for continuing this work on another agent', builtin: true }
 ];
 
 export const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map((c) => c.name));

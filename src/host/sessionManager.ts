@@ -27,6 +27,7 @@ import {
   countUserTurns,
   type PrimerMode
 } from './persistence/conversationSerializer';
+import { buildHandoffPack } from './persistence/handoffPack';
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
@@ -377,6 +378,9 @@ export class SessionManager {
         this.refreshDualStore();
         this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
         break;
+      case 'handoff':
+        await this.writeHandoffPack();
+        break;
       case 'copyPerfReport': {
         const report = this.perf.formatFlightReport();
         await vscode.env.clipboard.writeText(report);
@@ -456,6 +460,69 @@ export class SessionManager {
   /** Handle the backend dropdown. If the current chat already has content
    * AND the backend actually changes, capture the prior transcript and ask
    * the user whether to carry it over before spinning up the new backend. */
+  /** Full transcript for the CURRENT session: for externally-imported
+   * claude/grok sessions the real conversation lives in the upstream
+   * jsonl (the local store only has post-import activity), so merge
+   * upstream + local. Used by both the cross-backend primer capture
+   * and the /handoff pack. */
+  private collectTranscriptRecords(): { type: string; text?: string; update?: any }[] {
+    const id = this.meta?.id;
+    if (!id) return [];
+    const records: { type: string; text?: string; update?: any }[] = [];
+    const source = this.meta?.source;
+    if ((source === 'claude' || source === 'grok') && this.meta?.cwd) {
+      try {
+        const replay =
+          source === 'claude'
+            ? loadClaudeHistory(claudeJsonlPathFor(this.meta.cwd, id))
+            : loadGrokHistory(grokChatPathFor(this.meta.cwd, id));
+        if (replay) records.push(...(replay.records as any));
+      } catch {
+        /* missing file / parse error — fall through to local store */
+      }
+    }
+    const loaded = this.store.load(id);
+    records.push(...loaded.records.filter((r) => r.type !== 'meta'));
+    return records;
+  }
+
+  /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
+   * files touched, last check, risks, next step) into the workspace so the
+   * user can continue this work on another agent without losing state. */
+  async writeHandoffPack(): Promise<void> {
+    const records = this.collectTranscriptRecords();
+    const pack = buildHandoffPack(records, {
+      fromBackend: this.meta ? backendLabel(this.meta.backend) : 'unknown backend',
+      model: this.meta?.model,
+      sessionId: this.meta?.id,
+      cwd: this.meta?.cwd,
+      generatedAt: new Date().toISOString()
+    });
+    if (!pack) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Nothing to hand off yet — this conversation has no user turns.'
+      });
+      return;
+    }
+    const dir = this.meta?.cwd ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!dir) {
+      // No workspace to write into — show the pack as an untitled doc instead.
+      const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: pack });
+      await vscode.window.showTextDocument(doc, { preview: false });
+      return;
+    }
+    const file = path.join(dir, 'HANDOFF.md');
+    await fs.writeFile(file, pack, 'utf8');
+    const doc = await vscode.workspace.openTextDocument(file);
+    await vscode.window.showTextDocument(doc, { preview: false });
+    this.panel.post({
+      type: 'notice',
+      text: `Handoff pack written to \`${file}\` — open a session on another backend and reference it (e.g. "read HANDOFF.md and continue").`,
+      key: 'handoff-pack'
+    });
+  }
+
   private async switchBackend(backend: BackendId): Promise<void> {
     const prevBackend = this.meta?.backend;
     const prevId = this.meta?.id;
@@ -513,21 +580,7 @@ export class SessionManager {
       // they were continuing. Pull the upstream transcript and merge
       // it with any post-import activity so the banner shows AND the
       // primer carries the full conversation.
-      let records: { type: string; text?: string; update?: any }[] = [];
-      const source = this.meta?.source;
-      if ((source === 'claude' || source === 'grok') && this.meta?.cwd) {
-        try {
-          const replay =
-            source === 'claude'
-              ? loadClaudeHistory(claudeJsonlPathFor(this.meta.cwd, this.meta.id))
-              : loadGrokHistory(grokChatPathFor(this.meta.cwd, this.meta.id));
-          if (replay) records.push(...(replay.records as any));
-        } catch {
-          /* missing file / parse error — fall through to local store */
-        }
-      }
-      const loaded = this.store.load(prevId);
-      records.push(...loaded.records.filter((r) => r.type !== 'meta'));
+      const records = this.collectTranscriptRecords();
 
       if (records.length > 0 && countUserTurns(records) > 0) {
         captured = {
