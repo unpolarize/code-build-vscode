@@ -465,8 +465,10 @@ export class SessionManager {
    * jsonl (the local store only has post-import activity), so merge
    * upstream + local. Used by both the cross-backend primer capture
    * and the /handoff pack. */
-  private collectTranscriptRecords(): { type: string; text?: string; update?: any }[] {
-    const id = this.meta?.id;
+  private collectTranscriptRecords(
+    sessionId?: string
+  ): { type: string; text?: string; update?: any }[] {
+    const id = sessionId ?? this.meta?.id;
     if (!id) return [];
     const records: { type: string; text?: string; update?: any }[] = [];
     const source = this.meta?.source;
@@ -513,14 +515,36 @@ export class SessionManager {
       return;
     }
     const file = path.join(dir, 'HANDOFF.md');
-    await fs.writeFile(file, pack, 'utf8');
-    const doc = await vscode.workspace.openTextDocument(file);
-    await vscode.window.showTextDocument(doc, { preview: false });
-    this.panel.post({
-      type: 'notice',
-      text: `Handoff pack written to \`${file}\` — open a session on another backend and reference it (e.g. "read HANDOFF.md and continue").`,
-      key: 'handoff-pack'
-    });
+    try {
+      // Regenerating our own pack is fine, but never silently clobber a
+      // file the user (or another tool) authored at the same path.
+      let existing: string | undefined;
+      try {
+        existing = await fs.readFile(file, 'utf8');
+      } catch {
+        /* no existing file */
+      }
+      if (existing !== undefined && !existing.startsWith('# Handoff Pack')) {
+        const pick = await vscode.window.showWarningMessage(
+          `Code Build: ${file} exists and doesn't look like a generated handoff pack. Overwrite it?`,
+          { modal: true },
+          'Overwrite'
+        );
+        if (pick !== 'Overwrite') return;
+      }
+      await fs.writeFile(file, pack, 'utf8');
+      const doc = await vscode.workspace.openTextDocument(file);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      this.panel.post({
+        type: 'notice',
+        text: `Handoff pack written to \`${file}\` — open a session on another backend and reference it (e.g. "read HANDOFF.md and continue").`,
+        key: 'handoff-pack'
+      });
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Code Build: failed to write handoff pack: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
   }
 
   private async switchBackend(backend: BackendId): Promise<void> {
@@ -580,7 +604,7 @@ export class SessionManager {
       // they were continuing. Pull the upstream transcript and merge
       // it with any post-import activity so the banner shows AND the
       // primer carries the full conversation.
-      const records = this.collectTranscriptRecords();
+      const records = this.collectTranscriptRecords(prevId);
 
       if (records.length > 0 && countUserTurns(records) > 0) {
         captured = {
