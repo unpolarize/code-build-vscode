@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildHandoffPack } from '../../src/host/persistence/handoffPack';
+import { buildHandoffPack, formatHandoffPackPrimer } from '../../src/host/persistence/handoffPack';
 
 type Rec = { type: string; text?: string; update?: any };
 
@@ -139,4 +139,17 @@ test('no verification-looking tool calls → explicit warning, non-check tools i
   const pack = buildHandoffPack(recs, META);
   assert.match(pack, /_No test\/build\/lint run recorded — verify before trusting the working tree\._/);
   assert.match(pack, /- `main\.ts`/);
+});
+
+test('formatHandoffPackPrimer wraps pack with framing for the next backend', () => {
+  const pack = buildHandoffPack(fixture(), META);
+  const primer = formatHandoffPackPrimer(pack, 'Claude Code');
+  assert.match(primer, /^<handoff-pack source="Claude Code">/);
+  assert.match(primer, /<\/handoff-pack>$/);
+  assert.match(primer, /Do NOT re-summarize the pack/);
+  assert.match(primer, /## Goal\nAdd retry logic to the sync worker/);
+  assert.match(primer, /== HANDOFF PACK ==/);
+  // Empty / whitespace pack yields no primer (caller should skip).
+  assert.equal(formatHandoffPackPrimer('', 'Grok'), '');
+  assert.equal(formatHandoffPackPrimer('   \n', 'Grok'), '');
 });

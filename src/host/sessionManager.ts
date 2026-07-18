@@ -27,7 +27,7 @@ import {
   countUserTurns,
   type PrimerMode
 } from './persistence/conversationSerializer';
-import { buildHandoffPack } from './persistence/handoffPack';
+import { buildHandoffPack, formatHandoffPackPrimer } from './persistence/handoffPack';
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
@@ -490,11 +490,15 @@ export class SessionManager {
 
   /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
    * files touched, last check, risks, next step) into the workspace so the
-   * user can continue this work on another agent without losing state. */
+   * user can continue this work on another agent without losing state.
+   * After a successful write (or untitled open), offers a "Continue on…"
+   * picker that opens a fresh session on the chosen backend with the pack
+   * as a one-shot primer. */
   async writeHandoffPack(): Promise<void> {
+    const fromBackend = this.meta ? backendLabel(this.meta.backend) : 'unknown backend';
     const records = this.collectTranscriptRecords();
     const pack = buildHandoffPack(records, {
-      fromBackend: this.meta ? backendLabel(this.meta.backend) : 'unknown backend',
+      fromBackend,
       model: this.meta?.model,
       sessionId: this.meta?.id,
       cwd: this.meta?.cwd,
@@ -512,6 +516,7 @@ export class SessionManager {
       // No workspace to write into — show the pack as an untitled doc instead.
       const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: pack });
       await vscode.window.showTextDocument(doc, { preview: false });
+      await this.offerContinueOnBackend(pack, fromBackend);
       return;
     }
     const file = path.join(dir, 'HANDOFF.md');
@@ -537,14 +542,100 @@ export class SessionManager {
       await vscode.window.showTextDocument(doc, { preview: false });
       this.panel.post({
         type: 'notice',
-        text: `Handoff pack written to \`${file}\` — open a session on another backend and reference it (e.g. "read HANDOFF.md and continue").`,
+        text: `Handoff pack written to \`${file}\`.`,
         key: 'handoff-pack'
       });
+      await this.offerContinueOnBackend(pack, fromBackend, file);
     } catch (err) {
       void vscode.window.showErrorMessage(
         `Code Build: failed to write handoff pack: ${err instanceof Error ? err.message : String(err)}`
       );
     }
+  }
+
+  /**
+   * "Continue on…" QuickPick after /handoff. Opens a *fresh* session on the
+   * chosen backend (not restore-via-switchBackend) and injects the pack as
+   * `pendingPrimer` so the first user message carries the briefing.
+   * Cancelling the pick leaves the current session untouched.
+   */
+  private async offerContinueOnBackend(
+    pack: string,
+    fromBackend: string,
+    filePath?: string
+  ): Promise<void> {
+    const primer = formatHandoffPackPrimer(pack, fromBackend);
+    if (!primer) return;
+
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const backends = await detectAll(overrides);
+    const current = this.meta?.backend;
+    type ContinueItem = vscode.QuickPickItem & { backend?: BackendId };
+    const continueItems: ContinueItem[] = backends
+      .filter((b) => b.available && b.id !== current)
+      .map((b) => ({
+        label: `$(arrow-right) Continue on ${backendLabel(b.id)}`,
+        description: b.id,
+        detail: `Open a new ${backendLabel(b.id)} session with the handoff pack as primer`,
+        backend: b.id
+      }));
+
+    if (continueItems.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: filePath
+          ? `No other backends available — reference \`${filePath}\` manually on another agent.`
+          : 'No other backends available — copy the pack into another agent manually.',
+        key: 'handoff-pack-no-backend'
+      });
+      return;
+    }
+
+    const stay: ContinueItem = {
+      label: '$(check) Done — keep current session',
+      description: 'Only write the pack',
+      detail: filePath
+        ? `Leave this conversation as-is. Pack is at ${filePath}.`
+        : 'Leave this conversation as-is. Pack is open as an untitled document.'
+    };
+
+    const pick = await vscode.window.showQuickPick<ContinueItem>([...continueItems, stay], {
+      title: 'Handoff pack ready — continue on another backend?',
+      placeHolder: 'Pick a backend to open with the pack as primer',
+      ignoreFocusOut: true
+    });
+    if (!pick?.backend) return;
+
+    // Remember the outgoing session so a later dropdown flip can restore it
+    // (same contract as switchBackend). Do NOT go through switchBackend —
+    // that path may restore a prior native thread or show the full/hybrid
+    // carry-over banner; here the pack *is* the primer.
+    const prevBackend = this.meta?.backend;
+    const prevId = this.meta?.id;
+    if (prevBackend && prevId && prevBackend !== pick.backend) {
+      this.previousSessionByBackend.set(prevBackend, prevId);
+      this.persistBackendMap();
+    }
+
+    // Clear any in-flight cross-backend banner state so we don't hold prompts.
+    this.handoffRecords = undefined;
+    this.primerPending = false;
+    this.queuedPromptBlocks = undefined;
+    // Latch primer BEFORE openSession so the first prompt on the new backend
+    // carries the pack (openSession does not clear pendingPrimer).
+    this.pendingPrimer = primer;
+
+    await this.openSession(pick.backend);
+    this.persistBackendMap();
+
+    this.panel.post({
+      type: 'notice',
+      text: `Continuing on **${backendLabel(pick.backend)}** with the handoff pack as primer — send a message to pick up where you left off.`,
+      detail: filePath
+        ? `Primer is the structured pack (also written to ${filePath}). It will be prepended to your next message only.`
+        : 'Primer is the structured pack from the untitled handoff document. It will be prepended to your next message only.',
+      key: `handoff-continue-${pick.backend}`
+    });
   }
 
   private async switchBackend(backend: BackendId): Promise<void> {

@@ -200,6 +200,27 @@ export function buildHandoffPack(records: Record_[], meta: HandoffPackMeta): str
   return sections.join('\n\n') + '\n';
 }
 
+/**
+ * Frame a handoff pack as a one-shot primer for the *next* user message on a
+ * different backend. Pure (no I/O) so unit tests can lock the contract.
+ * The host sets this as `pendingPrimer` after the user picks "Continue on…".
+ */
+export function formatHandoffPackPrimer(pack: string, fromBackend: string): string {
+  const body = pack.trim();
+  if (!body) return '';
+  return (
+    `<handoff-pack source="${fromBackend}">\n` +
+    `You are continuing work that started in a different AI assistant (${fromBackend}). ` +
+    `Below is a structured handoff briefing (goal, decisions, files touched, last check, open risks, next step). ` +
+    `A HANDOFF.md file with the same content may also exist in the workspace.\n\n` +
+    `Use this context to inform your response. Do NOT re-summarize the pack back to the user — ` +
+    `answer their upcoming message naturally and pick up the next step if they ask you to continue.\n\n` +
+    `== HANDOFF PACK ==\n` +
+    `${body}\n` +
+    `</handoff-pack>`
+  );
+}
+
 /** Last one or two paragraphs of an assistant reply. */
 function tailParagraphs(text: string): string {
   const paras = text

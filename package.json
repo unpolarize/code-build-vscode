@@ -69,7 +69,7 @@
       },
       {
         "command": "codeBuild.handoff",
-        "title": "Code Build: Write Handoff Pack (HANDOFF.md)"
+        "title": "Code Build: Handoff Pack + Continue on…"
       },
       {
         "command": "codeBuild.memory.refresh",
