@@ -4,6 +4,7 @@ import {
   createBaselineStore,
   foldToolCall,
   isEditToolCall,
+  ledgerDiffStats,
   normalizePathKey,
   replayLedger,
   sha1Hex,
@@ -149,6 +150,66 @@ test('replay ignores calls that never completed or that failed', () => {
   ];
   const ledger = replayLedger(updates, { cwd: CWD, fs, baselines });
   assert.equal(ledger.size, 0);
+});
+
+test('path key is stable before and after the file exists (symlinked parent)', () => {
+  // Simulates /tmp → /private/tmp: parent dir realpaths differently than its spelling.
+  const fs: LedgerFs = {
+    readFile: () => null,
+    realpath: (p) => {
+      if (p === '/tmp') return '/private/tmp';
+      if (p === '/private/tmp') return '/private/tmp';
+      if (p.startsWith('/private/tmp/') && p.endsWith('exists.ts')) return p;
+      return null; // the file itself doesn't exist yet
+    },
+  };
+  const preWrite = normalizePathKey('/tmp/new.ts', CWD, fs);
+  assert.equal(preWrite, '/private/tmp/new.ts');
+  // After the write the file resolves directly — same key either way.
+  assert.equal(normalizePathKey('/private/tmp/exists.ts', CWD, fs), '/private/tmp/exists.ts');
+});
+
+test('missing baseline entry degrades to 0/0 M, never invents status A', () => {
+  const fs = fakeFs({ '/work/a.ts': 'x\ny' });
+  const baselines = createBaselineStore(); // host never captured — degraded path
+  const ledger: SessionLedger = new Map();
+  foldToolCall(ledger, editCall({ path: 'a.ts' }), { cwd: CWD, fs, baselines });
+  const row = ledger.get('/work/a.ts')!;
+  assert.equal(row.status, 'M');
+  assert.deepEqual({ added: row.added, removed: row.removed }, { added: 0, removed: 0 });
+  // The adopted baseline sticks for later folds.
+  assert.equal(baselines.get('/work/a.ts')!.content, 'x\ny');
+});
+
+test('create-then-delete drops the row instead of pinning a stale A', () => {
+  const files: Record<string, string> = { '/work/new.ts': 'x' };
+  const fs: LedgerFs = { readFile: (p) => (p in files ? files[p] : null), realpath: () => null };
+  const baselines = createBaselineStore();
+  baselines.captureIfAbsent('/work/new.ts', null);
+  const ledger: SessionLedger = new Map();
+  foldToolCall(ledger, editCall({ toolCallId: 't1', path: '/work/new.ts' }), { cwd: CWD, fs, baselines });
+  assert.equal(ledger.get('/work/new.ts')!.status, 'A');
+  delete files['/work/new.ts'];
+  foldToolCall(ledger, editCall({ toolCallId: 't2', path: '/work/new.ts' }), { cwd: CWD, fs, baselines });
+  assert.equal(ledger.has('/work/new.ts'), false);
+});
+
+test('one call naming the same file two ways counts as one edit', () => {
+  const fs = fakeFs({ '/work/a.ts': 'x' });
+  const baselines = createBaselineStore();
+  baselines.captureIfAbsent('/work/a.ts', 'x');
+  const ledger: SessionLedger = new Map();
+  const tc = editCall({ path: './a.ts' });
+  tc.locations = [{ path: '/work/a.ts' }];
+  foldToolCall(ledger, tc, { cwd: CWD, fs, baselines });
+  assert.equal(ledger.get('/work/a.ts')!.editCount, 1);
+});
+
+test('ledgerDiffStats falls back to line-count delta on huge inputs', () => {
+  const huge = 'x\n'.repeat(600_000); // >1MB
+  const { added, removed } = ledgerDiffStats(huge, huge + 'y\nz');
+  assert.equal(removed, 0);
+  assert.ok(added >= 1);
 });
 
 test('sha1Hex is stable and hex-shaped', () => {

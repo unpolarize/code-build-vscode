@@ -92,12 +92,43 @@ export function sha1Hex(text: string): string {
 
 /**
  * One path, one key: resolve against the session cwd, then collapse through
- * realpath when the file exists so symlinked spellings match direct ones.
+ * realpath so symlinked spellings match direct ones. The key must be STABLE
+ * across the file's lifecycle — first touch may happen before the file exists
+ * (Write-new) — so when the file itself can't be realpath'd we realpath the
+ * nearest existing ancestor and rejoin the remainder. Otherwise a pre-write
+ * key (`/tmp/x`) and post-write key (`/private/tmp/x`) would split one file
+ * into two rows and orphan its baseline.
  */
 export function normalizePathKey(p: string, cwd: string, ledgerFs?: LedgerFs): string {
   const resolved = path.resolve(cwd, p);
-  const real = ledgerFs?.realpath?.(resolved);
-  return real ?? resolved;
+  if (!ledgerFs?.realpath) return resolved;
+  let dir = resolved;
+  const tail: string[] = [];
+  while (true) {
+    const real = ledgerFs.realpath(dir);
+    if (real !== null && real !== undefined) return path.join(real, ...tail);
+    const parent = path.dirname(dir);
+    if (parent === dir) return resolved; // hit the root without resolving
+    tail.unshift(path.basename(dir));
+    dir = parent;
+  }
+}
+
+/** Beyond this size the O(n·m) LCS would stall the extension host. */
+const LCS_MAX_BYTES = 1_000_000;
+
+/**
+ * diffStats with a large-file escape hatch: past LCS_MAX_BYTES fall back to a
+ * cheap line-count delta (the "line-set count fallback" the design allows) so
+ * a multi-megabyte edit can't freeze the host on every fold.
+ */
+export function ledgerDiffStats(oldText: string, newText: string): { added: number; removed: number } {
+  if (oldText.length > LCS_MAX_BYTES || newText.length > LCS_MAX_BYTES) {
+    const oldLines = oldText === '' ? 0 : oldText.split('\n').length;
+    const newLines = newText === '' ? 0 : newText.split('\n').length;
+    return { added: Math.max(0, newLines - oldLines), removed: Math.max(0, oldLines - newLines) };
+  }
+  return diffStats(oldText, newText);
 }
 
 function isCompleted(tc: Pick<ToolCall, 'status'>): boolean {
@@ -134,13 +165,29 @@ export interface FoldOptions {
 export function foldToolCall(ledger: SessionLedger, tc: ToolCall, opts: FoldOptions): boolean {
   if (!isCompleted(tc) || !isEditToolCall(tc)) return false;
   let mutated = false;
-  for (const raw of editedPaths(tc)) {
-    const key = normalizePathKey(raw, opts.cwd, opts.fs);
-    const baseline = opts.baselines.get(key);
-    const baselineContent = baseline ? baseline.content : null;
+  // Dedupe AFTER normalization: `./a.ts` from a diff block and `/abs/a.ts`
+  // from locations are one file and must count as one edit.
+  const keys = new Set(editedPaths(tc).map((raw) => normalizePathKey(raw, opts.cwd, opts.fs)));
+  for (const key of keys) {
     const current = opts.fs.readFile(key);
+    let baseline = opts.baselines.get(key);
+    if (!baseline) {
+      // Degraded fallback: capture was supposed to happen at first *pending*
+      // sight of the path (before the write). If it didn't, adopt the current
+      // disk state as baseline (0/0, status M) rather than inventing an "A
+      // with the whole file added" lie.
+      opts.baselines.captureIfAbsent(key, current);
+      baseline = opts.baselines.get(key);
+    }
+    const baselineContent = baseline ? baseline.content : null;
+    if (baselineContent === null && current === null) {
+      // Created then deleted within the session (or never materialized):
+      // net-zero — drop any existing row instead of pinning a stale 'A'.
+      if (ledger.delete(key)) mutated = true;
+      continue;
+    }
     const status: LedgerFileStatus = baselineContent === null ? 'A' : current === null ? 'D' : 'M';
-    const { added, removed } = diffStats(baselineContent ?? '', current ?? '');
+    const { added, removed } = ledgerDiffStats(baselineContent ?? '', current ?? '');
     const prev = ledger.get(key);
     ledger.set(key, {
       path: key,
