@@ -15,8 +15,7 @@ import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
 import { confineToRoot } from '../pathGuard';
 import {
-  defaultBrowserMcpServers,
-  normalizeMcpServerConfig,
+  resolveAcpMcpServersFromInspect,
   type AcpMcpServer
 } from './mcpServers';
 
@@ -36,13 +35,19 @@ interface PromptResult {
 
 /**
  * Resolve MCP servers to pass on ACP session/new.
- * Setting `codeBuild.mcpServers` overrides; when empty, inject the personal-browser stack
- * so Grok (and other ACP backends) can drive the user's real Chrome profile.
+ *
+ * Unset `codeBuild.mcpServers` → personal-browser defaults (chrome-devtools +
+ * playwright). Explicit `[]` or `codeBuild.disableDefaultMcpServers: true` →
+ * no servers (no npx default spawns). Populated array → as configured.
+ * Uses `inspect` because package.json default is `[]` and `get()` cannot
+ * distinguish unset from explicit empty.
  */
 export function resolveAcpMcpServers(): AcpMcpServer[] {
   const cfg = vscode.workspace.getConfiguration('codeBuild');
-  const raw = cfg.get<unknown>('mcpServers');
-  return normalizeMcpServerConfig(raw) ?? defaultBrowserMcpServers();
+  return resolveAcpMcpServersFromInspect(
+    cfg.inspect('mcpServers'),
+    cfg.get<boolean>('disableDefaultMcpServers') === true
+  );
 }
 
 /**

@@ -365,7 +365,7 @@
         "codeBuild.mcpServers": {
           "type": "array",
           "default": [],
-          "description": "MCP servers passed to ACP backends (Grok, OpenCode, Cline) on session/new. Each item: { name, command, args? }. Empty array = inject default personal-browser stack (chrome-devtools --autoConnect + playwright) so agents can use the zhirafovod@gmail.com Chrome profile via CDP. Set explicitly to []-with-dummy or override entries to customize; to disable MCP pass-through entirely, set one disabled dummy is not supported — pass a no-op server or fork.",
+          "description": "MCP servers passed to ACP backends (Grok, OpenCode, Cline) on session/new. Each item: { name, command, args? }. When this setting is left unset, Code Build injects the default personal-browser stack (chrome-devtools --autoConnect + playwright) so agents can use the live Chrome profile via CDP. Set explicitly to [] to pass no MCP servers (disables default injection). Prefer codeBuild.disableDefaultMcpServers for a discoverable off switch.",
           "items": {
             "type": "object",
             "required": [
@@ -387,6 +387,11 @@
               }
             }
           }
+        },
+        "codeBuild.disableDefaultMcpServers": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, do not inject the default chrome-devtools + playwright MCP servers on ACP session/new. Explicit codeBuild.mcpServers entries (if set) are still passed through; with no override, an empty list is sent (no default npx spawns)."
         }
       }
     }

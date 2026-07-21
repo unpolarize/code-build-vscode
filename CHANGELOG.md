@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### MCP defaults opt-out
+
+- **Explicit `codeBuild.mcpServers: []`** now means *no servers* (stops unconditional chrome-devtools + playwright npx spawns). Previously empty was treated as “use defaults,” and there was no supported opt-out.
+- **Unset** (no user/workspace override) still injects the personal-browser default stack.
+- New **`codeBuild.disableDefaultMcpServers`** boolean for a discoverable off switch; explicit `mcpServers` entries still pass through when set.
+- Resolution uses `Configuration.inspect` so package.json’s default `[]` is not confused with a user opt-out.
+
 ## 0.10.4 — 2026-07-17
 
 ### Lossless history restore: replay through the live reducer

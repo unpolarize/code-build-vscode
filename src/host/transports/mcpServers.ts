@@ -53,11 +53,20 @@ function normalizeEnv(raw: unknown): AcpMcpEnvVar[] {
 
 /**
  * Normalize raw config items into AcpMcpServer list.
- * Returns null when input is empty/invalid so callers can fall back to defaults.
- * Always forces `env` to an array so ACP deserialize succeeds.
+ *
+ * Distinguishes:
+ * - unset / not-an-array (`undefined`, `null`, non-array) → `null` so callers
+ *   can inject defaults
+ * - explicit empty array `[]` → `[]` (no servers — opt out of defaults)
+ * - populated array → normalized servers (invalid items skipped; if every item
+ *   is invalid, returns `[]` so we do not re-inject defaults after a deliberate
+ *   but broken config)
  */
 export function normalizeMcpServerConfig(raw: unknown): AcpMcpServer[] | null {
-  if (!Array.isArray(raw) || raw.length === 0) return null;
+  if (raw === undefined || raw === null) return null;
+  if (!Array.isArray(raw)) return null;
+  // Explicit empty — caller must NOT fall back to defaults.
+  if (raw.length === 0) return [];
   const out: AcpMcpServer[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
@@ -70,7 +79,8 @@ export function normalizeMcpServerConfig(raw: unknown): AcpMcpServer[] | null {
       : undefined;
     out.push({ name, command, args, env: normalizeEnv(o.env) });
   }
-  return out.length > 0 ? out : null;
+  // Explicit array that yielded nothing after filtering → empty, not null.
+  return out;
 }
 
 export function defaultBrowserMcpServers(): AcpMcpServer[] {
@@ -79,4 +89,48 @@ export function defaultBrowserMcpServers(): AcpMcpServer[] {
     args: s.args ? [...s.args] : undefined,
     env: [...s.env]
   }));
+}
+
+/**
+ * VS Code configuration inspect layers for `codeBuild.mcpServers`.
+ * package.json default is `[]`, so `cfg.get('mcpServers')` cannot tell unset
+ * from explicit empty — only workspace/global layer presence can.
+ */
+export interface McpServersConfigInspect {
+  workspaceFolderValue?: unknown;
+  workspaceValue?: unknown;
+  globalValue?: unknown;
+}
+
+/** First user-defined layer (folder → workspace → global), else undefined. */
+export function explicitMcpServersValue(
+  inspect: McpServersConfigInspect | undefined
+): unknown | undefined {
+  if (!inspect) return undefined;
+  if (inspect.workspaceFolderValue !== undefined) return inspect.workspaceFolderValue;
+  if (inspect.workspaceValue !== undefined) return inspect.workspaceValue;
+  if (inspect.globalValue !== undefined) return inspect.globalValue;
+  return undefined;
+}
+
+/**
+ * Resolve MCP servers for ACP session/new (pure; no vscode import).
+ *
+ * - `disableDefaultMcpServers: true` and no user override → `[]`
+ * - no user override (all inspect layers unset) → personal-browser defaults
+ * - user override `[]` → `[]` (opt out)
+ * - user override populated → those servers
+ * - user override non-array / all-invalid → `[]` (fail closed, no silent defaults)
+ */
+export function resolveAcpMcpServersFromInspect(
+  inspect: McpServersConfigInspect | undefined,
+  disableDefaultMcpServers = false
+): AcpMcpServer[] {
+  const explicit = explicitMcpServersValue(inspect);
+
+  if (explicit === undefined) {
+    return disableDefaultMcpServers ? [] : defaultBrowserMcpServers();
+  }
+
+  return normalizeMcpServerConfig(explicit) ?? [];
 }
