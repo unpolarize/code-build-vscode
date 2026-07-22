@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Path guard (ACP fs bridge)
+
+- **Realpath-based workspace confinement** for non-bypass `fs/*` reads/writes: `createPathGuard(root)` caches a realpathed root; `confine` rejects `../`, absolute outside paths, in-root symlinks that point out, broken symlinks, null bytes, and intermediate-is-file paths via `PathEscapeError` (`PATH_ESCAPE`).
+- First unit suite in `test/unit/pathGuard.test.ts`. Bypass mode still skips the guard unchanged.
+
 ### MCP defaults opt-out
 
 - **Explicit `codeBuild.mcpServers: []`** now means *no servers* (stops unconditional chrome-devtools + playwright npx spawns). Previously empty was treated as “use defaults,” and there was no supported opt-out.

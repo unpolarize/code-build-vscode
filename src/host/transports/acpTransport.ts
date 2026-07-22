@@ -13,7 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
-import { confineToRoot } from '../pathGuard';
+import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
   resolveAcpMcpServersFromInspect,
   type AcpMcpServer
@@ -71,6 +71,11 @@ export class AcpTransport extends BaseAgentSession {
    * the error bubble if the handshake fails so the user sees what went
    * wrong instead of a generic timeout. */
   private startupStderr = '';
+  /** Cached realpath-based path guard for the non-bypass fs/* bridge.
+   * Built once per start() when cwd is known; root is realpathed at init. */
+  private pathGuard?: PathGuard;
+  /** `startOpts.cwd` string the cached guard was built for. */
+  private pathGuardCwd?: string;
 
   constructor(
     public readonly id: string,
@@ -83,6 +88,9 @@ export class AcpTransport extends BaseAgentSession {
   async start(opts: StartOpts): Promise<void> {
     this.startOpts = opts;
     this.mode = opts.mode;
+    // Drop any prior guard so a restarted session re-realpaths the new cwd.
+    this.pathGuard = undefined;
+    this.pathGuardCwd = undefined;
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
     const args = spec.buildArgs({
@@ -241,9 +249,16 @@ export class AcpTransport extends BaseAgentSession {
       // No sandbox. Relative requests still resolve against the
       // session cwd so the agent's "./foo.md" works as it would in a
       // terminal; absolute requests pass through verbatim.
+      // Intentionally NO realpath/confine — product trust model for bypass.
       return path.resolve(root, requested);
     }
-    return confineToRoot(root, requested);
+    if (!this.pathGuard || this.pathGuardCwd !== root) {
+      // Lazy-init / rebuild if cwd string changes. createPathGuard realpaths
+      // root once; confine returns the confined real path for fs ops.
+      this.pathGuard = createPathGuard(root);
+      this.pathGuardCwd = root;
+    }
+    return this.pathGuard.confine(requested);
   }
 
   private async onRequest(method: string, params: unknown): Promise<unknown> {
