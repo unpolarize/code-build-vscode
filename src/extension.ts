@@ -63,6 +63,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await mgr.writeHandoffPack();
     }),
+    vscode.commands.registerCommand('codeBuild.exportConversation', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to export.'
+        );
+        return;
+      }
+      await mgr.exportConversation();
+    }),
     // Programmatic entry point for cross-extension session import — code-sessions
     // calls this when the user clicks "Open in Code Build" on a claude or grok
     // session row. We spawn a fresh code-build session bound to the matching

@@ -143,6 +143,10 @@
         "title": "Code Build: Export Performance JSON"
       },
       {
+        "command": "codeBuild.exportConversation",
+        "title": "Code Build: Export Conversation…"
+      },
+      {
         "command": "codeBuild.showFlightRecorder",
         "title": "Code Build: Show Flight Recorder Output"
       }
@@ -254,6 +258,17 @@
         {
           "command": "codeBuild.openInNewWindow",
           "group": "navigation@4",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        },
+        {
+          "command": "codeBuild.exportConversation",
+          "group": "1_export@1",
+          "when": "activeWebviewPanelId == codeBuild.chat"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "codeBuild.exportConversation",
           "when": "activeWebviewPanelId == codeBuild.chat"
         }
       ]

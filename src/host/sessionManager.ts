@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
 import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
@@ -28,6 +29,12 @@ import {
   type PrimerMode
 } from './persistence/conversationSerializer';
 import { buildHandoffPack, formatHandoffPackPrimer } from './persistence/handoffPack';
+import {
+  exportToClaudeJsonl,
+  exportToMarkdown,
+  exportHasTurns,
+  type ExportRecord
+} from './persistence/jsonlExporter';
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
@@ -549,6 +556,79 @@ export class SessionManager {
     } catch (err) {
       void vscode.window.showErrorMessage(
         `Code Build: failed to write handoff pack: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Export the active conversation as Claude-style JSONL (Code Sessions
+   * indexable) or simple role-prefixed Markdown. Format via QuickPick;
+   * destination via showSaveDialog; success toast offers Reveal in Finder.
+   */
+  async exportConversation(): Promise<void> {
+    if (!this.meta) {
+      void vscode.window.showInformationMessage(
+        'Code Build: no active conversation to export.'
+      );
+      return;
+    }
+    const formatPick = await vscode.window.showQuickPick(
+      [
+        {
+          label: 'Claude JSONL',
+          description: 'Code Sessions–indexable transcript',
+          format: 'jsonl' as const
+        },
+        {
+          label: 'Markdown',
+          description: 'User/assistant turns for reading/sharing',
+          format: 'md' as const
+        }
+      ],
+      { placeHolder: 'Export conversation as…', ignoreFocusOut: true }
+    );
+    if (!formatPick) return;
+
+    const records = this.collectTranscriptRecords() as ExportRecord[];
+    if (!exportHasTurns(records)) {
+      void vscode.window.showWarningMessage(
+        'Code Build: session has no transcript content to export yet.'
+      );
+      return;
+    }
+
+    const body =
+      formatPick.format === 'jsonl'
+        ? exportToClaudeJsonl(this.meta, records)
+        : exportToMarkdown(this.meta, records);
+
+    const ext = formatPick.format === 'jsonl' ? 'jsonl' : 'md';
+    const defaultDir =
+      this.meta.cwd ||
+      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
+      os.homedir();
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(defaultDir, `${this.meta.id}.${ext}`)),
+      filters:
+        formatPick.format === 'jsonl'
+          ? { 'Claude JSONL': ['jsonl'], 'All files': ['*'] }
+          : { Markdown: ['md'], 'All files': ['*'] },
+      saveLabel: 'Export'
+    });
+    if (!uri) return;
+
+    try {
+      await fs.writeFile(uri.fsPath, body, 'utf8');
+      const choice = await vscode.window.showInformationMessage(
+        `Code Build: exported conversation → ${uri.fsPath}`,
+        'Reveal in Finder'
+      );
+      if (choice === 'Reveal in Finder') {
+        await vscode.commands.executeCommand('revealFileInOS', uri);
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Code Build: export failed — ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
