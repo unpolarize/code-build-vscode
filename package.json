@@ -392,6 +392,19 @@
           "type": "boolean",
           "default": false,
           "description": "When true, do not inject the default chrome-devtools + playwright MCP servers on ACP session/new. Explicit codeBuild.mcpServers entries (if set) are still passed through; with no override, an empty list is sent (no default npx spawns)."
+        },
+        "codeBuild.kpMcp.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inject the knowledge-planning MCP server (kp mcp: kp_search/kp_create/kp_link_session/…) into ACP sessions (Grok, Codex) with provenance env (KP_AGENT/KP_MODEL/KP_SESSION). Requires codeBuild.kp.command and codeBuild.kp.root; if either is missing the session starts without kp tools. Independent of the default browser MCP servers — works even with codeBuild.disableDefaultMcpServers or codeBuild.mcpServers: []. A user-supplied 'kp' entry in codeBuild.mcpServers always wins (no duplicate injected)."
+        },
+        "codeBuild.kp.command": {
+          "type": "string",
+          "description": "Absolute path to the knowledge-planning CLI entry script (e.g. /Users/me/projects/knowledge-planning/src/cli/index.ts). Spawned as `<node> <this path> mcp` — set the script path, not 'node'."
+        },
+        "codeBuild.kp.root": {
+          "type": "string",
+          "description": "Planning store root passed to the kp MCP server as KP_ROOT (e.g. /Users/me/docs/planning)."
         }
       }
     }

@@ -15,6 +15,7 @@ import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
 import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
+  appendKpMcpServer,
   resolveAcpMcpServersFromInspect,
   type AcpMcpServer
 } from './mcpServers';
@@ -42,12 +43,34 @@ interface PromptResult {
  * Uses `inspect` because package.json default is `[]` and `get()` cannot
  * distinguish unset from explicit empty.
  */
-export function resolveAcpMcpServers(): AcpMcpServer[] {
+export function resolveAcpMcpServers(kpContext?: {
+  backend: BackendId;
+  model: string | undefined;
+  sessionId: string;
+}): AcpMcpServer[] {
   const cfg = vscode.workspace.getConfiguration('codeBuild');
-  return resolveAcpMcpServersFromInspect(
+  const base = resolveAcpMcpServersFromInspect(
     cfg.inspect('mcpServers'),
     cfg.get<boolean>('disableDefaultMcpServers') === true
   );
+  if (!kpContext) return base;
+  const { servers, skip } = appendKpMcpServer(base, {
+    enabled: cfg.get<boolean>('kpMcp.enabled') === true,
+    command: cfg.get<string>('kp.command'),
+    root: cfg.get<string>('kp.root'),
+    backend: kpContext.backend,
+    model: kpContext.model,
+    sessionId: kpContext.sessionId
+  });
+  if (skip === 'missing-command' || skip === 'missing-root') {
+    // Fail-open: the session still starts, just without kp tools.
+    console.warn(
+      `[code-build] codeBuild.kpMcp.enabled is on but codeBuild.kp.${
+        skip === 'missing-command' ? 'command' : 'root'
+      } is not set — skipping kp MCP injection`
+    );
+  }
+  return servers;
 }
 
 /**
@@ -139,7 +162,11 @@ export class AcpTransport extends BaseAgentSession {
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
-        const mcpServers = resolveAcpMcpServers();
+        const mcpServers = resolveAcpMcpServers({
+          backend: this.backend,
+          model: opts.model,
+          sessionId: this.id
+        });
         const canLoad =
           !!init.agentCapabilities?.loadSession && !!opts.resumeId;
 

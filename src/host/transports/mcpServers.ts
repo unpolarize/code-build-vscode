@@ -134,3 +134,94 @@ export function resolveAcpMcpServersFromInspect(
 
   return normalizeMcpServerConfig(explicit) ?? [];
 }
+
+/**
+ * KP (knowledge-planning) MCP injection for ACP backends.
+ *
+ * `kp mcp` is a stdio MCP server over the planning store (kp_search /
+ * kp_create / kp_get / kp_pack / kp_link_session / kp_set_status) that stamps
+ * provenance from KP_AGENT / KP_MODEL / KP_SESSION env. Injecting it on ACP
+ * session/new lets agents on any ACP backend (grok, codex) search/create/link
+ * planning items natively. Opt-in via `codeBuild.kpMcp.enabled` (default off);
+ * `codeBuild.kp.command` (abs path to the KP CLI entry) and `codeBuild.kp.root`
+ * have no defaults — missing either is a fail-open skip, never a broken spawn.
+ */
+
+/** Why a kp entry was not built/appended. `user-defined` = config already has one. */
+export type KpMcpSkipReason =
+  | 'disabled'
+  | 'missing-command'
+  | 'missing-root'
+  | 'user-defined';
+
+export interface KpMcpOptions {
+  enabled: boolean;
+  /** Absolute path to the KP CLI entry (e.g. .../knowledge-planning/src/cli/index.ts). */
+  command: string | undefined;
+  /** Planning store root → KP_ROOT. */
+  root: string | undefined;
+  /** ACP backend id → KP_AGENT (claude never reaches this path in v1). */
+  backend: string;
+  /** Session model → KP_MODEL. Falls back to 'default' — KP env beats
+   * clientInfo, so without this creates get stamped model "0.0.1". */
+  model: string | undefined;
+  /** Host session id at spawn → KP_SESSION (backend uuid isn't known yet;
+   * deferred link-session covers the real uuid later). */
+  sessionId: string;
+  /** Node executable for spawning the CLI; defaults to process.execPath. */
+  execPath?: string;
+}
+
+/**
+ * Build the kp MCP server entry (pure; no vscode import).
+ *
+ * The entry always spawns via the node executable (`execPath`) with
+ * `args: [cliPath, 'mcp']` — a `command` of bare 'node' or of the node binary
+ * itself is a misconfiguration (it is the CLI *script* path) and is rejected
+ * as `missing-command` rather than producing a broken spawn.
+ */
+export function buildKpMcpServerEntry(
+  opts: KpMcpOptions
+): { server: AcpMcpServer } | { skip: KpMcpSkipReason } {
+  if (!opts.enabled) return { skip: 'disabled' };
+  const execPath = opts.execPath ?? process.execPath;
+  const cli = (opts.command ?? '').trim();
+  if (!cli || cli === 'node' || cli === execPath) return { skip: 'missing-command' };
+  const root = (opts.root ?? '').trim();
+  if (!root) return { skip: 'missing-root' };
+  const model = (opts.model ?? '').trim();
+  return {
+    server: {
+      name: 'kp',
+      command: execPath,
+      args: [cli, 'mcp'],
+      // ALWAYS all four: KP resolves provenance env > clientInfo > defaults,
+      // so a missing KP_MODEL stamps creates with clientInfo's "0.0.1".
+      env: [
+        { name: 'KP_ROOT', value: root },
+        { name: 'KP_AGENT', value: opts.backend },
+        { name: 'KP_MODEL', value: model || 'default' },
+        { name: 'KP_SESSION', value: opts.sessionId }
+      ]
+    }
+  };
+}
+
+/**
+ * Append the kp entry to an already-resolved server list.
+ *
+ * - disabled / unconfigured → base unchanged, skip reason returned
+ * - base already has an exact `name === 'kp'` entry → base unchanged
+ *   (never rewrite a user-supplied kp entry), skip 'user-defined'
+ * - otherwise append — including when base is `[]`: the kpMcp.enabled
+ *   setting is the opt-in, independent of the browser defaults.
+ */
+export function appendKpMcpServer(
+  base: AcpMcpServer[],
+  opts: KpMcpOptions
+): { servers: AcpMcpServer[]; skip?: KpMcpSkipReason } {
+  const built = buildKpMcpServerEntry(opts);
+  if ('skip' in built) return { servers: base, skip: built.skip };
+  if (base.some((s) => s.name === 'kp')) return { servers: base, skip: 'user-defined' };
+  return { servers: [...base, built.server] };
+}
