@@ -322,9 +322,10 @@ export class SessionManager {
         this.setEffort(msg.effort);
         break;
       case 'respondPermission':
-        // User decided — resume normal stall watching for the continuation.
-        this.awaitingPermission = false;
         this.session?.respondPermission(msg.requestId, msg.outcome);
+        // Resume normal stall watching only once EVERY queued permission is
+        // answered — with concurrent requests, one decision may leave more.
+        this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
         break;
       case 'openDiff':
         await this.editor.openDiff(msg.path, msg.oldText, msg.newText);

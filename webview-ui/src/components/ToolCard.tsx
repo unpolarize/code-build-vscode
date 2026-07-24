@@ -1,6 +1,7 @@
 import type { ContentBlock, ToolCall } from '../../../src/shared/acpTypes';
 import { post } from '../vscodeApi';
 import { lineDiff } from '../diff';
+import { classifyTool, commandPreview } from '../toolPreview';
 
 const STATUS_ICON: Record<string, string> = {
   pending: '○',
@@ -8,41 +9,6 @@ const STATUS_ICON: Record<string, string> = {
   completed: '●',
   failed: '✕'
 };
-
-/** Detect noteworthy operations the user typically wants highlighted in the
- * chat timeline — primarily git commits / pushes (irreversible, often
- * unintended) but also any bash invocation that names a destructive verb.
- * Returns a small badge label or null. */
-function classifyTool(tool: ToolCall): { badge: string; severity: 'info' | 'warn' } | null {
-  const name = tool.title;
-  const raw = tool.rawInput as { command?: string; cmd?: string } | undefined;
-  const cmd = (raw?.command ?? raw?.cmd ?? '').toLowerCase();
-  if (name === 'Bash' || name === 'run_terminal_command' || name === 'execute_bash') {
-    if (/\bgit\s+push\b/.test(cmd)) return { badge: '↑ git push', severity: 'warn' };
-    if (/\bgit\s+commit\b/.test(cmd)) return { badge: '◆ git commit', severity: 'warn' };
-    if (/\bgit\s+merge\b/.test(cmd)) return { badge: '◆ git merge', severity: 'warn' };
-    if (/\bgit\s+reset\s+--hard\b/.test(cmd)) return { badge: '⚠ git reset --hard', severity: 'warn' };
-    if (/\brm\s+-rf\b/.test(cmd)) return { badge: '⚠ rm -rf', severity: 'warn' };
-    if (/\bnpm\s+(install|run\s+build|publish)\b/.test(cmd)) {
-      return { badge: '📦 npm', severity: 'info' };
-    }
-  }
-  return null;
-}
-
-/** Pull the bash command (for Bash / run_terminal_command tools) so the
- * collapsed summary can show what's being run without expanding the card. */
-function commandPreview(tool: ToolCall): string | null {
-  if (tool.title !== 'Bash' && tool.title !== 'run_terminal_command' && tool.title !== 'execute_bash') {
-    return null;
-  }
-  const raw = tool.rawInput as { command?: string; cmd?: string } | undefined;
-  const cmd = (raw?.command ?? raw?.cmd ?? '').trim();
-  if (!cmd) return null;
-  // Single-line preview — the full command is visible in the expanded body.
-  const oneLine = cmd.replace(/\s+/g, ' ');
-  return oneLine.length > 80 ? oneLine.slice(0, 79) + '…' : oneLine;
-}
 
 export function ToolCard({ tool }: { tool: ToolCall }) {
   const blocks = tool.content ?? [];
@@ -99,7 +65,7 @@ export function ToolCard({ tool }: { tool: ToolCall }) {
   );
 }
 
-function DiffBlock({ diff }: { diff: Extract<ContentBlock, { type: 'diff' }> }) {
+export function DiffBlock({ diff }: { diff: Extract<ContentBlock, { type: 'diff' }> }) {
   const rows = lineDiff(diff.oldText, diff.newText);
   const added = rows.filter((r) => r.type === 'add').length;
   const removed = rows.filter((r) => r.type === 'del').length;

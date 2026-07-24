@@ -83,9 +83,14 @@ function toToolCallPartial(u: AcpUpdate): Partial<ToolCall> & { toolCallId: stri
   return p;
 }
 
-/** ACP tool content is an array of {type:'content',content} | {type:'diff',...}. */
 function extractToolContent(u: AcpUpdate): ContentBlock[] {
-  const raw = (u as unknown as { content?: unknown }).content;
+  return extractAcpToolContent((u as unknown as { content?: unknown }).content);
+}
+
+/** ACP tool content is an array of {type:'content',content} | {type:'diff',...}.
+ * Exported so the permission gate can normalize the toolCall embedded in a
+ * session/request_permission with the same rules as tool_call updates. */
+export function extractAcpToolContent(raw: unknown): ContentBlock[] {
   const out: ContentBlock[] = [];
   if (Array.isArray(raw)) {
     for (const item of raw) {

@@ -43,6 +43,11 @@ export interface AgentSession {
   setMode(mode: PermissionMode): void;
   respondPermission(requestId: string, outcome: PermissionOutcome): void;
 
+  /** Whether any permission request is still awaiting a user decision.
+   * With concurrent requests queued, answering one must not un-pause the
+   * stall watchdog while others remain. */
+  hasPendingPermissions(): boolean;
+
   /** Resolves once the transport's startup handshake has settled (either
    * way — a failed handshake resolves too; the error is surfaced through
    * the event stream). Hosts that mutate prompt inputs based on handshake
@@ -70,6 +75,10 @@ export abstract class BaseAgentSession implements AgentSession {
   abstract cancel(): void;
   abstract setMode(mode: PermissionMode): void;
   abstract respondPermission(requestId: string, outcome: PermissionOutcome): void;
+
+  hasPendingPermissions(): boolean {
+    return false;
+  }
 
   ready(): Promise<void> {
     return Promise.resolve();

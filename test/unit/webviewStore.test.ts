@@ -270,7 +270,9 @@ describe('historyLoaded replay', () => {
       busy: true,
       usage: { inputTokens: 999 },
       items: [{ kind: 'error', id: 'e', createdAt: 0, text: 'stale' } as any],
-      permission: { requestId: 'r', tool: { toolCallId: 'x', title: 'Bash', status: 'pending' }, options: [] }
+      permissionQueue: [
+        { requestId: 'r', tool: { toolCallId: 'x', title: 'Bash', status: 'pending' }, options: [] }
+      ]
     };
     const s = reduce(dirty, {
       type: 'historyLoaded',
@@ -285,7 +287,7 @@ describe('historyLoaded replay', () => {
         userRec('hello')
       ]
     } as HostToWebview);
-    assert.equal(s.permission, null);
+    assert.deepEqual(s.permissionQueue, []);
     assert.equal(s.busy, false);
     assert.equal(s.usage, null);
     assert.deepEqual(s.items.map((it) => it.kind), ['user']);
@@ -302,5 +304,54 @@ describe('historyLoaded replay', () => {
     } as HostToWebview);
     assert.equal(s.usageBreakdown.length, 1);
     assert.deepEqual(s.usage, { inputTokens: 7 });
+  });
+});
+
+describe('permission FIFO queue', () => {
+  const permReq = (requestId: string, tool?: Partial<ToolCall>): SessionUpdate => ({
+    kind: 'permission_request',
+    requestId,
+    toolCall: { toolCallId: `tc-${requestId}`, title: 'Bash', status: 'pending', ...tool } as ToolCall,
+    options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+  });
+
+  it('queues concurrent requests instead of overwriting (orphaned-resolver regression)', () => {
+    const s = apply(initialState, permReq('r1'), permReq('r2'));
+    assert.equal(s.permissionQueue.length, 2);
+    // FIFO order: the FIRST request stays at the head — the second must
+    // not replace an unresolved first (the old single-slot bug).
+    assert.equal(s.permissionQueue[0].requestId, 'r1');
+    assert.equal(s.permissionQueue[1].requestId, 'r2');
+  });
+
+  it('ignores duplicate requestIds', () => {
+    const s = apply(initialState, permReq('r1'), permReq('r1'));
+    assert.equal(s.permissionQueue.length, 1);
+  });
+
+  it('retains rawInput/content/locations on the queued request', () => {
+    const s = apply(
+      initialState,
+      permReq('r1', {
+        rawInput: { command: 'rm -rf /tmp/x' },
+        content: [{ type: 'diff', path: 'a.ts', oldText: 'a', newText: 'b' }],
+        locations: [{ path: 'a.ts', line: 3 }]
+      })
+    );
+    const tool = s.permissionQueue[0].tool;
+    assert.deepEqual(tool.rawInput, { command: 'rm -rf /tmp/x' });
+    assert.equal(tool.content?.[0].type, 'diff');
+    assert.equal(tool.locations?.[0].path, 'a.ts');
+  });
+
+  it('renders fallback-only payloads without crashing (bare toolCallId+title)', () => {
+    const s = apply(initialState, {
+      kind: 'permission_request',
+      requestId: 'r1',
+      toolCall: { toolCallId: 'x', title: 'Bash', status: 'pending' },
+      options: []
+    } as SessionUpdate);
+    assert.equal(s.permissionQueue.length, 1);
+    assert.equal(s.permissionQueue[0].tool.rawInput, undefined);
   });
 });

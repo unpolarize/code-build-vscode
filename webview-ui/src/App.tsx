@@ -18,7 +18,7 @@ import { PerfPanel } from './components/PerfPanel';
 type Action =
   | { kind: 'host'; msg: HostToWebview }
   | { kind: 'sendUser'; text: string; images?: ImageAttachment[]; interjected?: boolean }
-  | { kind: 'clearPermission' }
+  | { kind: 'resolvePermission'; requestId: string }
   | { kind: 'clearPrimer' }
   | { kind: 'clearItems' }
   | { kind: 'askUserAnswered'; toolCallId: string; answers: Record<string, string> };
@@ -27,7 +27,11 @@ function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'host') return reduce(state, action.msg);
   if (action.kind === 'sendUser')
     return appendUser(state, action.text, action.images, action.interjected);
-  if (action.kind === 'clearPermission') return { ...state, permission: null };
+  if (action.kind === 'resolvePermission')
+    return {
+      ...state,
+      permissionQueue: state.permissionQueue.filter((p) => p.requestId !== action.requestId)
+    };
   if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
   if (action.kind === 'askUserAnswered')
     return markAskUserAnswered(state, action.toolCallId, action.answers);
@@ -239,7 +243,7 @@ export function App() {
 
   function onRespond(requestId: string, outcome: PermissionOutcome) {
     post({ type: 'respondPermission', requestId, outcome });
-    dispatch({ kind: 'clearPermission' });
+    dispatch({ kind: 'resolvePermission', requestId });
   }
 
   function onRequestFileSuggestions(query: string) {
@@ -335,8 +339,12 @@ export function App() {
         }}
       />
       <MessageNav items={state.items} />
-      {state.permission && (
-        <PermissionPrompt permission={state.permission} onRespond={onRespond} />
+      {state.permissionQueue.length > 0 && (
+        <PermissionPrompt
+          permission={state.permissionQueue[0]}
+          queued={state.permissionQueue.length - 1}
+          onRespond={onRespond}
+        />
       )}
       <Composer
         busy={state.busy}

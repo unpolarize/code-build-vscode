@@ -122,7 +122,11 @@ export interface ChatState {
   allowBypass: boolean;
   items: ChatItem[];
   busy: boolean;
-  permission: PendingPermission | null;
+  /** FIFO of unanswered permission requests. The UI renders the head;
+   * answering advances the queue. A single overwritable slot used to drop
+   * concurrent requests, orphaning their host-side resolvers (deadlock
+   * until the stall watchdog fired). */
+  permissionQueue: PendingPermission[];
   usage: UsageInfo | null;
   /** Per-model usage breakdown — populated from `usage_breakdown` updates.
    * Drives the expanded tooltip in the header. */
@@ -165,7 +169,7 @@ export const initialState: ChatState = {
   allowBypass: false,
   items: [],
   busy: false,
-  permission: null,
+  permissionQueue: [],
   usage: null,
   usageBreakdown: [],
   commands: [],
@@ -460,9 +464,15 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message });
       return { ...state, items, busy: false };
     case 'permission_request':
+      // Enqueue (idempotent on requestId — a re-emitted request must not
+      // double up). Head renders; the rest wait their turn.
+      if (state.permissionQueue.some((p) => p.requestId === u.requestId)) return state;
       return {
         ...state,
-        permission: { requestId: u.requestId, tool: u.toolCall, options: u.options }
+        permissionQueue: [
+          ...state.permissionQueue,
+          { requestId: u.requestId, tool: u.toolCall, options: u.options }
+        ]
       };
     case 'current_mode_update':
       return state.session
@@ -589,7 +599,7 @@ function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecor
     items: [],
     usage: null,
     usageBreakdown: [],
-    permission: null,
+    permissionQueue: [],
     busy: false
   };
   for (const rec of records) {

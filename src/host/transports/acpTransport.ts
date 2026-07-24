@@ -13,6 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
 import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
   appendKpMcpServer,
@@ -84,7 +85,7 @@ export class AcpTransport extends BaseAgentSession {
   private acpSessionId?: string;
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
-  private pendingPermissions = new Map<string, (outcome: PermissionOutcome) => void>();
+  private pendingPermissions = new PendingPermissionResolvers();
   /** Resolves when initialize + session/new have completed (or rejects on
    * any failure). prompt() awaits this so the user can hit Send while the
    * ACP handshake is still in flight — the prompt is queued instead of
@@ -336,19 +337,17 @@ export class AcpTransport extends BaseAgentSession {
       }
     }
 
+    // Forward the FULL toolCall (rawInput/content/locations) so the prompt
+    // can show the actual command/diff being approved, not just "Bash".
+    // All rich fields are optional — some adapters send title-only payloads.
     this.emit({
       kind: 'permission_request',
       requestId,
-      toolCall: {
-        toolCallId: String(toolCall.toolCallId ?? requestId),
-        title: String(toolCall.title ?? 'Permission request'),
-        kind: toolKind,
-        status: 'pending'
-      },
+      toolCall: buildPermissionToolCall(params.toolCall, requestId),
       options: options as never
     });
     return new Promise((resolve) => {
-      this.pendingPermissions.set(requestId, (outcome) => resolve({ outcome }));
+      this.pendingPermissions.add(requestId, (outcome) => resolve({ outcome }));
     });
   }
 
@@ -403,11 +402,11 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   respondPermission(requestId: string, outcome: PermissionOutcome): void {
-    const resolver = this.pendingPermissions.get(requestId);
-    if (resolver) {
-      this.pendingPermissions.delete(requestId);
-      resolver(outcome);
-    }
+    this.pendingPermissions.resolve(requestId, outcome);
+  }
+
+  override hasPendingPermissions(): boolean {
+    return this.pendingPermissions.size > 0;
   }
 
   override dispose(): void {
@@ -416,7 +415,9 @@ export class AcpTransport extends BaseAgentSession {
     this.rpc = undefined;
     this.proc?.kill();
     this.proc = undefined;
-    this.pendingPermissions.clear();
+    // Cancel (not drop) every outstanding request — a bare .clear() left
+    // the agent's request_permission promises hanging forever.
+    this.pendingPermissions.cancelAll();
   }
 }
 
