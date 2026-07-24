@@ -1409,7 +1409,9 @@ export class SessionManager {
       case 'result':
       case 'error':
         this.openToolCalls.clear();
-        this.awaitingPermission = false;
+        // Keep the pause if permission prompts are still queued (a turn can
+        // error out while an unanswered request is on screen).
+        this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
         this.watchdog.clear();
         this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
         break;

@@ -46,7 +46,11 @@ export function PermissionPrompt({ permission, queued = 0, onRespond }: Props) {
       {command ? (
         <pre className="permission-command">{capText(command)}</pre>
       ) : diffs.length > 0 ? (
-        diffs.map((d, i) => <DiffBlock key={i} diff={d} />)
+        // Cap diff sides before the O(n×m) lineDiff — a multi-MB edit
+        // approval must not freeze the webview.
+        diffs.map((d, i) => (
+          <DiffBlock key={i} diff={{ ...d, oldText: capText(d.oldText), newText: capText(d.newText) }} />
+        ))
       ) : loc ? (
         <div className="permission-path">{loc.path}</div>
       ) : null}

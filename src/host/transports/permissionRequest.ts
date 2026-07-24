@@ -58,6 +58,9 @@ export class PendingPermissionResolvers {
   private resolvers = new Map<string, (outcome: PermissionOutcome) => void>();
 
   add(requestId: string, resolver: (outcome: PermissionOutcome) => void): void {
+    // A colliding id would silently orphan the first resolver — cancel it
+    // instead so its promise always settles (ids are UUIDs; belt+braces).
+    this.resolve(requestId, { outcome: 'cancelled' });
     this.resolvers.set(requestId, resolver);
   }
 

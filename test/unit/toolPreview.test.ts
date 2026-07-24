@@ -66,3 +66,16 @@ describe('capText size cap', () => {
     assert.ok(capped.includes('[truncated'));
   });
 });
+
+describe('classifyTool on execute-kind permission payloads', () => {
+  it('badges rm -rf even when the title is adapter-specific (kind: execute)', () => {
+    const tool: ToolCall = {
+      toolCallId: 't',
+      title: 'shell',
+      kind: 'execute',
+      status: 'pending',
+      rawInput: { command: 'rm -rf /' }
+    };
+    assert.equal(classifyTool(tool)?.severity, 'warn');
+  });
+});

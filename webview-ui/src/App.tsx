@@ -35,7 +35,10 @@ function appReducer(state: ChatState, action: Action): ChatState {
   if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
   if (action.kind === 'askUserAnswered')
     return markAskUserAnswered(state, action.toolCallId, action.answers);
-  if (action.kind === 'clearItems') return { ...state, items: [], usage: null, usageBreakdown: [] };
+  if (action.kind === 'clearItems')
+    // Also drop queued permission prompts — the host disposes the old
+    // session (cancelling their resolvers), so a kept modal would no-op.
+    return { ...state, items: [], usage: null, usageBreakdown: [], permissionQueue: [] };
   return state;
 }
 

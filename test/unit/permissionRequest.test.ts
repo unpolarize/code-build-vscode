@@ -107,3 +107,13 @@ describe('PendingPermissionResolvers', () => {
     assert.equal(reg.resolve('r1', { outcome: 'cancelled' }), false);
   });
 });
+
+describe('PendingPermissionResolvers id collision', () => {
+  it('cancels the previous resolver when the same id is re-added (no orphan)', async () => {
+    const reg = new PendingPermissionResolvers();
+    const first = new Promise<PermissionOutcome>((resolve) => reg.add('dup', resolve));
+    reg.add('dup', () => {});
+    assert.deepEqual(await first, { outcome: 'cancelled' });
+    assert.equal(reg.size, 1);
+  });
+});

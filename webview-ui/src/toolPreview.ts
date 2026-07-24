@@ -11,7 +11,10 @@ const EXECUTE_TOOLS = new Set(['Bash', 'run_terminal_command', 'execute_bash']);
  * Returns a small badge label or null. */
 export function classifyTool(tool: ToolCall): { badge: string; severity: 'info' | 'warn' } | null {
   const cmd = (rawCommand(tool) ?? '').toLowerCase();
-  if (EXECUTE_TOOLS.has(tool.title)) {
+  // Match anything rawCommand recognises (known bash titles OR kind:
+  // 'execute') so a permission payload never shows a command without
+  // its destructive badge.
+  if (cmd) {
     if (/\bgit\s+push\b/.test(cmd)) return { badge: '↑ git push', severity: 'warn' };
     if (/\bgit\s+commit\b/.test(cmd)) return { badge: '◆ git commit', severity: 'warn' };
     if (/\bgit\s+merge\b/.test(cmd)) return { badge: '◆ git merge', severity: 'warn' };
