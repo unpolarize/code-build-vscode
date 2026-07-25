@@ -13,6 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { settleAcpProcessExit } from './acpProcessExit';
 import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
 import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
@@ -100,6 +101,11 @@ export class AcpTransport extends BaseAgentSession {
   private pathGuard?: PathGuard;
   /** `startOpts.cwd` string the cached guard was built for. */
   private pathGuardCwd?: string;
+  /** True once the process exit path (or dispose) has settled pending
+   * RPC + permissions. Prevents double-settle when dispose() kills the
+   * child and the exit handler also fires; also lets prompt() swallow
+   * the "endpoint disposed" rejection after a mid-turn exit. */
+  private exitSettled = false;
 
   constructor(
     public readonly id: string,
@@ -115,6 +121,7 @@ export class AcpTransport extends BaseAgentSession {
     // Drop any prior guard so a restarted session re-realpaths the new cwd.
     this.pathGuard = undefined;
     this.pathGuardCwd = undefined;
+    this.exitSettled = false;
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
     const args = spec.buildArgs({
@@ -129,14 +136,11 @@ export class AcpTransport extends BaseAgentSession {
     this.proc.on('error', (err) =>
       this.emit({ kind: 'error', message: `Failed to start ${bin}: ${err.message}` })
     );
-    this.proc.on('exit', (code) => {
-      if (code && code !== 0) {
-        const tail = this.startupStderr.trim().slice(-512);
-        this.emit({
-          kind: 'error',
-          message: `${bin} exited with code ${code}${tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : ''}`
-        });
-      }
+    // Mid-turn exit (daemon crash/OOM/kill) must settle pending RPC and
+    // permission prompts and emit a synthetic result — otherwise the
+    // webview spinner sticks forever. See settleAcpProcessExit.
+    this.proc.on('exit', (code, signal) => {
+      this.handleProcessExit(code, signal ?? null, bin);
     });
     this.proc.stderr.on('data', (b: Buffer) => {
       const t = b.toString();
@@ -384,8 +388,38 @@ export class AcpTransport extends BaseAgentSession {
       });
       this.emit({ kind: 'result', stopReason: res.stopReason });
     } catch (err) {
+      // Process-exit settlement disposes the RPC endpoint, which rejects
+      // this request. The exit handler already emitted error/result — do
+      // not double-emit a "JSON-RPC endpoint disposed" bubble.
+      if (this.exitSettled) return;
       this.emit({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Child-process exit path. Idempotent with dispose(): intentional host
+   * teardown sets exitSettled before kill so we don't emit a synthetic
+   * result into a panel that's already closing.
+   */
+  private handleProcessExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    bin: string
+  ): void {
+    if (this.exitSettled) return;
+    this.exitSettled = true;
+    const rpc = this.rpc;
+    this.rpc = undefined;
+    this.proc = undefined;
+    settleAcpProcessExit({
+      code,
+      signal,
+      bin,
+      startupStderr: this.startupStderr,
+      emit: (u) => this.emit(u),
+      disposeRpc: () => rpc?.dispose(),
+      cancelPermissions: () => this.pendingPermissions.cancelAll()
+    });
   }
 
   cancel(): void {
@@ -410,6 +444,9 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   override dispose(): void {
+    // Mark settled before kill so the 'exit' handler does not re-emit
+    // synthetic result/error into a disposed session.
+    this.exitSettled = true;
     super.dispose();
     this.rpc?.dispose();
     this.rpc = undefined;
