@@ -4,7 +4,14 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
-import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
+import type {
+  BackendSessionTransitionReason,
+  HydrateState,
+  SessionMeta,
+  SessionSource,
+  WebviewToHost
+} from '../shared/protocol';
+import { applyBackendSessionId } from './backendIdentity';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
@@ -1456,16 +1463,27 @@ export class SessionManager {
    * ~/.claude/projects — without persisting it, a later
    * loadExistingSession spawns claude with no --resume and the agent
    * has zero context ("I don't have prior conversation context to
-   * continue from"). Only writes once per session — the field is
-   * permanent for the conversation. */
+   * continue from"). Re-inits with the SAME id are no-ops; a NEW id
+   * (respawn, failed resume → fresh session) reassigns the field and
+   * appends the transition to meta.backendSessionHistory so the old
+   * native transcript stays joinable (see applyBackendSessionId). */
   private captureBackendSessionId(update: SessionUpdate): void {
     if (update.kind !== 'system_init') return;
     if (!this.meta) return;
-    if (this.meta.backendSessionId === update.backendSessionId) return;
-    this.meta.backendSessionId = update.backendSessionId;
+    const reason: BackendSessionTransitionReason = !this.meta.backendSessionId
+      ? 'initial'
+      : (this.pendingBackendIdReason ?? 'respawn');
+    this.pendingBackendIdReason = undefined;
+    if (!applyBackendSessionId(this.meta, update.backendSessionId, reason, Date.now())) return;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
   }
+
+  /** Reason to stamp on the next backendSessionId rotation. Armed by
+   * handleResumeFallback (the follow-up system_init carries the fresh id);
+   * cleared on every system_init so a stale arm can't mislabel a later
+   * unrelated respawn. */
+  private pendingBackendIdReason?: BackendSessionTransitionReason;
 
   /** Native resume failed (grok session/load rejected — deleted session
    * dir, foreign id, schema drift after a grok update) and the transport
@@ -1478,6 +1496,7 @@ export class SessionManager {
    * one. */
   private handleResumeFallback(update: SessionUpdate): void {
     if (update.kind !== 'resume_fallback') return;
+    this.pendingBackendIdReason = 'resume_fallback';
     const be = this.meta?.backend ?? 'agent';
     const hadPrimer = !!this.fallbackPrimer && !this.pendingPrimer;
     if (hadPrimer) {

@@ -18,6 +18,28 @@ import type {
  * (grok — no documented external resume flag yet). */
 export type SessionSource = 'codebuild' | 'claude' | 'grok';
 
+/** Why `backendSessionId` transitioned to a new value.
+ * - initial: first `system_init` of the session
+ * - respawn: backend process respawned mid-session (model/effort change,
+ *   compaction respawn we can't distinguish yet) and issued a fresh id
+ * - compact: reserved — emitted once compaction respawns are detectable
+ * - resume_fallback: native resume was rejected and the transport fell
+ *   back to a fresh session (see `resume_fallback` update) */
+export type BackendSessionTransitionReason = 'initial' | 'respawn' | 'compact' | 'resume_fallback';
+
+/** One entry in a session's native-id lineage (see `backendSessionHistory`). */
+export interface BackendSessionTransition {
+  id: string;
+  ts: number;
+  reason: BackendSessionTransitionReason;
+}
+
+/** On-disk format of a backend's native transcript store:
+ * claude-jsonl → ~/.claude/projects/<slug>/<uuid>.jsonl,
+ * grok-jsonl → ~/.grok/sessions/<cwd>/<uuid>/,
+ * codex-rollout → ~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*-<uuid>.jsonl. */
+export type NativeTranscriptFormat = 'claude-jsonl' | 'grok-jsonl' | 'codex-rollout';
+
 /** Metadata describing one chat session shown in the UI. */
 export interface SessionMeta {
   id: string;
@@ -41,9 +63,22 @@ export interface SessionMeta {
    * `system` init line). Distinct from `id`, which is our local UUID.
    * Persisted so a reload of the panel can spawn the agent with
    * `--resume <backendSessionId>` and pick up the on-disk transcript
-   * the agent itself wrote. Set the first time the backend emits a
-   * `system_init` event; never reassigned. */
+   * the agent itself wrote. Always the CURRENT native id: reassigned
+   * whenever the backend emits a `system_init` with a new id (respawn,
+   * compact, failed resume → fresh session); prior ids are kept in
+   * `backendSessionHistory` so no native transcript is orphaned. */
   backendSessionId?: string;
+  /** Every native session id this CB session has owned, oldest first.
+   * Appended ONLY when the id CHANGES (re-inits with the same id are
+   * no-ops — long sessions can re-init hundreds of times). N native ids
+   * map to this ONE CB session; the join contract for cross-store
+   * correlation (CSV analytics) reads `history[].id ∪ backendSessionId`. */
+  backendSessionHistory?: BackendSessionTransition[];
+  /** Pointer to the backend's own on-disk transcript for the CURRENT
+   * native session. Invariant: `native.id === backendSessionId` — one
+   * source of truth; this only adds the store format so consumers can
+   * locate the file without a per-backend switch. */
+  native?: { format: NativeTranscriptFormat; id: string };
   /** Durable per-backend native-session memory for THIS conversation: maps a
    * backend id -> the CB local session id that already holds that backend's
    * native thread. Lets a switch back to a backend the conversation has
