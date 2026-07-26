@@ -1470,9 +1470,11 @@ export class SessionManager {
   private captureBackendSessionId(update: SessionUpdate): void {
     if (update.kind !== 'system_init') return;
     if (!this.meta) return;
-    const reason: BackendSessionTransitionReason = !this.meta.backendSessionId
-      ? 'initial'
-      : (this.pendingBackendIdReason ?? 'respawn');
+    // An armed reason wins even when no id was captured yet: a failed
+    // resume before first capture (external-open path) must not be
+    // mislabeled 'initial'.
+    const reason: BackendSessionTransitionReason =
+      this.pendingBackendIdReason ?? (this.meta.backendSessionId ? 'respawn' : 'initial');
     this.pendingBackendIdReason = undefined;
     if (!applyBackendSessionId(this.meta, update.backendSessionId, reason, Date.now())) return;
     this.store.updateMeta(this.meta);
@@ -1841,6 +1843,9 @@ export class SessionManager {
     // A reserve primer belongs to the resume attempt that armed it; never
     // let it leak into a later session's fallback.
     this.fallbackPrimer = undefined;
+    // Same for an armed id-rotation reason: without this, session A's
+    // resume_fallback could mislabel session B's first rotation.
+    this.pendingBackendIdReason = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.session?.dispose();
