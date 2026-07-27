@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.2 — 2026-07-25
+
+### Voice STT that actually works (host path + honest webview errors)
+
+- **(c) Host-side STT via VS Code Speech** — when `ms-vscode.vscode-speech` is installed, `codeBuild.voice.sttEngine: auto` prefers **host**. CB opens a scratch editor and runs workbench editor dictation so recognition uses the Speech extension + **host process mic grant** (not the sandboxed chat iframe). Protocol: `sttStart` / `sttStop` ↔ `sttResult` / `sttStatus`. Without the Speech extension, host mode explains how to install it and points at OS dictation.
+- **(b) Webview getUserMedia preflight** — before `webkitSpeechRecognition.start()`, request `{ audio: true }` so permission failures are explicit (and occasionally surface a prompt). Does not fix the iframe sandbox by itself.
+- **(a) Honest errors** — `not-allowed` / preflight denial no longer say “allow mic in System Settings” (you already did). They explain the webview sandbox limit and point to **host STT** or **OS dictation (Fn Fn)**. Network Speech errors also mention Electron’s missing Google speech endpoint.
+- Setting: `codeBuild.voice.sttEngine` = `auto` | `host` | `webview` | `off`. Docs: [docs/VOICE.md](docs/VOICE.md).
+
+## 0.13.1 — 2026-07-25
+
+### Fixed
+
+- **Switching to an uninstalled backend no longer poisons the session.** Picking a backend that isn't on PATH (e.g. Grok on a machine without it) used to latch the outgoing session and then fail inside the spawn, so flipping *back* to the original agent fired an endless `--resume` loop (`Couldn't resume … error_during_execution`). `switchBackend` now preflights availability with `detectBackend`, refuses cleanly with a clear notice, and leaves the live session and thread untouched. (+3 tests)
+
+## 0.13.0 — 2026-07-25
+
+### Voice mode (dictation · hands-free · VIS · TTS)
+
+- **Dictation** — Web Speech STT fills the composer; mic button + Voice bar + `/dictation` + `Ctrl+Shift+Space`.
+- **Hands-free interactive** — continuous listen → silence debounce → auto-send → read assistant reply aloud → re-listen (`/voice`, Voice bar **Hands-free**). Mid-turn steer still works while the agent is busy.
+- **TTS** — webview `speechSynthesis` or macOS `say` (`codeBuild.voice.ttsEngine`: auto/webview/system/off). Markdown stripped for natural speech.
+- **Voice Ideation Sessions (VIS)** — session kind `voice-ideation` with facilitation preamble, no-repo-edit bias, force KP MCP on ACP when configured; close via **End VIS** / `/vis-close` / spoken “close session”; host parses JSON fence and writes KP via `kp create`/`capture` with `source: voice-ideation`.
+- Settings: `codeBuild.voice.*`; docs: [docs/VOICE.md](docs/VOICE.md).
+
 ## Unreleased
 
 ### Path guard (ACP fs bridge)

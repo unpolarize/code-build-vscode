@@ -160,6 +160,20 @@ export interface ChatState {
   activityTurnDurationMs: number;
   perfSnapshot: PerfSnapshotMsg | null;
   perfPanelOpen: boolean;
+  /** Voice settings from hydrate. */
+  voiceEnabled: boolean;
+  voiceConfig: {
+    ttsEngine: 'webview' | 'system' | 'auto' | 'off';
+    ttsEnabled: boolean;
+    lang: string;
+    utteranceEndMs: number;
+    hostSpeaks: boolean;
+    systemVoice?: string;
+    sttEngine: 'host' | 'webview' | 'off';
+    hostSttAvailable: boolean;
+  };
+  /** Host reports VIS active. */
+  visActive: boolean;
 }
 
 export const initialState: ChatState = {
@@ -185,7 +199,18 @@ export const initialState: ChatState = {
   activitySegments: [],
   activityTurnDurationMs: 0,
   perfSnapshot: null,
-  perfPanelOpen: false
+  perfPanelOpen: false,
+  voiceEnabled: true,
+  voiceConfig: {
+    ttsEngine: 'auto',
+    ttsEnabled: true,
+    lang: 'en-US',
+    utteranceEndMs: 1400,
+    hostSpeaks: false,
+    sttEngine: 'webview',
+    hostSttAvailable: false
+  },
+  visActive: false
 };
 
 let seq = 0;
@@ -209,7 +234,19 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         memoryFiles: msg.state.memoryFiles ?? 0,
         memoryByProvider: msg.state.memoryByProvider ?? {},
         showActiveQuestionBanner: msg.state.showActiveQuestionBanner ?? true,
-        perfDebug: msg.state.perfDebug ?? 'hud'
+        perfDebug: msg.state.perfDebug ?? 'hud',
+        voiceEnabled: msg.state.voice?.enabled ?? true,
+        voiceConfig: {
+          ttsEngine: msg.state.voice?.ttsEngine ?? 'auto',
+          ttsEnabled: msg.state.voice?.ttsEnabled ?? true,
+          lang: msg.state.voice?.lang ?? 'en-US',
+          utteranceEndMs: msg.state.voice?.utteranceEndMs ?? 1400,
+          hostSpeaks: msg.state.voice?.hostSpeaks ?? false,
+          systemVoice: msg.state.voice?.systemVoice,
+          sttEngine: msg.state.voice?.sttEngine ?? 'webview',
+          hostSttAvailable: msg.state.voice?.hostSttAvailable ?? false
+        },
+        visActive: msg.state.session?.sessionKind === 'voice-ideation'
       };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
@@ -331,7 +368,12 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, items };
     }
     case 'sessionMeta':
-      return { ...state, session: msg.session };
+      return {
+        ...state,
+        session: msg.session,
+        visActive:
+          msg.session.sessionKind === 'voice-ideation' ? true : state.visActive
+      };
     case 'busy':
       return { ...state, busy: msg.busy };
     case 'sessionUpdate':
@@ -341,6 +383,13 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     // sessionUpdates handled above (batch)
     case 'historyLoaded':
       return replayRecords(state, msg.meta, msg.records);
+    case 'ttsDone':
+      // Webview voice controller listens via window message; state no-op.
+      return state;
+    case 'voiceCommand':
+      return state;
+    case 'voiceIdeationState':
+      return { ...state, visActive: msg.active };
     default:
       return state;
   }

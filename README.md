@@ -51,6 +51,14 @@ Webview (React + Vite)  ──typed postMessage──▶  Extension Host
 Spawn args are centralized in `src/host/backendRegistry.ts` so CLI flag drift lives in
 one place.
 
+## Voice mode (0.13+)
+
+Dictation, hands-free interactive (listen → send → speak reply), and **Voice Ideation Sessions (VIS)** that extract thoughts/ideas into the knowledge-planning store.
+
+- Voice bar above the composer: **Mic** · **Hands-free** · **VIS** · **Stop**
+- Slash: `/voice`, `/dictation`, `/vis`, `/vis-close`, `/stop-voice`
+- Full guide: [docs/VOICE.md](docs/VOICE.md)
+
 ## Requirements
 
 - **Node.js ≥ 18** and **npm** (built with Node 24 / npm 11).

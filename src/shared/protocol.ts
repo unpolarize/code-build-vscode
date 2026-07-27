@@ -9,6 +9,9 @@ import type {
   PermissionOutcome,
   SessionUpdate
 } from './acpTypes';
+import type { SessionKind, VoiceMode } from './voiceIdeation';
+
+export type { SessionKind, VoiceMode } from './voiceIdeation';
 
 /** Which session store this row originated from. Local code-build sessions
  * live in ~/.codebuild; external rows are surfaced from the upstream CLI's
@@ -85,6 +88,8 @@ export interface SessionMeta {
    * already used resume natively (via that session's `--resume`) instead of
    * re-summarizing. Survives panel reopen (persisted on the meta line). */
   backendSessions?: Partial<Record<BackendId, string>>;
+  /** Session kind — coding (default) or voice-ideation (VIS). */
+  sessionKind?: SessionKind;
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
@@ -113,6 +118,30 @@ export interface HydrateState {
   showActiveQuestionBanner: boolean;
   /** Performance debug level from `codeBuild.perfDebug`. */
   perfDebug?: 'off' | 'hud' | 'full';
+  /** Voice feature config snapshot (settings → webview). */
+  voice?: VoiceHydrateConfig;
+}
+
+/** Voice settings + capability flags sent on hydrate. */
+export interface VoiceHydrateConfig {
+  enabled: boolean;
+  ttsEngine: 'webview' | 'system' | 'auto' | 'off';
+  ttsEnabled: boolean;
+  lang: string;
+  utteranceEndMs: number;
+  /** Host will use macOS `say` (or similar) when true. */
+  hostSpeaks: boolean;
+  /** Default system voice name for `say` (optional). */
+  systemVoice?: string;
+  /**
+   * Resolved STT path for this machine.
+   * - host: extension-host STT (macOS Speech) — preferred; uses OS mic grant
+   * - webview: browser Web Speech inside the sandboxed iframe (often blocked)
+   * - off: STT disabled
+   */
+  sttEngine: 'host' | 'webview' | 'off';
+  /** True when host STT binary/source can run on this OS (currently darwin). */
+  hostSttAvailable: boolean;
 }
 
 /** Capability snapshot of one backend, served to the webview on hydrate. */
@@ -189,7 +218,19 @@ export type WebviewToHost =
   | { type: 'exportPerf' }
   /** /handoff — write a structured HANDOFF.md pack for continuing this
    * work on another backend. */
-  | { type: 'handoff' };
+  | { type: 'handoff' }
+  /** Start a Voice Ideation Session (new chat + VIS preamble + KP bias). */
+  | { type: 'startVoiceIdeation'; backend?: BackendId }
+  /** End VIS: send close prompt and parse/write KP objects from the reply. */
+  | { type: 'endVoiceIdeation' }
+  /** Ask host to speak text (system TTS path). */
+  | { type: 'ttsSpeak'; text: string }
+  | { type: 'ttsStop' }
+  /** Webview reports voice UI mode for status bar / debugging. */
+  | { type: 'voiceModeChanged'; mode: VoiceMode }
+  /** Start host-side STT (macOS Speech / future backends). */
+  | { type: 'sttStart'; lang?: string }
+  | { type: 'sttStop' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -369,6 +410,28 @@ export type HostToWebview =
         chars: number;
         kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
       }>;
+    }
+  /** Host finished system TTS (or failed). Webview resumes listen. */
+  | { type: 'ttsDone'; ok: boolean; error?: string }
+  /** Host-driven voice command (palette / keybinding). */
+  | {
+      type: 'voiceCommand';
+      action:
+        | 'toggleDictation'
+        | 'toggleInteractive'
+        | 'startVis'
+        | 'endVis'
+        | 'stopVoice';
+    }
+  /** VIS lifecycle notice for the webview badge. */
+  | { type: 'voiceIdeationState'; active: boolean; sessionId?: string }
+  /** Host STT transcript chunk (interim or final). */
+  | { type: 'sttResult'; transcript: string; isFinal: boolean }
+  /** Host STT lifecycle / errors. */
+  | {
+      type: 'sttStatus';
+      status: 'idle' | 'listening' | 'error' | 'unsupported' | 'starting';
+      detail?: string;
     };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {

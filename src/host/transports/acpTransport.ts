@@ -49,6 +49,8 @@ export function resolveAcpMcpServers(kpContext?: {
   backend: BackendId;
   model: string | undefined;
   sessionId: string;
+  /** Force-enable KP MCP (e.g. Voice Ideation Session) even when setting is off. */
+  forceKp?: boolean;
 }): AcpMcpServer[] {
   const cfg = vscode.workspace.getConfiguration('codeBuild');
   const base = resolveAcpMcpServersFromInspect(
@@ -56,8 +58,10 @@ export function resolveAcpMcpServers(kpContext?: {
     cfg.get<boolean>('disableDefaultMcpServers') === true
   );
   if (!kpContext) return base;
+  const enabled =
+    kpContext.forceKp === true || cfg.get<boolean>('kpMcp.enabled') === true;
   const { servers, skip } = appendKpMcpServer(base, {
-    enabled: cfg.get<boolean>('kpMcp.enabled') === true,
+    enabled,
     command: cfg.get<string>('kp.command'),
     root: cfg.get<string>('kp.root'),
     backend: kpContext.backend,
@@ -67,7 +71,9 @@ export function resolveAcpMcpServers(kpContext?: {
   if (skip === 'missing-command' || skip === 'missing-root') {
     // Fail-open: the session still starts, just without kp tools.
     console.warn(
-      `[code-build] codeBuild.kpMcp.enabled is on but codeBuild.kp.${
+      `[code-build] KP MCP requested (enabled=${enabled}, force=${Boolean(
+        kpContext.forceKp
+      )}) but codeBuild.kp.${
         skip === 'missing-command' ? 'command' : 'root'
       } is not set — skipping kp MCP injection`
     );
@@ -170,7 +176,8 @@ export class AcpTransport extends BaseAgentSession {
         const mcpServers = resolveAcpMcpServers({
           backend: this.backend,
           model: opts.model,
-          sessionId: this.id
+          sessionId: this.id,
+          forceKp: opts.forceKp === true
         });
         const canLoad =
           !!init.agentCapabilities?.loadSession && !!opts.resumeId;

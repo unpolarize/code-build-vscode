@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
 import { post, setState } from './vscodeApi';
@@ -14,6 +14,8 @@ import { PrimerBanner } from './components/PrimerBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
 import { ActivityStrip } from './components/ActivityStrip';
 import { PerfPanel } from './components/PerfPanel';
+import { VoiceBar } from './components/VoiceBar';
+import { useVoiceController } from './voice/useVoiceController';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
@@ -45,8 +47,118 @@ function appReducer(state: ChatState, action: Action): ChatState {
 export function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [dragActive, setDragActive] = useState(false);
+  const [composerSeed, setComposerSeed] = useState<string | undefined>(undefined);
   const lastHostMsgAt = useRef(performance.now());
   const reduceMsBuf = useRef<number[]>([]);
+  const prevBusy = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
+  const sendText = useCallback((text: string) => {
+    const t = text.trim();
+    if (!t) return;
+    if (handleBuiltinRef.current?.(t)) return;
+    const interjected = stateRef.current.busy === true;
+    dispatch({ kind: 'sendUser', text: t, images: [], interjected });
+    post({ type: 'prompt', blocks: [{ type: 'text', text: t }], interjected });
+  }, []);
+
+  const handleBuiltinRef = useRef<(text: string) => boolean>(() => false);
+
+  const voice = useVoiceController({
+    ttsEngine: state.voiceConfig.ttsEngine,
+    lang: state.voiceConfig.lang,
+    utteranceEndMs: state.voiceConfig.utteranceEndMs,
+    ttsEnabled: state.voiceConfig.ttsEnabled,
+    hostSpeaks: state.voiceConfig.hostSpeaks,
+    sttEngine: state.voiceConfig.sttEngine,
+    hostSttAvailable: state.voiceConfig.hostSttAvailable,
+    onHostSpeak: (text) => post({ type: 'ttsSpeak', text }),
+    onHostStopSpeak: () => post({ type: 'ttsStop' }),
+    onHostSttStart: (lang) => post({ type: 'sttStart', lang }),
+    onHostSttStop: () => post({ type: 'sttStop' }),
+    onSend: sendText,
+    onStartVis: () => {
+      dispatch({ kind: 'clearItems' });
+      post({ type: 'startVoiceIdeation' });
+    },
+    onEndVis: () => post({ type: 'endVoiceIdeation' }),
+    onClosePhrase: () => post({ type: 'endVoiceIdeation' })
+  });
+
+  const voiceRef = useRef(voice);
+  voiceRef.current = voice;
+
+  // Report mode to host (status / future status bar).
+  useEffect(() => {
+    post({ type: 'voiceModeChanged', mode: voice.mode });
+  }, [voice.mode]);
+
+  // When agent finishes a turn in interactive/ideation, read reply aloud.
+  useEffect(() => {
+    const wasBusy = prevBusy.current;
+    prevBusy.current = state.busy;
+    voiceRef.current.onBusyChange(state.busy);
+    if (wasBusy && !state.busy) {
+      const items = stateRef.current.items;
+      let last = '';
+      for (let i = items.length - 1; i >= 0; i--) {
+        const it = items[i];
+        if (it.kind === 'assistant' && it.text.trim()) {
+          last = it.text;
+          break;
+        }
+      }
+      voiceRef.current.onTurnComplete(last);
+    }
+  }, [state.busy]);
+
+  // Host TTS / STT / voice commands (stable listener).
+  useEffect(() => {
+    function onMsg(e: MessageEvent) {
+      const m = e.data as HostToWebview;
+      if (!m || typeof m !== 'object') return;
+      const v = voiceRef.current;
+      if (m.type === 'ttsDone') {
+        v.onHostTtsDone();
+      }
+      if (m.type === 'sttResult') {
+        v.onHostSttResult(m.transcript, m.isFinal);
+      }
+      if (m.type === 'sttStatus') {
+        v.onHostSttStatus(m.status, m.detail);
+      }
+      if (m.type === 'voiceCommand') {
+        switch (m.action) {
+          case 'toggleDictation':
+            v.toggleDictation();
+            break;
+          case 'toggleInteractive':
+            v.toggleInteractive();
+            break;
+          case 'startVis':
+            v.startIdeation();
+            break;
+          case 'endVis':
+            post({ type: 'endVoiceIdeation' });
+            v.stopAll();
+            break;
+          case 'stopVoice':
+            v.stopAll();
+            break;
+        }
+      }
+    }
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+
+  // Dictation → push partial into composer seed when listening
+  useEffect(() => {
+    if (voice.mode === 'dictation' && voice.partial) {
+      setComposerSeed(voice.partial);
+    }
+  }, [voice.mode, voice.partial]);
 
   // App-level drop handler. The Composer used to handle drops itself,
   // but that left every other area of the panel (chat history, header,
@@ -176,7 +288,7 @@ export function App() {
 
   /** Intercept built-in slash commands; everything else (incl. agent commands) is sent. */
   function handleBuiltin(text: string): boolean {
-    const m = /^\/(\w+)\b/.exec(text.trim());
+    const m = /^\/([\w-]+)\b/.exec(text.trim());
     if (!m || !BUILTIN_NAMES.has(m[1])) return false;
     switch (m[1]) {
       case 'new':
@@ -202,9 +314,26 @@ export function App() {
       case 'handoff':
         post({ type: 'handoff' });
         break;
+      case 'voice':
+        voice.toggleInteractive();
+        break;
+      case 'dictation':
+        voice.toggleDictation();
+        break;
+      case 'vis':
+        voice.startIdeation();
+        break;
+      case 'vis-close':
+        post({ type: 'endVoiceIdeation' });
+        voice.stopAll();
+        break;
+      case 'stop-voice':
+        voice.stopAll();
+        break;
     }
     return true;
   }
+  handleBuiltinRef.current = handleBuiltin;
 
   function onSend(text: string, images: ImageAttachment[] = []) {
     if (!text && images.length === 0) return;
@@ -349,6 +478,12 @@ export function App() {
           onRespond={onRespond}
         />
       )}
+      <VoiceBar
+        voice={voice}
+        voiceEnabled={state.voiceEnabled}
+        visActive={state.visActive}
+        onEndVis={() => post({ type: 'endVoiceIdeation' })}
+      />
       <Composer
         busy={state.busy}
         commands={allCommands}
@@ -356,6 +491,10 @@ export function App() {
         onSend={onSend}
         onCancel={() => post({ type: 'cancel' })}
         onRequestFileSuggestions={onRequestFileSuggestions}
+        seedText={composerSeed}
+        onSeedConsumed={() => setComposerSeed(undefined)}
+        listening={voice.listening && voice.mode === 'dictation'}
+        onToggleDictation={() => voice.toggleDictation()}
       />
     </div>
   );

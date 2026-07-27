@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.10.4",
+  "version": "0.13.2",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -149,6 +149,29 @@
       {
         "command": "codeBuild.showFlightRecorder",
         "title": "Code Build: Show Flight Recorder Output"
+      },
+      {
+        "command": "codeBuild.voice.toggleDictation",
+        "title": "Code Build: Toggle Voice Dictation",
+        "icon": "$(mic)"
+      },
+      {
+        "command": "codeBuild.voice.toggleInteractive",
+        "title": "Code Build: Toggle Hands-Free Voice Mode",
+        "icon": "$(unmute)"
+      },
+      {
+        "command": "codeBuild.voice.startVis",
+        "title": "Code Build: Start Voice Ideation Session",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "codeBuild.voice.endVis",
+        "title": "Code Build: End Voice Ideation Session (save to KP)"
+      },
+      {
+        "command": "codeBuild.voice.stop",
+        "title": "Code Build: Stop Voice"
       }
     ],
     "keybindings": [
@@ -176,6 +199,28 @@
         "command": "codeBuild.newConversation",
         "key": "ctrl+alt+shift+c",
         "mac": "ctrl+shift+cmd+c"
+      },
+      {
+        "command": "codeBuild.voice.toggleDictation",
+        "key": "ctrl+shift+space",
+        "mac": "ctrl+shift+space",
+        "when": "activeWebviewPanelId == codeBuild.chat || view == codeBuild.sidebar"
+      },
+      {
+        "command": "codeBuild.voice.toggleInteractive",
+        "key": "ctrl+alt+shift+v",
+        "mac": "ctrl+alt+shift+v"
+      },
+      {
+        "command": "codeBuild.voice.startVis",
+        "key": "ctrl+alt+shift+i",
+        "mac": "ctrl+alt+shift+i"
+      },
+      {
+        "command": "codeBuild.voice.stop",
+        "key": "escape escape",
+        "mac": "escape escape",
+        "when": "false"
       }
     ],
     "menus": {
@@ -420,6 +465,54 @@
         "codeBuild.kp.root": {
           "type": "string",
           "description": "Planning store root passed to the kp MCP server as KP_ROOT (e.g. /Users/me/docs/planning)."
+        },
+        "codeBuild.voice.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Voice bar (dictation, hands-free, Voice Ideation Sessions) in Code Build chat."
+        },
+        "codeBuild.voice.ttsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Read assistant replies aloud in hands-free and VIS modes when a turn completes."
+        },
+        "codeBuild.voice.ttsEngine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "webview",
+            "system",
+            "off"
+          ],
+          "default": "auto",
+          "description": "TTS engine. 'auto' uses macOS `say` on Darwin and webview speechSynthesis elsewhere. 'webview' always uses the browser synthesizer. 'system' forces host `say` (macOS). 'off' disables TTS."
+        },
+        "codeBuild.voice.systemVoice": {
+          "type": "string",
+          "default": "",
+          "description": "Optional macOS `say -v` voice name (e.g. Samantha, Daniel). Empty = system default."
+        },
+        "codeBuild.voice.lang": {
+          "type": "string",
+          "default": "en-US",
+          "description": "BCP-47 language for Web Speech STT and webview TTS (e.g. en-US, ru-RU)."
+        },
+        "codeBuild.voice.utteranceEndMs": {
+          "type": "number",
+          "default": 1400,
+          "minimum": 400,
+          "description": "Silence debounce (ms) after final speech before auto-sending in hands-free / VIS modes."
+        },
+        "codeBuild.voice.sttEngine": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "host",
+            "webview",
+            "off"
+          ],
+          "default": "auto",
+          "description": "Speech-to-text engine. 'auto' prefers host STT when the VS Code Speech extension (ms-vscode.vscode-speech) is installed — that path uses the OS mic grant via a scratch editor + editor dictation. Otherwise falls back to webview Web Speech (often blocked by the chat iframe sandbox). 'host' forces host STT (requires VS Code Speech). 'webview' forces in-iframe SpeechRecognition. 'off' disables mic STT."
         }
       }
     }
@@ -433,11 +526,11 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.10.3.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.13.0.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
-    "@unpolarize/agent-memory-core": "file:../agent-memory-core",
+    "@unpolarize/agent-memory-core": "^0.0.1",
     "dompurify": "^3.4.7",
     "marked": "^18.0.4",
     "react": "^18.3.1",

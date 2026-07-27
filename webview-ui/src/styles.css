@@ -1217,6 +1217,17 @@ body {
 .btn-steer:hover:not(:disabled) {
   filter: brightness(1.1);
 }
+.btn-mic {
+  margin-right: auto;
+  min-width: 36px;
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.15));
+  color: inherit;
+}
+.btn-mic-on {
+  background: var(--vscode-charts-red, #ef4444);
+  color: #fff;
+  animation: voice-pulse 1.4s ease-in-out infinite;
+}
 /* Badge on user messages sent mid-turn so the timeline shows where the
  * user intervened. */
 .msg-interjected-badge {
@@ -1517,4 +1528,99 @@ body {
   word-break: break-word;
   font-family: inherit;
   font-size: inherit;
+}
+
+/* ── Voice mode bar ─────────────────────────────────────────────── */
+.voice-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  background: var(--vscode-editorWidget-background, rgba(128, 128, 128, 0.04));
+  font-size: 0.85em;
+}
+.voice-bar-active {
+  border-top-color: var(--vscode-focusBorder, #007fd4);
+  background: rgba(99, 102, 241, 0.06);
+}
+.voice-bar-modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.voice-btn {
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.15));
+  color: var(--vscode-button-secondaryForeground, inherit);
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 0.9em;
+  cursor: pointer;
+}
+.voice-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.25));
+}
+.voice-btn-on {
+  background: var(--vscode-button-background, #007fd4);
+  color: var(--vscode-button-foreground, #fff);
+  border-color: var(--vscode-focusBorder, #007fd4);
+}
+.voice-btn-pulse {
+  animation: voice-pulse 1.4s ease-in-out infinite;
+}
+@keyframes voice-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(239, 68, 68, 0);
+  }
+}
+.voice-btn-vis.voice-btn-on {
+  background: var(--vscode-charts-purple, #a78bfa);
+  color: #111;
+}
+.voice-btn-stop {
+  opacity: 0.85;
+}
+.voice-bar-status {
+  opacity: 0.75;
+  font-size: 0.92em;
+}
+.voice-mode-label {
+  font-weight: 600;
+}
+.voice-warn {
+  color: var(--vscode-editorWarning-foreground, #cca700);
+}
+.voice-transcript {
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--vscode-input-background, rgba(0, 0, 0, 0.08));
+  max-height: 4.5em;
+  overflow: auto;
+  line-height: 1.35;
+}
+.voice-partial {
+  opacity: 0.95;
+}
+.voice-interim {
+  opacity: 0.55;
+  font-style: italic;
+}
+.voice-error {
+  color: var(--vscode-errorForeground, #f44747);
+  font-size: 0.9em;
+}
+.session-kind-badge {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--vscode-charts-purple, #a78bfa);
+  color: #111;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }

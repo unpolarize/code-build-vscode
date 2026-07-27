@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.zhirafovod.code-build.host-stt</string>
+	<key>CFBundleName</key>
+	<string>Code Build Host STT</string>
+	<key>CFBundleVersion</key>
+	<string>1.0</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Code Build needs the microphone for voice dictation and hands-free chat in the extension host (not the webview).</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Code Build converts your speech to text for dictation, hands-free mode, and Voice Ideation Sessions.</string>
+</dict>
+</plist>

@@ -31,6 +31,11 @@ interface Props {
   onSend: (text: string, images: ImageAttachment[]) => void;
   onCancel: () => void;
   onRequestFileSuggestions?: (query: string) => void;
+  /** External seed (e.g. voice dictation partial) — merges into textarea. */
+  seedText?: string;
+  onSeedConsumed?: () => void;
+  listening?: boolean;
+  onToggleDictation?: () => void;
 }
 
 export function Composer({
@@ -39,7 +44,11 @@ export function Composer({
   fileSuggestions = [],
   onSend,
   onCancel,
-  onRequestFileSuggestions
+  onRequestFileSuggestions,
+  seedText,
+  onSeedConsumed,
+  listening,
+  onToggleDictation
 }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -49,6 +58,14 @@ export function Composer({
   useEffect(() => {
     ref.current?.focus();
   }, []);
+
+  // Voice dictation seed — replace or append when partial grows.
+  useEffect(() => {
+    if (seedText == null) return;
+    setText(seedText);
+    setCaret(seedText.length);
+    onSeedConsumed?.();
+  }, [seedText, onSeedConsumed]);
 
   // Show matching slash commands when the input is a bare "/command" prefix.
   const slashMatch = /^\/(\S*)$/.exec(text);
@@ -361,6 +378,17 @@ export function Composer({
         rows={3}
       />
       <div className="composer-actions">
+        {onToggleDictation && (
+          <button
+            type="button"
+            className={`btn btn-mic${listening ? ' btn-mic-on' : ''}`}
+            onClick={onToggleDictation}
+            title={listening ? 'Stop dictation' : 'Start voice dictation'}
+            aria-label={listening ? 'Stop dictation' : 'Start voice dictation'}
+          >
+            {listening ? '●' : '🎤'}
+          </button>
+        )}
         {busy ? (
           <>
             {/* Mid-stream steer: send a new user message while the agent is

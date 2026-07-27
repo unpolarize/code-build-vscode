@@ -113,6 +113,12 @@ export function Header({
         </select>
       )}
 
+      {(state.visActive || state.session?.sessionKind === 'voice-ideation') && (
+        <span className="session-kind-badge" title="Voice Ideation Session">
+          VIS
+        </span>
+      )}
+
       <div className="header-spacer" />
 
       {state.perfDebug !== 'off' && state.perfHud?.enabled && (

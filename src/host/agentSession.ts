@@ -27,6 +27,8 @@ export interface StartOpts {
    * permission UI but the tools still respect the cwd boundary — that
    * was the "code-build chat is locked to the project repo" bug. */
   additionalTrustedDirs?: string[];
+  /** Force-inject KP MCP on ACP session/new (Voice Ideation Sessions). */
+  forceKp?: boolean;
 }
 
 /**

@@ -13,8 +13,22 @@ import type {
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
 import { cleanCommandText } from '../shared/cleanCommandText';
+import {
+  parseVisClosePayload,
+  visClosePrompt,
+  visFacilitationPreamble,
+  type SessionKind
+} from '../shared/voiceIdeation';
+import { resolveTtsEngine, speakWithSay, stopSay } from './voice/ttsHost';
+import {
+  HostSttSession,
+  hostSttUnavailableDetail,
+  isHostSttSupported,
+  resolveSttEngine
+} from './voice/sttHost';
+import { isKpConfigured, writeVisClosePayload } from './voice/kpWrite';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
+import { detectAll, detectBackend, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -157,6 +171,14 @@ export class SessionManager {
    * human decision). Combined with pending AskUserQuestions, this tells the
    * stall watchdog the turn is legitimately paused on the user, not stuck. */
   private awaitingPermission = false;
+  /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
+  private voiceIdeationActive = false;
+  /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
+  private visAwaitingCloseResult = false;
+  /** Pending openSession options (session kind / force KP). */
+  private pendingOpenOpts: { sessionKind?: SessionKind; forceKp?: boolean } = {};
+  /** Host-side STT session (macOS Speech helper), if listening. */
+  private hostStt: HostSttSession | undefined;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -168,6 +190,11 @@ export class SessionManager {
   /** Let extension commands (toggle perf, copy report) inject webview-shaped messages. */
   postWebviewCommand(msg: WebviewToHost): void {
     void this.handle(msg);
+  }
+
+  /** Push a host→webview event (voice keybindings, etc.). */
+  postHostEvent(msg: import('../shared/protocol').HostToWebview): void {
+    this.panel.post(msg);
   }
 
   private get config() {
@@ -421,6 +448,306 @@ export class SessionManager {
         });
         break;
       }
+      case 'startVoiceIdeation':
+        await this.startVoiceIdeation(msg.backend);
+        break;
+      case 'endVoiceIdeation':
+        await this.endVoiceIdeation();
+        break;
+      case 'ttsSpeak':
+        await this.hostSpeak(msg.text);
+        break;
+      case 'ttsStop':
+        stopSay();
+        this.panel.post({ type: 'ttsDone', ok: true });
+        break;
+      case 'voiceModeChanged':
+        // Reserved for status-bar / telemetry; no-op for now.
+        break;
+      case 'sttStart':
+        await this.hostSttStart(msg.lang);
+        break;
+      case 'sttStop':
+        this.hostSttStop();
+        break;
+    }
+  }
+
+  /** Snapshot voice settings for the webview. */
+  private voiceHydrateConfig(): HydrateState['voice'] {
+    const enabled = this.config.get<boolean>('voice.enabled', true);
+    const ttsEngine = resolveTtsEngine(
+      this.config.get<'webview' | 'system' | 'auto' | 'off'>('voice.ttsEngine', 'auto')
+    );
+    const configured = this.config.get<'webview' | 'system' | 'auto' | 'off'>(
+      'voice.ttsEngine',
+      'auto'
+    );
+    const hostSttAvailable = isHostSttSupported();
+    const sttPref = this.config.get<'auto' | 'webview' | 'host' | 'off'>('voice.sttEngine', 'auto');
+    const sttEngine = resolveSttEngine(sttPref, hostSttAvailable);
+    return {
+      enabled,
+      ttsEngine: configured,
+      ttsEnabled: this.config.get<boolean>('voice.ttsEnabled', true),
+      lang: this.config.get<string>('voice.lang', 'en-US') || 'en-US',
+      utteranceEndMs: Math.max(
+        400,
+        this.config.get<number>('voice.utteranceEndMs', 1400) ?? 1400
+      ),
+      hostSpeaks: ttsEngine === 'system',
+      systemVoice: this.config.get<string>('voice.systemVoice', '') || undefined,
+      sttEngine,
+      hostSttAvailable
+    };
+  }
+
+  private async hostSttStart(lang?: string): Promise<void> {
+    if (!isHostSttSupported()) {
+      this.panel.post({
+        type: 'sttStatus',
+        status: 'unsupported',
+        detail: hostSttUnavailableDetail()
+      });
+      return;
+    }
+    this.hostSttStop();
+    const session = new HostSttSession(
+      {
+        lang: lang || this.config.get<string>('voice.lang', 'en-US') || 'en-US',
+        context: this.context
+      },
+      {
+        onResult: (r) => {
+          this.panel.post({
+            type: 'sttResult',
+            transcript: r.transcript,
+            isFinal: r.isFinal
+          });
+        },
+        onStatus: (status, detail) => {
+          this.panel.post({ type: 'sttStatus', status, detail });
+        }
+      }
+    );
+    this.hostStt = session;
+    await session.start();
+  }
+
+  private hostSttStop(): void {
+    if (!this.hostStt) return;
+    try {
+      this.hostStt.stop();
+    } catch {
+      /* ignore */
+    }
+    this.hostStt = undefined;
+  }
+
+  private async hostSpeak(text: string): Promise<void> {
+    const engine = resolveTtsEngine(
+      this.config.get<'webview' | 'system' | 'auto' | 'off'>('voice.ttsEngine', 'auto')
+    );
+    if (engine !== 'system') {
+      this.panel.post({ type: 'ttsDone', ok: true });
+      return;
+    }
+    try {
+      const voice = this.config.get<string>('voice.systemVoice', '') || undefined;
+      await speakWithSay(text, voice);
+      this.panel.post({ type: 'ttsDone', ok: true });
+    } catch (e) {
+      this.panel.post({
+        type: 'ttsDone',
+        ok: false,
+        error: String(e)
+      });
+    }
+  }
+
+  /** Start a Voice Ideation Session: new chat, VIS kind, preamble, greeting. */
+  private async startVoiceIdeation(backend?: BackendId): Promise<void> {
+    this.previousSessionByBackend.clear();
+    this.pendingOpenOpts = { sessionKind: 'voice-ideation', forceKp: true };
+    this.voiceIdeationActive = true;
+    this.visAwaitingCloseResult = false;
+    await this.openSession(backend);
+    if (!this.meta) return;
+    this.meta.sessionKind = 'voice-ideation';
+    this.meta.title = `VIS · ${this.meta.backend}`;
+    this.store.updateMeta(this.meta);
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+    this.panel.post({
+      type: 'voiceIdeationState',
+      active: true,
+      sessionId: this.meta.id
+    });
+    // Facilitation contract as one-shot primer on the greeting turn.
+    this.pendingPrimer = visFacilitationPreamble(this.meta.id);
+    this.panel.post({
+      type: 'notice',
+      text: 'Voice Ideation Session started — speak freely. Say “close session” or click **End VIS** when done.',
+      detail: `session=${this.meta.id}\nKP MCP force-on for ACP backends when codeBuild.kp.command/root are set.\nHost fallback writes KP objects from a final JSON close payload.`
+    });
+    // Auto-greeting so TTS interactive mode has something to speak first.
+    this.panel.post({ type: 'busy', busy: true });
+    this.armWatchdog();
+    this.perf.onPromptSent();
+    const greet =
+      "I'm starting a Voice Ideation Session. Please greet me briefly and invite me to ramble about what's on my mind. Keep the reply short and spoken-friendly.";
+    // Keep "VIS · backend" title; still commit the session into history.
+    if (!this.titled) {
+      this.titled = true;
+      this.store.commitSession(this.meta);
+      this.store.updateMeta(this.meta);
+    }
+    this.store.appendUserText(this.meta.id, greet);
+    this.lastUserText = greet;
+    this.currentAssistantBuf = '';
+    // Echo user turn into the webview timeline (host-initiated; no local append).
+    this.panel.post({
+      type: 'sessionUpdate',
+      sessionId: this.meta.id,
+      update: { kind: 'user_message_chunk', content: { type: 'text', text: greet } }
+    });
+    await this.session!.ready();
+    const primerUsed = this.pendingPrimer;
+    const blocks: ContentBlock[] = primerUsed
+      ? [
+          { type: 'text', text: primerUsed },
+          { type: 'text', text: greet }
+        ]
+      : [{ type: 'text', text: greet }];
+    this.pendingPrimer = undefined;
+    this.emitContextInjectedForPrompt({
+      originalBlocks: [{ type: 'text', text: greet }],
+      enrichedBlocks: [{ type: 'text', text: greet }],
+      finalBlocks: blocks,
+      primer: primerUsed
+    });
+    this.session!.prompt(blocks).catch((err) => {
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: this.meta!.id,
+        update: { kind: 'error', message: String(err) }
+      });
+    });
+  }
+
+  /** Send VIS close prompt; on next result, parse JSON and write KP. */
+  private async endVoiceIdeation(): Promise<void> {
+    if (!this.voiceIdeationActive && this.meta?.sessionKind !== 'voice-ideation') {
+      this.panel.post({
+        type: 'notice',
+        text: 'No Voice Ideation Session is active.'
+      });
+      return;
+    }
+    await this.ensureSession();
+    if (!this.meta) return;
+    this.visAwaitingCloseResult = true;
+    this.voiceIdeationActive = true;
+    const close = visClosePrompt(this.meta.id);
+    this.panel.post({ type: 'busy', busy: true });
+    this.armWatchdog();
+    this.perf.onPromptSent();
+    this.store.appendUserText(this.meta.id, close);
+    this.lastUserText = close;
+    this.currentAssistantBuf = '';
+    this.panel.post({
+      type: 'sessionUpdate',
+      sessionId: this.meta.id,
+      update: { kind: 'user_message_chunk', content: { type: 'text', text: close } }
+    });
+    await this.session!.ready();
+    this.session!.prompt([{ type: 'text', text: close }]).catch((err) => {
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: this.meta!.id,
+        update: { kind: 'error', message: String(err) }
+      });
+    });
+    this.panel.post({
+      type: 'notice',
+      text: 'Closing VIS — extracting ideas/thoughts into the knowledge-planning store…'
+    });
+  }
+
+  /** After a VIS close turn, write KP objects from the assistant payload. */
+  private async maybeWriteVisCloseFromAssistant(assistantText: string): Promise<void> {
+    this.visAwaitingCloseResult = false;
+    const text = assistantText;
+    const payload = parseVisClosePayload(text);
+    if (!payload) {
+      this.panel.post({
+        type: 'notice',
+        text: 'VIS closed. No structured JSON payload found — if the agent used kp tools, objects may already exist. Otherwise ask it to emit the close JSON fence.'
+      });
+      this.finishVisState();
+      return;
+    }
+    const cmd = this.config.get<string>('kp.command', '');
+    const root =
+      this.config.get<string>('kp.root', '') ||
+      // Sensible default for this workspace when unset
+      (await this.defaultKpRoot());
+    if (!isKpConfigured(cmd, root)) {
+      this.panel.post({
+        type: 'notice',
+        text: 'VIS close payload parsed, but KP is not configured (set codeBuild.kp.command + codeBuild.kp.root). Payload summary kept in chat only.',
+        detail: JSON.stringify(payload, null, 2).slice(0, 4000)
+      });
+      this.finishVisState();
+      return;
+    }
+    const result = await writeVisClosePayload(
+      {
+        command: cmd!,
+        root: root!,
+        sessionId: this.meta?.id,
+        agent: this.meta?.backend,
+        model: this.meta?.model
+      },
+      payload
+    );
+    const lines: string[] = [];
+    if (result.created.length) {
+      lines.push(`Created: ${result.created.join(', ')}`);
+    } else {
+      lines.push('No new KP objects created.');
+    }
+    if (result.errors.length) {
+      lines.push(`Errors: ${result.errors.join('; ')}`);
+    }
+    if (result.summary) {
+      lines.push(`Summary: ${result.summary}`);
+    }
+    this.panel.post({
+      type: 'notice',
+      text: `VIS saved to KP — ${lines[0]}`,
+      detail: lines.join('\n')
+    });
+    this.finishVisState();
+  }
+
+  private finishVisState(): void {
+    this.voiceIdeationActive = false;
+    if (this.meta) {
+      // Keep sessionKind for history; mark inactive in UI.
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+    }
+    this.panel.post({ type: 'voiceIdeationState', active: false });
+  }
+
+  private async defaultKpRoot(): Promise<string | undefined> {
+    // Prefer ~/docs/planning when present (this user's SSOT).
+    const candidate = path.join(os.homedir(), 'docs', 'planning');
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      return undefined;
     }
   }
 
@@ -445,7 +772,8 @@ export class SessionManager {
       memoryFiles: memTotals.totalFiles,
       memoryByProvider: memTotals.byProvider,
       showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true),
-      perfDebug: this.perfDebugMode()
+      perfDebug: this.perfDebugMode(),
+      voice: this.voiceHydrateConfig()
     };
     this.perf.setMode(state.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
@@ -727,6 +1055,31 @@ export class SessionManager {
   }
 
   private async switchBackend(backend: BackendId): Promise<void> {
+    // Preflight: never switch to a backend that isn't installed on this
+    // machine. Without this guard, picking (e.g.) grok on a box where grok is
+    // not on PATH still latched the OUTGOING session into
+    // previousSessionByBackend and then threw inside openSession — leaving the
+    // panel poisoned so that flipping BACK to the original backend fired a
+    // --resume loop (the repeated "Couldn't resume … error_during_execution"
+    // the user hit switching claude → grok → claude). Refuse cleanly and leave
+    // the live session completely untouched.
+    const detectOverrides = this.config.get<Record<string, string>>('binPaths', {});
+    const spec = BACKENDS[backend];
+    const available = spec ? await detectBackend(spec, detectOverrides) : false;
+    if (!available) {
+      this.panel.post({
+        type: 'notice',
+        text: `**${backendLabel(backend)}** isn't installed on this machine — staying on your current agent.`,
+        detail: `Code Build couldn't find the \`${spec ? resolveBin(spec, detectOverrides) : backend}\` binary on PATH (or via \`codeBuild.binPaths.${backend}\`). Install it, or point \`codeBuild.binPaths.${backend}\` at its absolute path, then switch again. Your current session and thread are untouched.`,
+        key: `unavailable-${backend}`
+      });
+      // Re-sync the webview so the backend dropdown snaps back to the live
+      // session instead of showing the agent the user just (unsuccessfully)
+      // picked. hydrate() is guarded against restarting an existing session.
+      await this.hydrate();
+      return;
+    }
+
     const prevBackend = this.meta?.backend;
     const prevId = this.meta?.id;
     const prevModel = this.meta?.model;
@@ -1071,6 +1424,12 @@ export class SessionManager {
     this.userTurnsSent = 0;
     this.lastUserText = '';
     this.currentAssistantBuf = '';
+    const openOpts = this.pendingOpenOpts;
+    this.pendingOpenOpts = {};
+    if (openOpts.sessionKind !== 'voice-ideation') {
+      this.voiceIdeationActive = false;
+      this.visAwaitingCloseResult = false;
+    }
     const id = crypto.randomUUID();
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
@@ -1120,12 +1479,16 @@ export class SessionManager {
     this.meta = {
       id,
       backend: be,
-      title: `New chat · ${be}`,
+      title:
+        openOpts.sessionKind === 'voice-ideation'
+          ? `VIS · ${be}`
+          : `New chat · ${be}`,
       mode: remembered.mode,
       cwd: this.cwd,
       createdAt: Date.now(),
       model,
-      effort: remembered.effort
+      effort: remembered.effort,
+      sessionKind: openOpts.sessionKind ?? 'coding'
     };
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
@@ -1138,7 +1501,9 @@ export class SessionManager {
       model: this.meta.model,
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(remembered.mode)
+      additionalTrustedDirs: this.trustedDirs(remembered.mode),
+      forceKp:
+        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation'
     });
   }
 
@@ -1431,6 +1796,13 @@ export class SessionManager {
     if (update.kind === 'agent_message_chunk' && update.content?.type === 'text') {
       this.currentAssistantBuf += update.content.text ?? '';
       return;
+    }
+    if (update.kind === 'result') {
+      // VIS close: snapshot assistant text BEFORE classifier clears the buffer.
+      if (this.visAwaitingCloseResult) {
+        const snap = this.currentAssistantBuf;
+        void this.maybeWriteVisCloseFromAssistant(snap);
+      }
     }
     if (update.kind !== 'result') return;
     if (!this.config.get<boolean>('classifyTurns', false)) return;
@@ -2308,6 +2680,8 @@ export class SessionManager {
       clearInterval(this.perfHudTimer);
       this.perfHudTimer = undefined;
     }
+    this.hostSttStop();
+    stopSay();
     this.teardownSession();
     this.store.dispose();
     // Reset per-session classifier state so a fresh chat starts the
