@@ -142,3 +142,9 @@ test('grok: discovery miss falls back to the static list', () => {
     assert.deepEqual(modelsFor('grok'), ['default', 'grok-build']);
   });
 });
+
+test('codex: supports native resume via exec resume <thread_id>', () => {
+  // CodexTransport rewrites argv; supportsResume gates the primer path so a
+  // restored codex session with backendSessionId does not also get a primer.
+  assert.equal(BACKENDS.codex.supportsResume, true);
+});
