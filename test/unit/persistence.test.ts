@@ -4,7 +4,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { SessionStore } from '../../src/host/persistence/store';
-import { exportToClaudeJsonl } from '../../src/host/persistence/jsonlExporter';
+import {
+  exportToClaudeJsonl,
+  exportToMarkdown,
+  exportHasTurns
+} from '../../src/host/persistence/jsonlExporter';
 import type { SessionMeta } from '../../src/shared/protocol';
 
 function tmpRoot() {
@@ -87,4 +91,39 @@ test('exporter produces Claude-style turn JSONL Code Sessions can read', () => {
   assert.equal(lines[2].type, 'assistant');
   assert.equal(lines[3].type, 'result');
   assert.equal(lines[3].total_cost_usd, 0.01);
+  assert.ok(jsonl.trim().length > 0);
+  assert.equal(exportHasTurns(records as never), true);
+  assert.equal(exportHasTurns([]), false);
+});
+
+test('markdown exporter renders user/assistant turns in order and coalesces chunks', () => {
+  const records = [
+    { type: 'user', text: 'build X' },
+    {
+      type: 'update',
+      update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'part1 ' } } as const
+    },
+    {
+      type: 'update',
+      update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'part2' } } as const
+    },
+    { type: 'update', update: { kind: 'result', stopReason: 'end_turn' } as const },
+    { type: 'user', text: 'next' },
+    {
+      type: 'update',
+      update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'reply' } } as const
+    }
+  ];
+  const md = exportToMarkdown(meta, records as never);
+  assert.match(md, /^# Test/m);
+  assert.match(md, /\*\*User:\*\*\n\nbuild X/);
+  assert.match(md, /\*\*Assistant:\*\*\n\npart1 part2/);
+  assert.match(md, /\*\*User:\*\*\n\nnext/);
+  assert.match(md, /\*\*Assistant:\*\*\n\nreply/);
+  // role order: user before assistant before next user
+  const iUser1 = md.indexOf('build X');
+  const iAsst1 = md.indexOf('part1 part2');
+  const iUser2 = md.indexOf('next');
+  const iAsst2 = md.indexOf('reply');
+  assert.ok(iUser1 < iAsst1 && iAsst1 < iUser2 && iUser2 < iAsst2);
 });

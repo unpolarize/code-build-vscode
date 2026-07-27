@@ -51,6 +51,14 @@ Webview (React + Vite)  ──typed postMessage──▶  Extension Host
 Spawn args are centralized in `src/host/backendRegistry.ts` so CLI flag drift lives in
 one place.
 
+## Voice mode (0.13+)
+
+Dictation, hands-free interactive (listen → send → speak reply), and **Voice Ideation Sessions (VIS)** that extract thoughts/ideas into the knowledge-planning store.
+
+- Voice bar above the composer: **Mic** · **Hands-free** · **VIS** · **Stop**
+- Slash: `/voice`, `/dictation`, `/vis`, `/vis-close`, `/stop-voice`
+- Full guide: [docs/VOICE.md](docs/VOICE.md)
+
 ## Requirements
 
 - **Node.js ≥ 18** and **npm** (built with Node 24 / npm 11).
@@ -135,7 +143,7 @@ UI preferences (your last permission mode / model / effort) are stored separatel
 
 **Code Sessions export.** Code Build can export a transcript as a Claude-Code-style turn JSONL (summary + user/assistant/tool_use/result lines) shaped to be read by the [Code Sessions](https://github.com/unpolarize/code-sessions-vscode) indexer. The two extensions are complementary: **Code Build *produces* sessions; Code Sessions *analyzes* them.** Code Build cross-links into it via the `codeSessions.viewConversation` command, and Code Sessions can open a session back in Code Build.
 
-**Filesystem confinement.** ACP agents can request file reads/writes through the `fs/*` bridge, which bypasses the interactive permission UI. Those paths are sandboxed by a `confineToRoot()` guard that resolves and normalizes the requested path and **rejects anything that escapes the session workspace root** (cwd) — blocking access to `~/.ssh`, `~/.aws`, and other files outside your project.
+**Filesystem confinement.** ACP agents can request file reads/writes through the `fs/*` bridge, which bypasses the interactive permission UI. Those paths are sandboxed by a realpath-based path guard (`createPathGuard` / `confine`) that resolves the session workspace root once, follows in-workspace symlinks only when the final real path stays under that root, and **rejects anything that escapes** (including `../`, absolute outside paths, and in-root symlinks that point out) — blocking access to `~/.ssh`, `~/.aws`, and other files outside your project. Bypass permission mode still skips the guard by design.
 
 **Other hardening.** Subprocesses inherit your environment so CLI logins keep working, but Code Build never injects API keys. The webview runs under a strict CSP (nonce-gated scripts, `default-src 'none'`) and renders assistant markdown through DOMPurify sanitization.
 

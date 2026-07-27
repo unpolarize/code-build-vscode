@@ -16,12 +16,14 @@ export function renderWebviewHtml(webview: vscode.Webview, extensionUri: vscode.
   const base = vscode.Uri.joinPath(extensionUri, 'dist', 'webview');
   const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(base, 'webview.js'));
   const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(base, 'webview.css'));
+  // media-src allows Web Speech / getUserMedia for voice dictation in the webview.
   const csp = [
     `default-src 'none'`,
     `img-src ${webview.cspSource} https: data:`,
     `style-src ${webview.cspSource} 'unsafe-inline'`,
     `font-src ${webview.cspSource}`,
-    `script-src 'nonce-${nonce}'`
+    `script-src 'nonce-${nonce}'`,
+    `media-src ${webview.cspSource} blob: mediastream: data:`
   ].join('; ');
 
   return `<!DOCTYPE html>

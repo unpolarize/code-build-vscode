@@ -32,7 +32,7 @@ not listed.
 
 | Gap | Reason to skip |
 |---|---|
-| Voice input | Both upstreams ship it but it's a small audience and adds platform-permission complexity. |
+| ~~Voice input~~ | **Shipped in 0.13.0** — dictation, hands-free interactive, VIS + TTS. See [VOICE.md](VOICE.md). |
 | Walkthrough / onboarding pages | claude-code's walkthrough is mostly auth setup; code-build defers to the backend CLI for auth. |
 | Inline diff preview in tool card | Already present (`type: 'diff'` content block); just under-utilised by current normalisers. Tracked as "improve normalisers" rather than a gap. |
 | Plan-mode review UI | grok-build has a Plan / Approve UI; permission-prompt already covers it for the canonical case. |

@@ -1,12 +1,34 @@
 import * as vscode from 'vscode';
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
+import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
-import type { HydrateState, SessionMeta, SessionSource, WebviewToHost } from '../shared/protocol';
+import type {
+  BackendSessionTransitionReason,
+  HydrateState,
+  SessionMeta,
+  SessionSource,
+  WebviewToHost
+} from '../shared/protocol';
+import { applyBackendSessionId } from './backendIdentity';
 import { cleanCommandText } from '../shared/cleanCommandText';
+import {
+  parseVisClosePayload,
+  visClosePrompt,
+  visFacilitationPreamble,
+  type SessionKind
+} from '../shared/voiceIdeation';
+import { resolveTtsEngine, speakWithSay, stopSay } from './voice/ttsHost';
+import {
+  HostSttSession,
+  hostSttUnavailableDetail,
+  isHostSttSupported,
+  resolveSttEngine
+} from './voice/sttHost';
+import { isKpConfigured, writeVisClosePayload } from './voice/kpWrite';
 import type { ChatSurface } from './webviewHtml';
-import { detectAll, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
+import { detectAll, detectBackend, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
 import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
@@ -27,6 +49,13 @@ import {
   countUserTurns,
   type PrimerMode
 } from './persistence/conversationSerializer';
+import { buildHandoffPack, formatHandoffPackPrimer } from './persistence/handoffPack';
+import {
+  exportToClaudeJsonl,
+  exportToMarkdown,
+  exportHasTurns,
+  type ExportRecord
+} from './persistence/jsonlExporter';
 import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
@@ -81,6 +110,13 @@ export class SessionManager {
   /** Text primer to prepend to the user's NEXT prompt (one-shot). Set when
    * the user chooses Full/Summary in the carry-over banner. */
   private pendingPrimer?: string;
+  /** Primer held in RESERVE while we attempt a native resume. When the
+   * transport reports `resume_fallback` (Grok session/load rejected, so
+   * the agent came up fresh with zero memory), this is promoted to
+   * pendingPrimer so the user's first message still carries the
+   * conversation context. Unused (and harmless) when the native resume
+   * succeeds. */
+  private fallbackPrimer?: string;
   /** True from the moment the user clicks the backend dropdown until
    * the carry-over decision is fully applied (incl. async LLM
    * summarisation). Used to hold a user prompt across the entire
@@ -135,6 +171,14 @@ export class SessionManager {
    * human decision). Combined with pending AskUserQuestions, this tells the
    * stall watchdog the turn is legitimately paused on the user, not stuck. */
   private awaitingPermission = false;
+  /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
+  private voiceIdeationActive = false;
+  /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
+  private visAwaitingCloseResult = false;
+  /** Pending openSession options (session kind / force KP). */
+  private pendingOpenOpts: { sessionKind?: SessionKind; forceKp?: boolean } = {};
+  /** Host-side STT session (macOS Speech helper), if listening. */
+  private hostStt: HostSttSession | undefined;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -146,6 +190,11 @@ export class SessionManager {
   /** Let extension commands (toggle perf, copy report) inject webview-shaped messages. */
   postWebviewCommand(msg: WebviewToHost): void {
     void this.handle(msg);
+  }
+
+  /** Push a host→webview event (voice keybindings, etc.). */
+  postHostEvent(msg: import('../shared/protocol').HostToWebview): void {
+    this.panel.post(msg);
   }
 
   private get config() {
@@ -246,6 +295,14 @@ export class SessionManager {
         this.lastUserText = originalText;
         this.currentAssistantBuf = '';
         const enriched = await this.enrichBlocksWithFileMentions(msg.blocks, this.cwd);
+        // Wait for the transport handshake to settle BEFORE snapshotting
+        // the primer. A prompt sent while "Resuming…" is still in flight
+        // would otherwise capture pendingPrimer before a resume_fallback
+        // promotes the reserve primer — the first message would go out
+        // contextless and the primer would misfire on the second. ready()
+        // never rejects (handshake errors surface via the event stream)
+        // and is instant once the session is up.
+        await this.session!.ready();
         let blocks = enriched;
         const usedPrimer = this.pendingPrimer;
         // One-shot context handoff: if the user switched backend and chose to
@@ -299,9 +356,10 @@ export class SessionManager {
         this.setEffort(msg.effort);
         break;
       case 'respondPermission':
-        // User decided — resume normal stall watching for the continuation.
-        this.awaitingPermission = false;
         this.session?.respondPermission(msg.requestId, msg.outcome);
+        // Resume normal stall watching only once EVERY queued permission is
+        // answered — with concurrent requests, one decision may leave more.
+        this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
         break;
       case 'openDiff':
         await this.editor.openDiff(msg.path, msg.oldText, msg.newText);
@@ -362,6 +420,9 @@ export class SessionManager {
         this.refreshDualStore();
         this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
         break;
+      case 'handoff':
+        await this.writeHandoffPack();
+        break;
       case 'copyPerfReport': {
         const report = this.perf.formatFlightReport();
         await vscode.env.clipboard.writeText(report);
@@ -387,6 +448,306 @@ export class SessionManager {
         });
         break;
       }
+      case 'startVoiceIdeation':
+        await this.startVoiceIdeation(msg.backend);
+        break;
+      case 'endVoiceIdeation':
+        await this.endVoiceIdeation();
+        break;
+      case 'ttsSpeak':
+        await this.hostSpeak(msg.text);
+        break;
+      case 'ttsStop':
+        stopSay();
+        this.panel.post({ type: 'ttsDone', ok: true });
+        break;
+      case 'voiceModeChanged':
+        // Reserved for status-bar / telemetry; no-op for now.
+        break;
+      case 'sttStart':
+        await this.hostSttStart(msg.lang);
+        break;
+      case 'sttStop':
+        this.hostSttStop();
+        break;
+    }
+  }
+
+  /** Snapshot voice settings for the webview. */
+  private voiceHydrateConfig(): HydrateState['voice'] {
+    const enabled = this.config.get<boolean>('voice.enabled', true);
+    const ttsEngine = resolveTtsEngine(
+      this.config.get<'webview' | 'system' | 'auto' | 'off'>('voice.ttsEngine', 'auto')
+    );
+    const configured = this.config.get<'webview' | 'system' | 'auto' | 'off'>(
+      'voice.ttsEngine',
+      'auto'
+    );
+    const hostSttAvailable = isHostSttSupported();
+    const sttPref = this.config.get<'auto' | 'webview' | 'host' | 'off'>('voice.sttEngine', 'auto');
+    const sttEngine = resolveSttEngine(sttPref, hostSttAvailable);
+    return {
+      enabled,
+      ttsEngine: configured,
+      ttsEnabled: this.config.get<boolean>('voice.ttsEnabled', true),
+      lang: this.config.get<string>('voice.lang', 'en-US') || 'en-US',
+      utteranceEndMs: Math.max(
+        400,
+        this.config.get<number>('voice.utteranceEndMs', 1400) ?? 1400
+      ),
+      hostSpeaks: ttsEngine === 'system',
+      systemVoice: this.config.get<string>('voice.systemVoice', '') || undefined,
+      sttEngine,
+      hostSttAvailable
+    };
+  }
+
+  private async hostSttStart(lang?: string): Promise<void> {
+    if (!isHostSttSupported()) {
+      this.panel.post({
+        type: 'sttStatus',
+        status: 'unsupported',
+        detail: hostSttUnavailableDetail()
+      });
+      return;
+    }
+    this.hostSttStop();
+    const session = new HostSttSession(
+      {
+        lang: lang || this.config.get<string>('voice.lang', 'en-US') || 'en-US',
+        context: this.context
+      },
+      {
+        onResult: (r) => {
+          this.panel.post({
+            type: 'sttResult',
+            transcript: r.transcript,
+            isFinal: r.isFinal
+          });
+        },
+        onStatus: (status, detail) => {
+          this.panel.post({ type: 'sttStatus', status, detail });
+        }
+      }
+    );
+    this.hostStt = session;
+    await session.start();
+  }
+
+  private hostSttStop(): void {
+    if (!this.hostStt) return;
+    try {
+      this.hostStt.stop();
+    } catch {
+      /* ignore */
+    }
+    this.hostStt = undefined;
+  }
+
+  private async hostSpeak(text: string): Promise<void> {
+    const engine = resolveTtsEngine(
+      this.config.get<'webview' | 'system' | 'auto' | 'off'>('voice.ttsEngine', 'auto')
+    );
+    if (engine !== 'system') {
+      this.panel.post({ type: 'ttsDone', ok: true });
+      return;
+    }
+    try {
+      const voice = this.config.get<string>('voice.systemVoice', '') || undefined;
+      await speakWithSay(text, voice);
+      this.panel.post({ type: 'ttsDone', ok: true });
+    } catch (e) {
+      this.panel.post({
+        type: 'ttsDone',
+        ok: false,
+        error: String(e)
+      });
+    }
+  }
+
+  /** Start a Voice Ideation Session: new chat, VIS kind, preamble, greeting. */
+  private async startVoiceIdeation(backend?: BackendId): Promise<void> {
+    this.previousSessionByBackend.clear();
+    this.pendingOpenOpts = { sessionKind: 'voice-ideation', forceKp: true };
+    this.voiceIdeationActive = true;
+    this.visAwaitingCloseResult = false;
+    await this.openSession(backend);
+    if (!this.meta) return;
+    this.meta.sessionKind = 'voice-ideation';
+    this.meta.title = `VIS · ${this.meta.backend}`;
+    this.store.updateMeta(this.meta);
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+    this.panel.post({
+      type: 'voiceIdeationState',
+      active: true,
+      sessionId: this.meta.id
+    });
+    // Facilitation contract as one-shot primer on the greeting turn.
+    this.pendingPrimer = visFacilitationPreamble(this.meta.id);
+    this.panel.post({
+      type: 'notice',
+      text: 'Voice Ideation Session started — speak freely. Say “close session” or click **End VIS** when done.',
+      detail: `session=${this.meta.id}\nKP MCP force-on for ACP backends when codeBuild.kp.command/root are set.\nHost fallback writes KP objects from a final JSON close payload.`
+    });
+    // Auto-greeting so TTS interactive mode has something to speak first.
+    this.panel.post({ type: 'busy', busy: true });
+    this.armWatchdog();
+    this.perf.onPromptSent();
+    const greet =
+      "I'm starting a Voice Ideation Session. Please greet me briefly and invite me to ramble about what's on my mind. Keep the reply short and spoken-friendly.";
+    // Keep "VIS · backend" title; still commit the session into history.
+    if (!this.titled) {
+      this.titled = true;
+      this.store.commitSession(this.meta);
+      this.store.updateMeta(this.meta);
+    }
+    this.store.appendUserText(this.meta.id, greet);
+    this.lastUserText = greet;
+    this.currentAssistantBuf = '';
+    // Echo user turn into the webview timeline (host-initiated; no local append).
+    this.panel.post({
+      type: 'sessionUpdate',
+      sessionId: this.meta.id,
+      update: { kind: 'user_message_chunk', content: { type: 'text', text: greet } }
+    });
+    await this.session!.ready();
+    const primerUsed = this.pendingPrimer;
+    const blocks: ContentBlock[] = primerUsed
+      ? [
+          { type: 'text', text: primerUsed },
+          { type: 'text', text: greet }
+        ]
+      : [{ type: 'text', text: greet }];
+    this.pendingPrimer = undefined;
+    this.emitContextInjectedForPrompt({
+      originalBlocks: [{ type: 'text', text: greet }],
+      enrichedBlocks: [{ type: 'text', text: greet }],
+      finalBlocks: blocks,
+      primer: primerUsed
+    });
+    this.session!.prompt(blocks).catch((err) => {
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: this.meta!.id,
+        update: { kind: 'error', message: String(err) }
+      });
+    });
+  }
+
+  /** Send VIS close prompt; on next result, parse JSON and write KP. */
+  private async endVoiceIdeation(): Promise<void> {
+    if (!this.voiceIdeationActive && this.meta?.sessionKind !== 'voice-ideation') {
+      this.panel.post({
+        type: 'notice',
+        text: 'No Voice Ideation Session is active.'
+      });
+      return;
+    }
+    await this.ensureSession();
+    if (!this.meta) return;
+    this.visAwaitingCloseResult = true;
+    this.voiceIdeationActive = true;
+    const close = visClosePrompt(this.meta.id);
+    this.panel.post({ type: 'busy', busy: true });
+    this.armWatchdog();
+    this.perf.onPromptSent();
+    this.store.appendUserText(this.meta.id, close);
+    this.lastUserText = close;
+    this.currentAssistantBuf = '';
+    this.panel.post({
+      type: 'sessionUpdate',
+      sessionId: this.meta.id,
+      update: { kind: 'user_message_chunk', content: { type: 'text', text: close } }
+    });
+    await this.session!.ready();
+    this.session!.prompt([{ type: 'text', text: close }]).catch((err) => {
+      this.panel.post({
+        type: 'sessionUpdate',
+        sessionId: this.meta!.id,
+        update: { kind: 'error', message: String(err) }
+      });
+    });
+    this.panel.post({
+      type: 'notice',
+      text: 'Closing VIS — extracting ideas/thoughts into the knowledge-planning store…'
+    });
+  }
+
+  /** After a VIS close turn, write KP objects from the assistant payload. */
+  private async maybeWriteVisCloseFromAssistant(assistantText: string): Promise<void> {
+    this.visAwaitingCloseResult = false;
+    const text = assistantText;
+    const payload = parseVisClosePayload(text);
+    if (!payload) {
+      this.panel.post({
+        type: 'notice',
+        text: 'VIS closed. No structured JSON payload found — if the agent used kp tools, objects may already exist. Otherwise ask it to emit the close JSON fence.'
+      });
+      this.finishVisState();
+      return;
+    }
+    const cmd = this.config.get<string>('kp.command', '');
+    const root =
+      this.config.get<string>('kp.root', '') ||
+      // Sensible default for this workspace when unset
+      (await this.defaultKpRoot());
+    if (!isKpConfigured(cmd, root)) {
+      this.panel.post({
+        type: 'notice',
+        text: 'VIS close payload parsed, but KP is not configured (set codeBuild.kp.command + codeBuild.kp.root). Payload summary kept in chat only.',
+        detail: JSON.stringify(payload, null, 2).slice(0, 4000)
+      });
+      this.finishVisState();
+      return;
+    }
+    const result = await writeVisClosePayload(
+      {
+        command: cmd!,
+        root: root!,
+        sessionId: this.meta?.id,
+        agent: this.meta?.backend,
+        model: this.meta?.model
+      },
+      payload
+    );
+    const lines: string[] = [];
+    if (result.created.length) {
+      lines.push(`Created: ${result.created.join(', ')}`);
+    } else {
+      lines.push('No new KP objects created.');
+    }
+    if (result.errors.length) {
+      lines.push(`Errors: ${result.errors.join('; ')}`);
+    }
+    if (result.summary) {
+      lines.push(`Summary: ${result.summary}`);
+    }
+    this.panel.post({
+      type: 'notice',
+      text: `VIS saved to KP — ${lines[0]}`,
+      detail: lines.join('\n')
+    });
+    this.finishVisState();
+  }
+
+  private finishVisState(): void {
+    this.voiceIdeationActive = false;
+    if (this.meta) {
+      // Keep sessionKind for history; mark inactive in UI.
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+    }
+    this.panel.post({ type: 'voiceIdeationState', active: false });
+  }
+
+  private async defaultKpRoot(): Promise<string | undefined> {
+    // Prefer ~/docs/planning when present (this user's SSOT).
+    const candidate = path.join(os.homedir(), 'docs', 'planning');
+    try {
+      await fs.access(candidate);
+      return candidate;
+    } catch {
+      return undefined;
     }
   }
 
@@ -411,7 +772,8 @@ export class SessionManager {
       memoryFiles: memTotals.totalFiles,
       memoryByProvider: memTotals.byProvider,
       showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true),
-      perfDebug: this.perfDebugMode()
+      perfDebug: this.perfDebugMode(),
+      voice: this.voiceHydrateConfig()
     };
     this.perf.setMode(state.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
@@ -441,7 +803,283 @@ export class SessionManager {
   /** Handle the backend dropdown. If the current chat already has content
    * AND the backend actually changes, capture the prior transcript and ask
    * the user whether to carry it over before spinning up the new backend. */
+  /** Full transcript for the CURRENT session: for externally-imported
+   * claude/grok sessions the real conversation lives in the upstream
+   * jsonl (the local store only has post-import activity), so merge
+   * upstream + local. Used by both the cross-backend primer capture
+   * and the /handoff pack. */
+  private collectTranscriptRecords(
+    sessionId?: string
+  ): { type: string; text?: string; update?: any }[] {
+    const id = sessionId ?? this.meta?.id;
+    if (!id) return [];
+    const records: { type: string; text?: string; update?: any }[] = [];
+    const source = this.meta?.source;
+    if ((source === 'claude' || source === 'grok') && this.meta?.cwd) {
+      try {
+        const replay =
+          source === 'claude'
+            ? loadClaudeHistory(claudeJsonlPathFor(this.meta.cwd, id))
+            : loadGrokHistory(grokChatPathFor(this.meta.cwd, id));
+        if (replay) records.push(...(replay.records as any));
+      } catch {
+        /* missing file / parse error — fall through to local store */
+      }
+    }
+    const loaded = this.store.load(id);
+    records.push(...loaded.records.filter((r) => r.type !== 'meta'));
+    return records;
+  }
+
+  /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
+   * files touched, last check, risks, next step) into the workspace so the
+   * user can continue this work on another agent without losing state.
+   * After a successful write (or untitled open), offers a "Continue on…"
+   * picker that opens a fresh session on the chosen backend with the pack
+   * as a one-shot primer. */
+  async writeHandoffPack(): Promise<void> {
+    const fromBackend = this.meta ? backendLabel(this.meta.backend) : 'unknown backend';
+    const records = this.collectTranscriptRecords();
+    const pack = buildHandoffPack(records, {
+      fromBackend,
+      model: this.meta?.model,
+      sessionId: this.meta?.id,
+      cwd: this.meta?.cwd,
+      generatedAt: new Date().toISOString()
+    });
+    if (!pack) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Nothing to hand off yet — this conversation has no user turns.'
+      });
+      return;
+    }
+    const dir = this.meta?.cwd ?? vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!dir) {
+      // No workspace to write into — show the pack as an untitled doc instead.
+      const doc = await vscode.workspace.openTextDocument({ language: 'markdown', content: pack });
+      await vscode.window.showTextDocument(doc, { preview: false });
+      await this.offerContinueOnBackend(pack, fromBackend);
+      return;
+    }
+    const file = path.join(dir, 'HANDOFF.md');
+    try {
+      // Regenerating our own pack is fine, but never silently clobber a
+      // file the user (or another tool) authored at the same path.
+      let existing: string | undefined;
+      try {
+        existing = await fs.readFile(file, 'utf8');
+      } catch {
+        /* no existing file */
+      }
+      if (existing !== undefined && !existing.startsWith('# Handoff Pack')) {
+        const pick = await vscode.window.showWarningMessage(
+          `Code Build: ${file} exists and doesn't look like a generated handoff pack. Overwrite it?`,
+          { modal: true },
+          'Overwrite'
+        );
+        if (pick !== 'Overwrite') return;
+      }
+      await fs.writeFile(file, pack, 'utf8');
+      const doc = await vscode.workspace.openTextDocument(file);
+      await vscode.window.showTextDocument(doc, { preview: false });
+      this.panel.post({
+        type: 'notice',
+        text: `Handoff pack written to \`${file}\`.`,
+        key: 'handoff-pack'
+      });
+      await this.offerContinueOnBackend(pack, fromBackend, file);
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Code Build: failed to write handoff pack: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Export the active conversation as Claude-style JSONL (Code Sessions
+   * indexable) or simple role-prefixed Markdown. Format via QuickPick;
+   * destination via showSaveDialog; success toast offers Reveal in Finder.
+   */
+  async exportConversation(): Promise<void> {
+    if (!this.meta) {
+      void vscode.window.showInformationMessage(
+        'Code Build: no active conversation to export.'
+      );
+      return;
+    }
+    const formatPick = await vscode.window.showQuickPick(
+      [
+        {
+          label: 'Claude JSONL',
+          description: 'Code Sessions–indexable transcript',
+          format: 'jsonl' as const
+        },
+        {
+          label: 'Markdown',
+          description: 'User/assistant turns for reading/sharing',
+          format: 'md' as const
+        }
+      ],
+      { placeHolder: 'Export conversation as…', ignoreFocusOut: true }
+    );
+    if (!formatPick) return;
+
+    const records = this.collectTranscriptRecords() as ExportRecord[];
+    if (!exportHasTurns(records)) {
+      void vscode.window.showWarningMessage(
+        'Code Build: session has no transcript content to export yet.'
+      );
+      return;
+    }
+
+    const body =
+      formatPick.format === 'jsonl'
+        ? exportToClaudeJsonl(this.meta, records)
+        : exportToMarkdown(this.meta, records);
+
+    const ext = formatPick.format === 'jsonl' ? 'jsonl' : 'md';
+    const defaultDir =
+      this.meta.cwd ||
+      vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
+      os.homedir();
+    const uri = await vscode.window.showSaveDialog({
+      defaultUri: vscode.Uri.file(path.join(defaultDir, `${this.meta.id}.${ext}`)),
+      filters:
+        formatPick.format === 'jsonl'
+          ? { 'Claude JSONL': ['jsonl'], 'All files': ['*'] }
+          : { Markdown: ['md'], 'All files': ['*'] },
+      saveLabel: 'Export'
+    });
+    if (!uri) return;
+
+    try {
+      await fs.writeFile(uri.fsPath, body, 'utf8');
+      const choice = await vscode.window.showInformationMessage(
+        `Code Build: exported conversation → ${uri.fsPath}`,
+        'Reveal in Finder'
+      );
+      if (choice === 'Reveal in Finder') {
+        await vscode.commands.executeCommand('revealFileInOS', uri);
+      }
+    } catch (err) {
+      void vscode.window.showErrorMessage(
+        `Code Build: export failed — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * "Continue on…" QuickPick after /handoff. Opens a *fresh* session on the
+   * chosen backend (not restore-via-switchBackend) and injects the pack as
+   * `pendingPrimer` so the first user message carries the briefing.
+   * Cancelling the pick leaves the current session untouched.
+   */
+  private async offerContinueOnBackend(
+    pack: string,
+    fromBackend: string,
+    filePath?: string
+  ): Promise<void> {
+    const primer = formatHandoffPackPrimer(pack, fromBackend);
+    if (!primer) return;
+
+    const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const backends = await detectAll(overrides);
+    const current = this.meta?.backend;
+    type ContinueItem = vscode.QuickPickItem & { backend?: BackendId };
+    const continueItems: ContinueItem[] = backends
+      .filter((b) => b.available && b.id !== current)
+      .map((b) => ({
+        label: `$(arrow-right) Continue on ${backendLabel(b.id)}`,
+        description: b.id,
+        detail: `Open a new ${backendLabel(b.id)} session with the handoff pack as primer`,
+        backend: b.id
+      }));
+
+    if (continueItems.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: filePath
+          ? `No other backends available — reference \`${filePath}\` manually on another agent.`
+          : 'No other backends available — copy the pack into another agent manually.',
+        key: 'handoff-pack-no-backend'
+      });
+      return;
+    }
+
+    const stay: ContinueItem = {
+      label: '$(check) Done — keep current session',
+      description: 'Only write the pack',
+      detail: filePath
+        ? `Leave this conversation as-is. Pack is at ${filePath}.`
+        : 'Leave this conversation as-is. Pack is open as an untitled document.'
+    };
+
+    const pick = await vscode.window.showQuickPick<ContinueItem>([...continueItems, stay], {
+      title: 'Handoff pack ready — continue on another backend?',
+      placeHolder: 'Pick a backend to open with the pack as primer',
+      ignoreFocusOut: true
+    });
+    if (!pick?.backend) return;
+
+    // Remember the outgoing session so a later dropdown flip can restore it
+    // (same contract as switchBackend). Do NOT go through switchBackend —
+    // that path may restore a prior native thread or show the full/hybrid
+    // carry-over banner; here the pack *is* the primer.
+    const prevBackend = this.meta?.backend;
+    const prevId = this.meta?.id;
+    if (prevBackend && prevId && prevBackend !== pick.backend) {
+      this.previousSessionByBackend.set(prevBackend, prevId);
+      this.persistBackendMap();
+    }
+
+    // Clear any in-flight cross-backend banner state so we don't hold prompts.
+    this.handoffRecords = undefined;
+    this.primerPending = false;
+    this.queuedPromptBlocks = undefined;
+    // Latch primer BEFORE openSession so the first prompt on the new backend
+    // carries the pack (openSession does not clear pendingPrimer).
+    this.pendingPrimer = primer;
+
+    await this.openSession(pick.backend);
+    this.persistBackendMap();
+
+    this.panel.post({
+      type: 'notice',
+      text: `Continuing on **${backendLabel(pick.backend)}** with the handoff pack as primer — send a message to pick up where you left off.`,
+      detail: filePath
+        ? `Primer is the structured pack (also written to ${filePath}). It will be prepended to your next message only.`
+        : 'Primer is the structured pack from the untitled handoff document. It will be prepended to your next message only.',
+      key: `handoff-continue-${pick.backend}`
+    });
+  }
+
   private async switchBackend(backend: BackendId): Promise<void> {
+    // Preflight: never switch to a backend that isn't installed on this
+    // machine. Without this guard, picking (e.g.) grok on a box where grok is
+    // not on PATH still latched the OUTGOING session into
+    // previousSessionByBackend and then threw inside openSession — leaving the
+    // panel poisoned so that flipping BACK to the original backend fired a
+    // --resume loop (the repeated "Couldn't resume … error_during_execution"
+    // the user hit switching claude → grok → claude). Refuse cleanly and leave
+    // the live session completely untouched.
+    const detectOverrides = this.config.get<Record<string, string>>('binPaths', {});
+    const spec = BACKENDS[backend];
+    const available = spec ? await detectBackend(spec, detectOverrides) : false;
+    if (!available) {
+      this.panel.post({
+        type: 'notice',
+        text: `**${backendLabel(backend)}** isn't installed on this machine — staying on your current agent.`,
+        detail: `Code Build couldn't find the \`${spec ? resolveBin(spec, detectOverrides) : backend}\` binary on PATH (or via \`codeBuild.binPaths.${backend}\`). Install it, or point \`codeBuild.binPaths.${backend}\` at its absolute path, then switch again. Your current session and thread are untouched.`,
+        key: `unavailable-${backend}`
+      });
+      // Re-sync the webview so the backend dropdown snaps back to the live
+      // session instead of showing the agent the user just (unsuccessfully)
+      // picked. hydrate() is guarded against restarting an existing session.
+      await this.hydrate();
+      return;
+    }
+
     const prevBackend = this.meta?.backend;
     const prevId = this.meta?.id;
     const prevModel = this.meta?.model;
@@ -498,21 +1136,7 @@ export class SessionManager {
       // they were continuing. Pull the upstream transcript and merge
       // it with any post-import activity so the banner shows AND the
       // primer carries the full conversation.
-      let records: { type: string; text?: string; update?: any }[] = [];
-      const source = this.meta?.source;
-      if ((source === 'claude' || source === 'grok') && this.meta?.cwd) {
-        try {
-          const replay =
-            source === 'claude'
-              ? loadClaudeHistory(claudeJsonlPathFor(this.meta.cwd, this.meta.id))
-              : loadGrokHistory(grokChatPathFor(this.meta.cwd, this.meta.id));
-          if (replay) records.push(...(replay.records as any));
-        } catch {
-          /* missing file / parse error — fall through to local store */
-        }
-      }
-      const loaded = this.store.load(prevId);
-      records.push(...loaded.records.filter((r) => r.type !== 'meta'));
+      const records = this.collectTranscriptRecords(prevId);
 
       if (records.length > 0 && countUserTurns(records) > 0) {
         captured = {
@@ -800,6 +1424,12 @@ export class SessionManager {
     this.userTurnsSent = 0;
     this.lastUserText = '';
     this.currentAssistantBuf = '';
+    const openOpts = this.pendingOpenOpts;
+    this.pendingOpenOpts = {};
+    if (openOpts.sessionKind !== 'voice-ideation') {
+      this.voiceIdeationActive = false;
+      this.visAwaitingCloseResult = false;
+    }
     const id = crypto.randomUUID();
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
@@ -849,12 +1479,16 @@ export class SessionManager {
     this.meta = {
       id,
       backend: be,
-      title: `New chat · ${be}`,
+      title:
+        openOpts.sessionKind === 'voice-ideation'
+          ? `VIS · ${be}`
+          : `New chat · ${be}`,
       mode: remembered.mode,
       cwd: this.cwd,
       createdAt: Date.now(),
       model,
-      effort: remembered.effort
+      effort: remembered.effort,
+      sessionKind: openOpts.sessionKind ?? 'coding'
     };
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
@@ -867,7 +1501,9 @@ export class SessionManager {
       model: this.meta.model,
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(remembered.mode)
+      additionalTrustedDirs: this.trustedDirs(remembered.mode),
+      forceKp:
+        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation'
     });
   }
 
@@ -1145,7 +1781,9 @@ export class SessionManager {
       case 'result':
       case 'error':
         this.openToolCalls.clear();
-        this.awaitingPermission = false;
+        // Keep the pause if permission prompts are still queued (a turn can
+        // error out while an unanswered request is on screen).
+        this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
         this.watchdog.clear();
         this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
         break;
@@ -1158,6 +1796,13 @@ export class SessionManager {
     if (update.kind === 'agent_message_chunk' && update.content?.type === 'text') {
       this.currentAssistantBuf += update.content.text ?? '';
       return;
+    }
+    if (update.kind === 'result') {
+      // VIS close: snapshot assistant text BEFORE classifier clears the buffer.
+      if (this.visAwaitingCloseResult) {
+        const snap = this.currentAssistantBuf;
+        void this.maybeWriteVisCloseFromAssistant(snap);
+      }
     }
     if (update.kind !== 'result') return;
     if (!this.config.get<boolean>('classifyTurns', false)) return;
@@ -1190,15 +1835,57 @@ export class SessionManager {
    * ~/.claude/projects — without persisting it, a later
    * loadExistingSession spawns claude with no --resume and the agent
    * has zero context ("I don't have prior conversation context to
-   * continue from"). Only writes once per session — the field is
-   * permanent for the conversation. */
+   * continue from"). Re-inits with the SAME id are no-ops; a NEW id
+   * (respawn, failed resume → fresh session) reassigns the field and
+   * appends the transition to meta.backendSessionHistory so the old
+   * native transcript stays joinable (see applyBackendSessionId). */
   private captureBackendSessionId(update: SessionUpdate): void {
     if (update.kind !== 'system_init') return;
     if (!this.meta) return;
-    if (this.meta.backendSessionId === update.backendSessionId) return;
-    this.meta.backendSessionId = update.backendSessionId;
+    // An armed reason wins even when no id was captured yet: a failed
+    // resume before first capture (external-open path) must not be
+    // mislabeled 'initial'.
+    const reason: BackendSessionTransitionReason =
+      this.pendingBackendIdReason ?? (this.meta.backendSessionId ? 'respawn' : 'initial');
+    this.pendingBackendIdReason = undefined;
+    if (!applyBackendSessionId(this.meta, update.backendSessionId, reason, Date.now())) return;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+  }
+
+  /** Reason to stamp on the next backendSessionId rotation. Armed by
+   * handleResumeFallback (the follow-up system_init carries the fresh id);
+   * cleared on every system_init so a stale arm can't mislabel a later
+   * unrelated respawn. */
+  private pendingBackendIdReason?: BackendSessionTransitionReason;
+
+  /** Native resume failed (grok session/load rejected — deleted session
+   * dir, foreign id, schema drift after a grok update) and the transport
+   * fell back to session/new. The fresh agent has zero memory even though
+   * the UI shows the transcript, so promote the reserve primer (armed in
+   * the resume paths whenever a native resume is attempted with records
+   * on hand) and tell the user what happened. The follow-up system_init
+   * overwrites meta.backendSessionId with the NEW id via
+   * captureBackendSessionId, so the next reload doesn't retry the dead
+   * one. */
+  private handleResumeFallback(update: SessionUpdate): void {
+    if (update.kind !== 'resume_fallback') return;
+    this.pendingBackendIdReason = 'resume_fallback';
+    const be = this.meta?.backend ?? 'agent';
+    const hadPrimer = !!this.fallbackPrimer && !this.pendingPrimer;
+    if (hadPrimer) {
+      this.pendingPrimer = this.fallbackPrimer;
+    }
+    this.fallbackPrimer = undefined;
+    this.panel.post({
+      type: 'notice',
+      text:
+        `Native resume of \`${update.requestedSessionId.slice(0, 8)}\` failed — started a fresh ${be} session instead.` +
+        (hadPrimer
+          ? ` The last 10 turns will be prepended to your first message so the agent keeps context.`
+          : ''),
+      detail: `session/load rejected: ${update.reason}\n\nThe on-disk session may have been deleted, created on another machine, or written by an incompatible ${be} version. Code Build fell back to session/new${hadPrimer ? ' and armed the transcript primer (one-shot, fires on your FIRST message)' : ''}; the new native session id replaces the stale one so future reloads resume cleanly.`
+    });
   }
 
   /** Translate a webview-side click on an AskUserQuestion option card into
@@ -1478,19 +2165,25 @@ export class SessionManager {
     // mean — let me search the files" because the agent literally
     // doesn't know.
     const nativeResume = BACKENDS[be].supportsResume && !!resumeId;
-    if (!nativeResume && replay && replay.records.length > 0) {
+    if (replay && replay.records.length > 0) {
       const primer = serializeSelfResumePrimer({
         records: replay.records as any,
         lastNTurns: 10,
         backendLabel: backendLabel(be)
       });
-      if (primer) {
+      if (primer && !nativeResume) {
         this.pendingPrimer = primer;
         this.panel.post({
           type: 'notice',
           text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
           detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
         });
+      } else if (primer) {
+        // Native resume (grok session/load) is about to be attempted. Keep
+        // the primer in reserve: if the transport reports resume_fallback,
+        // handleResumeFallback promotes it so the fresh agent still gets
+        // the conversation context.
+        this.fallbackPrimer = primer;
       }
     }
 
@@ -1519,6 +2212,12 @@ export class SessionManager {
   private teardownSession(): void {
     this.flushIpcImmediate();
     this.store.flushSync();
+    // A reserve primer belongs to the resume attempt that armed it; never
+    // let it leak into a later session's fallback.
+    this.fallbackPrimer = undefined;
+    // Same for an armed id-rotation reason: without this, session A's
+    // resume_fallback could mislabel session B's first rotation.
+    this.pendingBackendIdReason = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.session?.dispose();
@@ -1632,6 +2331,7 @@ export class SessionManager {
     this.interceptToolCall(update);
     this.onTurnEvent(update);
     this.captureBackendSessionId(update);
+    this.handleResumeFallback(update);
 
     const immediate =
       update.kind === 'result' ||
@@ -1980,6 +2680,8 @@ export class SessionManager {
       clearInterval(this.perfHudTimer);
       this.perfHudTimer = undefined;
     }
+    this.hostSttStop();
+    stopSay();
     this.teardownSession();
     this.store.dispose();
     // Reset per-session classifier state so a fresh chat starts the
@@ -2079,19 +2781,23 @@ export class SessionManager {
     // skips this — its own `--resume` already feeds the jsonl back to
     // the model. See [[serializeSelfResumePrimer]].
     const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
-    if (!nativeResume && loaded.records.length > 0) {
+    if (loaded.records.length > 0) {
       const primer = serializeSelfResumePrimer({
         records: loaded.records as any,
         lastNTurns: 10,
         backendLabel: backendLabel(be)
       });
-      if (primer) {
+      if (primer && !nativeResume) {
         this.pendingPrimer = primer;
         this.panel.post({
           type: 'notice',
           text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
           detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
         });
+      } else if (primer) {
+        // Native resume attempt (grok session/load or claude --resume).
+        // Held in reserve for handleResumeFallback — see fallbackPrimer.
+        this.fallbackPrimer = primer;
       }
     }
 

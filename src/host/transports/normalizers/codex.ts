@@ -26,14 +26,26 @@ interface CodexItem {
 }
 
 export class CodexNormalizer {
+  /** Native Codex thread id from `thread.started`. Transport also falls back to
+   * StartOpts.resumeId for the first-prompt `codex exec resume` argv when this
+   * is still unset (session restore) — it does not pre-write this field. */
   threadId?: string;
   private emittedAssistant = new Set<string>();
 
   parseLine(ev: CodexEvent): SessionUpdate[] {
     switch (ev.type) {
-      case 'thread.started':
-        if (ev.thread_id) this.threadId = ev.thread_id;
-        return [];
+      case 'thread.started': {
+        // Emit `system_init` once per distinct thread id so the host can
+        // persist backendSessionId / native / history (dual-write identity).
+        // Later thread.started lines with the same id are no-ops — Codex may
+        // re-announce the thread across turns without meaning a new session.
+        if (!ev.thread_id) return [];
+        const firstForId = ev.thread_id !== this.threadId;
+        this.threadId = ev.thread_id;
+        return firstForId
+          ? [{ kind: 'system_init', backendSessionId: ev.thread_id }]
+          : [];
+      }
       case 'turn.started':
         return [];
       case 'turn.completed':

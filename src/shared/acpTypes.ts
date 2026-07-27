@@ -99,6 +99,13 @@ export type SessionUpdate =
    * spawned with NO context and said "I don't have prior conversation
    * context to continue from". */
   | { kind: 'system_init'; backendSessionId: string }
+  /** Native resume failed and the transport fell back to a fresh
+   * session (e.g. Grok ACP session/load rejected because the on-disk
+   * session was deleted or the grok version regressed). The host uses
+   * this to arm the self-resume primer so the fresh agent still gets
+   * conversation context, and to tell the user what happened. A
+   * system_init with the NEW backend session id follows this event. */
+  | { kind: 'resume_fallback'; requestedSessionId: string; reason: string }
   | {
       kind: 'permission_request';
       requestId: string;

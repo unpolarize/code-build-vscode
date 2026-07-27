@@ -43,6 +43,54 @@ export function exportToClaudeJsonl(meta: SessionMeta, records: ExportRecord[]):
   return lines.join('\n') + '\n';
 }
 
+/**
+ * Simple role-prefixed markdown transcript for sharing/reading.
+ * Coalesces streamed assistant chunks into one **Assistant:** block per turn.
+ * Tool calls and result envelopes are omitted (human-readable turns only).
+ */
+export function exportToMarkdown(meta: SessionMeta, records: ExportRecord[]): string {
+  const lines: string[] = [
+    `# ${meta.title || 'Code Build session'}`,
+    '',
+    `- **Backend:** ${meta.backend}`,
+    `- **Cwd:** \`${meta.cwd}\``,
+    `- **Id:** \`${meta.id}\``,
+    `- **Created:** ${new Date(meta.createdAt).toISOString()}`,
+    ''
+  ];
+
+  let assistantBuf = '';
+  const flushAssistant = () => {
+    if (!assistantBuf.trim()) return;
+    lines.push('**Assistant:**', '', assistantBuf.trim(), '');
+    assistantBuf = '';
+  };
+
+  for (const rec of records) {
+    if (rec.type === 'user' && rec.text != null) {
+      flushAssistant();
+      lines.push('**User:**', '', rec.text, '');
+      continue;
+    }
+    if (rec.type !== 'update' || !rec.update) continue;
+    const u = rec.update;
+    if (u.kind === 'agent_message_chunk' && u.content?.type === 'text') {
+      assistantBuf += u.content.text ?? '';
+    }
+  }
+  flushAssistant();
+  return lines.join('\n') + '\n';
+}
+
+/** True when the export body has at least one user or assistant turn (not just a header/summary). */
+export function exportHasTurns(records: ExportRecord[]): boolean {
+  for (const rec of records) {
+    if (rec.type === 'user' && rec.text != null && rec.text.length > 0) return true;
+    if (rec.type === 'update' && rec.update?.kind === 'agent_message_chunk') return true;
+  }
+  return false;
+}
+
 function updateToTurn(u: SessionUpdate): object | null {
   switch (u.kind) {
     case 'agent_message_chunk':

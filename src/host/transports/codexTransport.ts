@@ -13,9 +13,29 @@ import { BACKENDS, resolveBin } from '../backendRegistry';
 import { CodexNormalizer } from './normalizers/codex';
 
 /**
+ * Build argv for one `codex exec` spawn. Pure so unit tests can assert the
+ * resume shape (`exec resume <id> …`) without spawning a real CLI.
+ *
+ * `baseArgs` comes from BACKENDS.codex.buildArgs — always starts with
+ * `['exec', '--json', …]`. When resuming, we rewrite to
+ * `['exec', 'resume', <threadId>, …flags…, prompt]`.
+ */
+export function buildCodexExecArgv(
+  baseArgs: string[],
+  prompt: string,
+  threadId?: string
+): string[] {
+  if (threadId) {
+    return ['exec', 'resume', threadId, ...baseArgs.slice(1), prompt];
+  }
+  return [...baseArgs, prompt];
+}
+
+/**
  * Drives `codex exec --json` — the spawn-per-prompt model: one process per turn,
  * prompt passed as the final argv, NDJSON read until the process exits. Resume uses
- * the captured thread_id via `codex exec resume <id>`.
+ * the captured thread_id via `codex exec resume <id>`, seeded from StartOpts.resumeId
+ * on session restore (loadExistingSession → backendSessionId).
  */
 export class CodexTransport extends BaseAgentSession {
   private proc?: ChildProcessWithoutNullStreams;
@@ -34,6 +54,11 @@ export class CodexTransport extends BaseAgentSession {
   async start(opts: StartOpts): Promise<void> {
     this.startOpts = opts;
     this.mode = opts.mode;
+    // Intentionally do NOT pre-seed normalizer.threadId from resumeId:
+    // the first thread.started must still emit system_init so the host can
+    // reaffirm backendSessionId. Resume for argv is resolved in prompt() via
+    // `normalizer.threadId ?? startOpts.resumeId` — that puts
+    // `codex exec resume <id>` on the *first* spawn before any NDJSON arrives.
   }
 
   async prompt(blocks: ContentBlock[]): Promise<void> {
@@ -46,10 +71,11 @@ export class CodexTransport extends BaseAgentSession {
       model: this.startOpts!.model
     });
 
-    // Resume an existing thread when we have one; otherwise start fresh.
-    const args = this.normalizer.threadId
-      ? ['exec', 'resume', this.normalizer.threadId, ...baseArgs.slice(1), text]
-      : [...baseArgs, text];
+    // Live thread id (from prior turn's thread.started) wins; on a restored
+    // session the first prompt falls back to StartOpts.resumeId so we resume
+    // the native rollout before any events land.
+    const threadId = this.normalizer.threadId ?? this.startOpts?.resumeId;
+    const args = buildCodexExecArgv(baseArgs, text, threadId);
 
     this.proc = spawn(bin, args, {
       cwd: this.startOpts!.cwd,

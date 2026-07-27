@@ -9,6 +9,9 @@ import type {
   PermissionOutcome,
   SessionUpdate
 } from './acpTypes';
+import type { SessionKind, VoiceMode } from './voiceIdeation';
+
+export type { SessionKind, VoiceMode } from './voiceIdeation';
 
 /** Which session store this row originated from. Local code-build sessions
  * live in ~/.codebuild; external rows are surfaced from the upstream CLI's
@@ -17,6 +20,28 @@ import type {
  * with the appropriate `--resume <id>` flag (claude) or a fresh process
  * (grok — no documented external resume flag yet). */
 export type SessionSource = 'codebuild' | 'claude' | 'grok';
+
+/** Why `backendSessionId` transitioned to a new value.
+ * - initial: first `system_init` of the session
+ * - respawn: backend process respawned mid-session (model/effort change,
+ *   compaction respawn we can't distinguish yet) and issued a fresh id
+ * - compact: reserved — emitted once compaction respawns are detectable
+ * - resume_fallback: native resume was rejected and the transport fell
+ *   back to a fresh session (see `resume_fallback` update) */
+export type BackendSessionTransitionReason = 'initial' | 'respawn' | 'compact' | 'resume_fallback';
+
+/** One entry in a session's native-id lineage (see `backendSessionHistory`). */
+export interface BackendSessionTransition {
+  id: string;
+  ts: number;
+  reason: BackendSessionTransitionReason;
+}
+
+/** On-disk format of a backend's native transcript store:
+ * claude-jsonl → ~/.claude/projects/<slug>/<uuid>.jsonl,
+ * grok-jsonl → ~/.grok/sessions/<cwd>/<uuid>/,
+ * codex-rollout → ~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-*-<uuid>.jsonl. */
+export type NativeTranscriptFormat = 'claude-jsonl' | 'grok-jsonl' | 'codex-rollout';
 
 /** Metadata describing one chat session shown in the UI. */
 export interface SessionMeta {
@@ -41,15 +66,30 @@ export interface SessionMeta {
    * `system` init line). Distinct from `id`, which is our local UUID.
    * Persisted so a reload of the panel can spawn the agent with
    * `--resume <backendSessionId>` and pick up the on-disk transcript
-   * the agent itself wrote. Set the first time the backend emits a
-   * `system_init` event; never reassigned. */
+   * the agent itself wrote. Always the CURRENT native id: reassigned
+   * whenever the backend emits a `system_init` with a new id (respawn,
+   * compact, failed resume → fresh session); prior ids are kept in
+   * `backendSessionHistory` so no native transcript is orphaned. */
   backendSessionId?: string;
+  /** Every native session id this CB session has owned, oldest first.
+   * Appended ONLY when the id CHANGES (re-inits with the same id are
+   * no-ops — long sessions can re-init hundreds of times). N native ids
+   * map to this ONE CB session; the join contract for cross-store
+   * correlation (CSV analytics) reads `history[].id ∪ backendSessionId`. */
+  backendSessionHistory?: BackendSessionTransition[];
+  /** Pointer to the backend's own on-disk transcript for the CURRENT
+   * native session. Invariant: `native.id === backendSessionId` — one
+   * source of truth; this only adds the store format so consumers can
+   * locate the file without a per-backend switch. */
+  native?: { format: NativeTranscriptFormat; id: string };
   /** Durable per-backend native-session memory for THIS conversation: maps a
    * backend id -> the CB local session id that already holds that backend's
    * native thread. Lets a switch back to a backend the conversation has
    * already used resume natively (via that session's `--resume`) instead of
    * re-summarizing. Survives panel reopen (persisted on the meta line). */
   backendSessions?: Partial<Record<BackendId, string>>;
+  /** Session kind — coding (default) or voice-ideation (VIS). */
+  sessionKind?: SessionKind;
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
@@ -78,6 +118,30 @@ export interface HydrateState {
   showActiveQuestionBanner: boolean;
   /** Performance debug level from `codeBuild.perfDebug`. */
   perfDebug?: 'off' | 'hud' | 'full';
+  /** Voice feature config snapshot (settings → webview). */
+  voice?: VoiceHydrateConfig;
+}
+
+/** Voice settings + capability flags sent on hydrate. */
+export interface VoiceHydrateConfig {
+  enabled: boolean;
+  ttsEngine: 'webview' | 'system' | 'auto' | 'off';
+  ttsEnabled: boolean;
+  lang: string;
+  utteranceEndMs: number;
+  /** Host will use macOS `say` (or similar) when true. */
+  hostSpeaks: boolean;
+  /** Default system voice name for `say` (optional). */
+  systemVoice?: string;
+  /**
+   * Resolved STT path for this machine.
+   * - host: extension-host STT (macOS Speech) — preferred; uses OS mic grant
+   * - webview: browser Web Speech inside the sandboxed iframe (often blocked)
+   * - off: STT disabled
+   */
+  sttEngine: 'host' | 'webview' | 'off';
+  /** True when host STT binary/source can run on this OS (currently darwin). */
+  hostSttAvailable: boolean;
 }
 
 /** Capability snapshot of one backend, served to the webview on hydrate. */
@@ -151,7 +215,22 @@ export type WebviewToHost =
   /** Copy flight report to clipboard (host-side). */
   | { type: 'copyPerfReport' }
   /** Write ~/.codebuild/sessions/<id>.perf.json and reveal it. */
-  | { type: 'exportPerf' };
+  | { type: 'exportPerf' }
+  /** /handoff — write a structured HANDOFF.md pack for continuing this
+   * work on another backend. */
+  | { type: 'handoff' }
+  /** Start a Voice Ideation Session (new chat + VIS preamble + KP bias). */
+  | { type: 'startVoiceIdeation'; backend?: BackendId }
+  /** End VIS: send close prompt and parse/write KP objects from the reply. */
+  | { type: 'endVoiceIdeation' }
+  /** Ask host to speak text (system TTS path). */
+  | { type: 'ttsSpeak'; text: string }
+  | { type: 'ttsStop' }
+  /** Webview reports voice UI mode for status bar / debugging. */
+  | { type: 'voiceModeChanged'; mode: VoiceMode }
+  /** Start host-side STT (macOS Speech / future backends). */
+  | { type: 'sttStart'; lang?: string }
+  | { type: 'sttStop' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -331,6 +410,28 @@ export type HostToWebview =
         chars: number;
         kind?: 'primer' | 'mention' | 'user_text' | 'image' | 'tool_result' | 'system';
       }>;
+    }
+  /** Host finished system TTS (or failed). Webview resumes listen. */
+  | { type: 'ttsDone'; ok: boolean; error?: string }
+  /** Host-driven voice command (palette / keybinding). */
+  | {
+      type: 'voiceCommand';
+      action:
+        | 'toggleDictation'
+        | 'toggleInteractive'
+        | 'startVis'
+        | 'endVis'
+        | 'stopVoice';
+    }
+  /** VIS lifecycle notice for the webview badge. */
+  | { type: 'voiceIdeationState'; active: boolean; sessionId?: string }
+  /** Host STT transcript chunk (interim or final). */
+  | { type: 'sttResult'; transcript: string; isFinal: boolean }
+  /** Host STT lifecycle / errors. */
+  | {
+      type: 'sttStatus';
+      status: 'idle' | 'listening' | 'error' | 'unsupported' | 'starting';
+      detail?: string;
     };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {

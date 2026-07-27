@@ -176,7 +176,12 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     transport: 'exec-json',
     models: ['default', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini'],
     supportsEffort: true,
+    // Native resume via `codex exec resume <thread_id>` (CodexTransport uses
+    // StartOpts.resumeId as the first-prompt thread id before thread.started).
+    supportsResume: true,
     // The prompt is appended by CodexTransport at spawn time (spawn-per-prompt model).
+    // Resume is NOT a buildArgs flag — CodexTransport rewrites argv to
+    // `exec resume <id> …` when a thread id is known (see buildCodexExecArgv).
     buildArgs: ({ mode, model, effort }) => {
       const args = ['exec', '--json', '--skip-git-repo-check', '--sandbox', codexSandbox(mode)];
       if (model && model !== 'default') args.push('--model', model);

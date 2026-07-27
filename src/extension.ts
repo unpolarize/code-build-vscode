@@ -53,6 +53,26 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codeBuild.openPreviousSession', async () => {
       await doOpenPreviousSession();
     }),
+    vscode.commands.registerCommand('codeBuild.handoff', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to hand off.'
+        );
+        return;
+      }
+      await mgr.writeHandoffPack();
+    }),
+    vscode.commands.registerCommand('codeBuild.exportConversation', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to export.'
+        );
+        return;
+      }
+      await mgr.exportConversation();
+    }),
     // Programmatic entry point for cross-extension session import — code-sessions
     // calls this when the user clicks "Open in Code Build" on a claude or grok
     // session row. We spawn a fresh code-build session bound to the matching
@@ -85,8 +105,38 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand('codeBuild.showFlightRecorder', () => {
       vscode.window.createOutputChannel('Code Build: Flight Recorder').show(true);
+    }),
+    // Voice mode keybindings / palette — route to the latest editor chat.
+    vscode.commands.registerCommand('codeBuild.voice.toggleDictation', () => {
+      voiceHostCommand(managers, openChat, 'toggleDictation');
+    }),
+    vscode.commands.registerCommand('codeBuild.voice.toggleInteractive', () => {
+      voiceHostCommand(managers, openChat, 'toggleInteractive');
+    }),
+    vscode.commands.registerCommand('codeBuild.voice.startVis', () => {
+      voiceHostCommand(managers, openChat, 'startVis');
+    }),
+    vscode.commands.registerCommand('codeBuild.voice.endVis', () => {
+      voiceHostCommand(managers, openChat, 'endVis');
+    }),
+    vscode.commands.registerCommand('codeBuild.voice.stop', () => {
+      voiceHostCommand(managers, openChat, 'stopVoice');
     })
   );
+
+  function voiceHostCommand(
+    set: Set<SessionManager>,
+    open: () => void,
+    action: 'toggleDictation' | 'toggleInteractive' | 'startVis' | 'endVis' | 'stopVoice'
+  ): void {
+    let mgr = lastManager(set);
+    if (!mgr) {
+      open();
+      mgr = lastManager(set);
+    }
+    // Webview owns mic/TTS mode; for VIS it posts startVoiceIdeation / endVoiceIdeation back.
+    mgr?.postHostEvent({ type: 'voiceCommand', action });
+  }
 
   // Sidebar surface: same React bundle, hosted in the activity-bar view.
   context.subscriptions.push(

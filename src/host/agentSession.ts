@@ -27,6 +27,8 @@ export interface StartOpts {
    * permission UI but the tools still respect the cwd boundary — that
    * was the "code-build chat is locked to the project repo" bug. */
   additionalTrustedDirs?: string[];
+  /** Force-inject KP MCP on ACP session/new (Voice Ideation Sessions). */
+  forceKp?: boolean;
 }
 
 /**
@@ -42,6 +44,20 @@ export interface AgentSession {
   cancel(): void;
   setMode(mode: PermissionMode): void;
   respondPermission(requestId: string, outcome: PermissionOutcome): void;
+
+  /** Whether any permission request is still awaiting a user decision.
+   * With concurrent requests queued, answering one must not un-pause the
+   * stall watchdog while others remain. */
+  hasPendingPermissions(): boolean;
+
+  /** Resolves once the transport's startup handshake has settled (either
+   * way — a failed handshake resolves too; the error is surfaced through
+   * the event stream). Hosts that mutate prompt inputs based on handshake
+   * outcomes (e.g. the resume_fallback primer promotion) MUST await this
+   * before snapshotting that state, or a prompt sent mid-handshake races
+   * the outcome. Default: already-resolved (spawn-per-prompt transports
+   * have no handshake). */
+  ready(): Promise<void>;
 
   /** Subscribe to the normalized event stream. Returns an unsubscribe fn. */
   onEvent(cb: (update: SessionUpdate) => void): () => void;
@@ -61,6 +77,14 @@ export abstract class BaseAgentSession implements AgentSession {
   abstract cancel(): void;
   abstract setMode(mode: PermissionMode): void;
   abstract respondPermission(requestId: string, outcome: PermissionOutcome): void;
+
+  hasPendingPermissions(): boolean {
+    return false;
+  }
+
+  ready(): Promise<void> {
+    return Promise.resolve();
+  }
 
   onEvent(cb: (update: SessionUpdate) => void): () => void {
     this.listeners.add(cb);

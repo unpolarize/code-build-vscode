@@ -13,10 +13,12 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
-import { confineToRoot } from '../pathGuard';
+import { settleAcpProcessExit } from './acpProcessExit';
+import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
+import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
-  defaultBrowserMcpServers,
-  normalizeMcpServerConfig,
+  appendKpMcpServer,
+  resolveAcpMcpServersFromInspect,
   type AcpMcpServer
 } from './mcpServers';
 
@@ -36,13 +38,47 @@ interface PromptResult {
 
 /**
  * Resolve MCP servers to pass on ACP session/new.
- * Setting `codeBuild.mcpServers` overrides; when empty, inject the personal-browser stack
- * so Grok (and other ACP backends) can drive the user's real Chrome profile.
+ *
+ * Unset `codeBuild.mcpServers` → personal-browser defaults (chrome-devtools +
+ * playwright). Explicit `[]` or `codeBuild.disableDefaultMcpServers: true` →
+ * no servers (no npx default spawns). Populated array → as configured.
+ * Uses `inspect` because package.json default is `[]` and `get()` cannot
+ * distinguish unset from explicit empty.
  */
-export function resolveAcpMcpServers(): AcpMcpServer[] {
+export function resolveAcpMcpServers(kpContext?: {
+  backend: BackendId;
+  model: string | undefined;
+  sessionId: string;
+  /** Force-enable KP MCP (e.g. Voice Ideation Session) even when setting is off. */
+  forceKp?: boolean;
+}): AcpMcpServer[] {
   const cfg = vscode.workspace.getConfiguration('codeBuild');
-  const raw = cfg.get<unknown>('mcpServers');
-  return normalizeMcpServerConfig(raw) ?? defaultBrowserMcpServers();
+  const base = resolveAcpMcpServersFromInspect(
+    cfg.inspect('mcpServers'),
+    cfg.get<boolean>('disableDefaultMcpServers') === true
+  );
+  if (!kpContext) return base;
+  const enabled =
+    kpContext.forceKp === true || cfg.get<boolean>('kpMcp.enabled') === true;
+  const { servers, skip } = appendKpMcpServer(base, {
+    enabled,
+    command: cfg.get<string>('kp.command'),
+    root: cfg.get<string>('kp.root'),
+    backend: kpContext.backend,
+    model: kpContext.model,
+    sessionId: kpContext.sessionId
+  });
+  if (skip === 'missing-command' || skip === 'missing-root') {
+    // Fail-open: the session still starts, just without kp tools.
+    console.warn(
+      `[code-build] KP MCP requested (enabled=${enabled}, force=${Boolean(
+        kpContext.forceKp
+      )}) but codeBuild.kp.${
+        skip === 'missing-command' ? 'command' : 'root'
+      } is not set — skipping kp MCP injection`
+    );
+  }
+  return servers;
 }
 
 /**
@@ -56,7 +92,7 @@ export class AcpTransport extends BaseAgentSession {
   private acpSessionId?: string;
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
-  private pendingPermissions = new Map<string, (outcome: PermissionOutcome) => void>();
+  private pendingPermissions = new PendingPermissionResolvers();
   /** Resolves when initialize + session/new have completed (or rejects on
    * any failure). prompt() awaits this so the user can hit Send while the
    * ACP handshake is still in flight — the prompt is queued instead of
@@ -66,6 +102,16 @@ export class AcpTransport extends BaseAgentSession {
    * the error bubble if the handshake fails so the user sees what went
    * wrong instead of a generic timeout. */
   private startupStderr = '';
+  /** Cached realpath-based path guard for the non-bypass fs/* bridge.
+   * Built once per start() when cwd is known; root is realpathed at init. */
+  private pathGuard?: PathGuard;
+  /** `startOpts.cwd` string the cached guard was built for. */
+  private pathGuardCwd?: string;
+  /** True once the process exit path (or dispose) has settled pending
+   * RPC + permissions. Prevents double-settle when dispose() kills the
+   * child and the exit handler also fires; also lets prompt() swallow
+   * the "endpoint disposed" rejection after a mid-turn exit. */
+  private exitSettled = false;
 
   constructor(
     public readonly id: string,
@@ -78,6 +124,10 @@ export class AcpTransport extends BaseAgentSession {
   async start(opts: StartOpts): Promise<void> {
     this.startOpts = opts;
     this.mode = opts.mode;
+    // Drop any prior guard so a restarted session re-realpaths the new cwd.
+    this.pathGuard = undefined;
+    this.pathGuardCwd = undefined;
+    this.exitSettled = false;
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
     const args = spec.buildArgs({
@@ -92,14 +142,11 @@ export class AcpTransport extends BaseAgentSession {
     this.proc.on('error', (err) =>
       this.emit({ kind: 'error', message: `Failed to start ${bin}: ${err.message}` })
     );
-    this.proc.on('exit', (code) => {
-      if (code && code !== 0) {
-        const tail = this.startupStderr.trim().slice(-512);
-        this.emit({
-          kind: 'error',
-          message: `${bin} exited with code ${code}${tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : ''}`
-        });
-      }
+    // Mid-turn exit (daemon crash/OOM/kill) must settle pending RPC and
+    // permission prompts and emit a synthetic result — otherwise the
+    // webview spinner sticks forever. See settleAcpProcessExit.
+    this.proc.on('exit', (code, signal) => {
+      this.handleProcessExit(code, signal ?? null, bin);
     });
     this.proc.stderr.on('data', (b: Buffer) => {
       const t = b.toString();
@@ -126,29 +173,62 @@ export class AcpTransport extends BaseAgentSession {
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
-        const mcpServers = resolveAcpMcpServers();
+        const mcpServers = resolveAcpMcpServers({
+          backend: this.backend,
+          model: opts.model,
+          sessionId: this.id,
+          forceKp: opts.forceKp === true
+        });
         const canLoad =
           !!init.agentCapabilities?.loadSession && !!opts.resumeId;
 
+        let loaded = false;
+        let loadFailure: string | undefined;
         if (canLoad) {
           // True native resume: Grok (and any ACP agent with loadSession)
           // restores on-disk transcript + context. History may also stream
           // as session/update notifications; CB already replays from disk.
-          await this.rpc!.request('session/load', {
-            sessionId: opts.resumeId,
-            cwd: opts.cwd,
-            mcpServers
-          });
-          this.acpSessionId = opts.resumeId;
-          this.emit({ kind: 'system_init', backendSessionId: opts.resumeId });
-        } else {
+          try {
+            await this.rpc!.request('session/load', {
+              sessionId: opts.resumeId,
+              cwd: opts.cwd,
+              mcpServers
+            });
+            this.acpSessionId = opts.resumeId;
+            this.emit({ kind: 'system_init', backendSessionId: opts.resumeId! });
+            loaded = true;
+          } catch (err) {
+            // session/load can reject for reasons that don't doom the
+            // process: the on-disk session dir was deleted, the id came
+            // from a different machine, or a grok update changed the
+            // session schema. Mirror StreamJsonTransport's --resume
+            // auto-fallback: continue into session/new instead of killing
+            // the whole handshake. resume_fallback is emitted only AFTER
+            // session/new succeeds — emitting it here would tell the user
+            // "started a fresh session" moments before a hard error if
+            // session/new also rejects.
+            loadFailure = err instanceof Error ? err.message : String(err);
+          }
+        }
+        if (!loaded) {
           const session = await this.rpc!.request<NewSessionResult>('session/new', {
             cwd: opts.cwd,
             mcpServers
           });
           this.acpSessionId = session.sessionId;
+          if (loadFailure !== undefined) {
+            // Now that the fresh session exists, tell the host so it can
+            // arm the transcript primer + notify the user.
+            this.emit({
+              kind: 'resume_fallback',
+              requestedSessionId: opts.resumeId!,
+              reason: loadFailure
+            });
+          }
           // Emit for parity with the Claude path. SessionManager persists
           // this as meta.backendSessionId for later session/load resume.
+          // After a resume_fallback this OVERWRITES the stale id, so the
+          // next reload resumes the session that actually exists.
           this.emit({ kind: 'system_init', backendSessionId: session.sessionId });
         }
       } catch (err) {
@@ -170,6 +250,14 @@ export class AcpTransport extends BaseAgentSession {
     })();
 
     await this.readyPromise;
+  }
+
+  /** Settled (never rejecting) view of the ACP handshake. The host awaits
+   * this before snapshotting primer state so a prompt sent while
+   * "Resuming…" is still in flight can't race the resume_fallback
+   * promotion. Handshake errors were already surfaced from start(). */
+  override ready(): Promise<void> {
+    return this.readyPromise?.catch(() => undefined) ?? Promise.resolve();
   }
 
   private onNotification(method: string, params: unknown): void {
@@ -200,9 +288,16 @@ export class AcpTransport extends BaseAgentSession {
       // No sandbox. Relative requests still resolve against the
       // session cwd so the agent's "./foo.md" works as it would in a
       // terminal; absolute requests pass through verbatim.
+      // Intentionally NO realpath/confine — product trust model for bypass.
       return path.resolve(root, requested);
     }
-    return confineToRoot(root, requested);
+    if (!this.pathGuard || this.pathGuardCwd !== root) {
+      // Lazy-init / rebuild if cwd string changes. createPathGuard realpaths
+      // root once; confine returns the confined real path for fs ops.
+      this.pathGuard = createPathGuard(root);
+      this.pathGuardCwd = root;
+    }
+    return this.pathGuard.confine(requested);
   }
 
   private async onRequest(method: string, params: unknown): Promise<unknown> {
@@ -253,19 +348,17 @@ export class AcpTransport extends BaseAgentSession {
       }
     }
 
+    // Forward the FULL toolCall (rawInput/content/locations) so the prompt
+    // can show the actual command/diff being approved, not just "Bash".
+    // All rich fields are optional — some adapters send title-only payloads.
     this.emit({
       kind: 'permission_request',
       requestId,
-      toolCall: {
-        toolCallId: String(toolCall.toolCallId ?? requestId),
-        title: String(toolCall.title ?? 'Permission request'),
-        kind: toolKind,
-        status: 'pending'
-      },
+      toolCall: buildPermissionToolCall(params.toolCall, requestId),
       options: options as never
     });
     return new Promise((resolve) => {
-      this.pendingPermissions.set(requestId, (outcome) => resolve({ outcome }));
+      this.pendingPermissions.add(requestId, (outcome) => resolve({ outcome }));
     });
   }
 
@@ -302,8 +395,38 @@ export class AcpTransport extends BaseAgentSession {
       });
       this.emit({ kind: 'result', stopReason: res.stopReason });
     } catch (err) {
+      // Process-exit settlement disposes the RPC endpoint, which rejects
+      // this request. The exit handler already emitted error/result — do
+      // not double-emit a "JSON-RPC endpoint disposed" bubble.
+      if (this.exitSettled) return;
       this.emit({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Child-process exit path. Idempotent with dispose(): intentional host
+   * teardown sets exitSettled before kill so we don't emit a synthetic
+   * result into a panel that's already closing.
+   */
+  private handleProcessExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+    bin: string
+  ): void {
+    if (this.exitSettled) return;
+    this.exitSettled = true;
+    const rpc = this.rpc;
+    this.rpc = undefined;
+    this.proc = undefined;
+    settleAcpProcessExit({
+      code,
+      signal,
+      bin,
+      startupStderr: this.startupStderr,
+      emit: (u) => this.emit(u),
+      disposeRpc: () => rpc?.dispose(),
+      cancelPermissions: () => this.pendingPermissions.cancelAll()
+    });
   }
 
   cancel(): void {
@@ -320,20 +443,25 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   respondPermission(requestId: string, outcome: PermissionOutcome): void {
-    const resolver = this.pendingPermissions.get(requestId);
-    if (resolver) {
-      this.pendingPermissions.delete(requestId);
-      resolver(outcome);
-    }
+    this.pendingPermissions.resolve(requestId, outcome);
+  }
+
+  override hasPendingPermissions(): boolean {
+    return this.pendingPermissions.size > 0;
   }
 
   override dispose(): void {
+    // Mark settled before kill so the 'exit' handler does not re-emit
+    // synthetic result/error into a disposed session.
+    this.exitSettled = true;
     super.dispose();
     this.rpc?.dispose();
     this.rpc = undefined;
     this.proc?.kill();
     this.proc = undefined;
-    this.pendingPermissions.clear();
+    // Cancel (not drop) every outstanding request — a bare .clear() left
+    // the agent's request_permission promises hanging forever.
+    this.pendingPermissions.cancelAll();
   }
 }
 

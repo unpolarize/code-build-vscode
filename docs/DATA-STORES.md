@@ -219,18 +219,25 @@ Code Build advertises this capability on `initialize`
 (`clientCapabilities.fs.{readTextFile,writeTextFile}: true`, `acpTransport.ts:79`) and
 handles the agent→client requests in `AcpTransport.onRequest()` (`acpTransport.ts:106`):
 
-- `fs/read_text_file` → reads `confineToRoot(root, path)` and returns `{ content }`.
-- `fs/write_text_file` → writes to `confineToRoot(root, path)`.
+- `fs/read_text_file` → reads the path returned by the path guard and returns `{ content }`.
+- `fs/write_text_file` → writes to the path returned by the path guard.
 
 ### Workspace confinement guard
 
-`confineToRoot(root, requested)` (`src/host/pathGuard.ts:14`) resolves the requested path
-against the session **cwd** (the sandbox root, `acpTransport.ts:99-104`), normalizes `..`,
-and **throws if the resolved path escapes the root** (`!== root` and not prefixed by
-`root + sep`). This blocks a compromised or prompt-injected agent from reading/writing
-arbitrary files (e.g. `~/.ssh/id_rsa`, `~/.aws/credentials`) through the `fs/*` bridge —
-which crucially **never passes through the interactive permission UI**. The session cwd is
-the first workspace folder, falling back to `process.cwd()` (`sessionManager.ts:54`).
+`createPathGuard(root)` (`src/host/pathGuard.ts`) builds a session-scoped guard that
+`realpath`s the workspace root once and exposes `confine(candidate)`. Non-bypass
+`AcpTransport.resolveFsPath` caches that guard and uses the **returned real path** for
+fs ops. Confinement is `path.relative`-based (never string `startsWith`): null bytes,
+`..` escapes, absolute outside paths, out-pointing in-root symlinks, broken symlinks,
+and intermediate-is-file paths throw `PathEscapeError` (`code: 'PATH_ESCAPE'`) with only
+the agent-supplied path in the message (no existence leak of outside targets).
+
+In-root symlinks whose final real path stays under the root are allowed. Missing paths
+are allowed when their nearest existing ancestor realpaths under the root (write targets).
+Bypass mode (`mode === 'bypass' && allowBypass`) still does raw `path.resolve` with **no**
+realpath/confine. Residual limits: TOCTOU vs concurrent symlink replace, hardlinks to
+outside inodes. The session cwd is the first workspace folder, falling back to
+`process.cwd()` (`sessionManager.ts`).
 
 ### Interactive permissions (`session/request_permission`)
 

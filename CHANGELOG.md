@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.13.2 — 2026-07-25
+
+### Voice STT that actually works (host path + honest webview errors)
+
+- **(c) Host-side STT via VS Code Speech** — when `ms-vscode.vscode-speech` is installed, `codeBuild.voice.sttEngine: auto` prefers **host**. CB opens a scratch editor and runs workbench editor dictation so recognition uses the Speech extension + **host process mic grant** (not the sandboxed chat iframe). Protocol: `sttStart` / `sttStop` ↔ `sttResult` / `sttStatus`. Without the Speech extension, host mode explains how to install it and points at OS dictation.
+- **(b) Webview getUserMedia preflight** — before `webkitSpeechRecognition.start()`, request `{ audio: true }` so permission failures are explicit (and occasionally surface a prompt). Does not fix the iframe sandbox by itself.
+- **(a) Honest errors** — `not-allowed` / preflight denial no longer say “allow mic in System Settings” (you already did). They explain the webview sandbox limit and point to **host STT** or **OS dictation (Fn Fn)**. Network Speech errors also mention Electron’s missing Google speech endpoint.
+- Setting: `codeBuild.voice.sttEngine` = `auto` | `host` | `webview` | `off`. Docs: [docs/VOICE.md](docs/VOICE.md).
+
+## 0.13.1 — 2026-07-25
+
+### Fixed
+
+- **Switching to an uninstalled backend no longer poisons the session.** Picking a backend that isn't on PATH (e.g. Grok on a machine without it) used to latch the outgoing session and then fail inside the spawn, so flipping *back* to the original agent fired an endless `--resume` loop (`Couldn't resume … error_during_execution`). `switchBackend` now preflights availability with `detectBackend`, refuses cleanly with a clear notice, and leaves the live session and thread untouched. (+3 tests)
+
+## 0.13.0 — 2026-07-25
+
+### Voice mode (dictation · hands-free · VIS · TTS)
+
+- **Dictation** — Web Speech STT fills the composer; mic button + Voice bar + `/dictation` + `Ctrl+Shift+Space`.
+- **Hands-free interactive** — continuous listen → silence debounce → auto-send → read assistant reply aloud → re-listen (`/voice`, Voice bar **Hands-free**). Mid-turn steer still works while the agent is busy.
+- **TTS** — webview `speechSynthesis` or macOS `say` (`codeBuild.voice.ttsEngine`: auto/webview/system/off). Markdown stripped for natural speech.
+- **Voice Ideation Sessions (VIS)** — session kind `voice-ideation` with facilitation preamble, no-repo-edit bias, force KP MCP on ACP when configured; close via **End VIS** / `/vis-close` / spoken “close session”; host parses JSON fence and writes KP via `kp create`/`capture` with `source: voice-ideation`.
+- Settings: `codeBuild.voice.*`; docs: [docs/VOICE.md](docs/VOICE.md).
+
+## Unreleased
+
+### Path guard (ACP fs bridge)
+
+- **Realpath-based workspace confinement** for non-bypass `fs/*` reads/writes: `createPathGuard(root)` caches a realpathed root; `confine` rejects `../`, absolute outside paths, in-root symlinks that point out, broken symlinks, null bytes, and intermediate-is-file paths via `PathEscapeError` (`PATH_ESCAPE`).
+- First unit suite in `test/unit/pathGuard.test.ts`. Bypass mode still skips the guard unchanged.
+
+### MCP defaults opt-out
+
+- **Explicit `codeBuild.mcpServers: []`** now means *no servers* (stops unconditional chrome-devtools + playwright npx spawns). Previously empty was treated as “use defaults,” and there was no supported opt-out.
+- **Unset** (no user/workspace override) still injects the personal-browser default stack.
+- New **`codeBuild.disableDefaultMcpServers`** boolean for a discoverable off switch; explicit `mcpServers` entries still pass through when set.
+- Resolution uses `Configuration.inspect` so package.json’s default `[]` is not confused with a user opt-out.
+
+## 0.10.4 — 2026-07-17
+
+### Lossless history restore: replay through the live reducer
+
+- **Root cause:** reopened sessions looked broken — `replayRecordsToItems` was a second, impoverished reimplementation of the live `applyUpdate` reducer that silently dropped `agent_thought_chunk` (all thinking gone), `tool_call_update` (tool cards stuck at *pending* with no result/diff), TodoWrite task lists, AskUserQuestion cards, and the end-of-turn files-changed summary. The data was on disk all along; only the restore path was crippled.
+- **Fix:** `historyLoaded` now folds persisted records through the same `applyUpdate` reducer as the live stream, plus a webview-side mirror of the host's AskUserQuestion/TodoWrite interception (their structured cards are never persisted — they're rebuilt from the `tool_call` records). Reopened and imported (Claude/Grok) sessions restore completed tool cards with results/diffs, thinking blocks, task lists, and per-turn files-changed summaries. Replay never resurrects permission modals; restored AskUserQuestion cards render inert (answered), not as live pickers on a dead agent.
+- **Tests:** first webview reducer suite (`test/unit/webviewStore.test.ts`, 14 tests) — chunk merge, `tool_call_update` matching, turn-boundary file aggregation, TodoWrite snapshot-replace, and live/replay parity.
+
 ## 0.10.3 — 2026-07-16
 
 ### Composer: Option+Enter for newline (Claude-like)
