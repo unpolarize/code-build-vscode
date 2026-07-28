@@ -1,6 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ImageAttachment } from '../store';
 import { findActiveMention } from '../util/mentions';
+import {
+  computePreSendEstimate,
+  formatTokenEstimate
+} from '../util/tokenEstimate';
 import { post } from '../vscodeApi';
 
 /** A file resolved by the host from a drag-and-drop onto the chat. */
@@ -36,6 +40,12 @@ interface Props {
   onSeedConsumed?: () => void;
   listening?: boolean;
   onToggleDictation?: () => void;
+  /** Active model id (for context-window % on the estimate chip). */
+  model?: string | null;
+  /** Known sticky primer / system char length when the host measured it. */
+  primerChars?: number;
+  /** Optional measured MCP tool-schema overhead in tokens. */
+  schemaTokens?: number;
 }
 
 export function Composer({
@@ -48,12 +58,17 @@ export function Composer({
   seedText,
   onSeedConsumed,
   listening,
-  onToggleDictation
+  onToggleDictation,
+  model,
+  primerChars,
+  schemaTokens
 }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [caret, setCaret] = useState(0);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // Debounced chip label so keystrokes don't thrash layout. Failure → hidden.
+  const [estimateLabel, setEstimateLabel] = useState<string | null>(null);
 
   useEffect(() => {
     ref.current?.focus();
@@ -66,6 +81,33 @@ export function Composer({
     setCaret(seedText.length);
     onSeedConsumed?.();
   }, [seedText, onSeedConsumed]);
+
+  // Pre-send token estimate chip (debounce 200ms). Pure heuristic; never
+  // blocks send. Estimate failure degrades to a hidden chip.
+  const imageDataKey = useMemo(
+    () => images.map((i) => i.data?.length ?? 0).join(','),
+    [images]
+  );
+  useEffect(() => {
+    const handle = window.setTimeout(() => {
+      try {
+        const est = computePreSendEstimate({
+          text,
+          imageData: images.map((i) => i.data),
+          primerChars,
+          schemaTokens,
+          model
+        });
+        setEstimateLabel(formatTokenEstimate(est));
+      } catch {
+        setEstimateLabel(null);
+      }
+    }, 200);
+    return () => window.clearTimeout(handle);
+    // imageDataKey stands in for images[] so we re-run when payloads change
+    // without depending on a new array identity every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, imageDataKey, primerChars, schemaTokens, model]);
 
   // Show matching slash commands when the input is a bare "/command" prefix.
   const slashMatch = /^\/(\S*)$/.exec(text);
@@ -378,6 +420,15 @@ export function Composer({
         rows={3}
       />
       <div className="composer-actions">
+        {estimateLabel && (
+          <span
+            className="token-estimate-chip"
+            title="Rough pre-send estimate (chars÷4 heuristic). Does not block send."
+            aria-live="polite"
+          >
+            {estimateLabel}
+          </span>
+        )}
         {onToggleDictation && (
           <button
             type="button"

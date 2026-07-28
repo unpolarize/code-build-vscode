@@ -495,6 +495,7 @@ export function App() {
         onSeedConsumed={() => setComposerSeed(undefined)}
         listening={voice.listening && voice.mode === 'dictation'}
         onToggleDictation={() => voice.toggleDictation()}
+        model={state.session?.model}
       />
     </div>
   );

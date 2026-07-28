@@ -1012,7 +1012,23 @@ body {
 .composer-actions {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
   margin-top: 6px;
+}
+/* Pre-send token estimate — rough chars/4 heuristic next to Send.
+ * Hidden when empty / estimate fails. Does not block send. */
+.token-estimate-chip {
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+  opacity: 0.65;
+  white-space: nowrap;
+  user-select: none;
+  color: var(--vscode-descriptionForeground, inherit);
+}
+.token-estimate-chip:hover {
+  opacity: 0.9;
 }
 /* Pasted-image previews sit above the textarea — same width as the
  * composer so the tiles flow nicely on overflow. */

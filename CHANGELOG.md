@@ -27,6 +27,10 @@
 
 ## Unreleased
 
+### Pre-send token estimate chip
+
+- Composer shows a rough outbound token estimate next to Send (`~12k tok · ~8% window`) while you type. Heuristic is chars÷4 (no tokenizer API call); debounced 200ms. Window % uses a small hardcoded model-family table when the selected model is known. Does not block send; estimate failure hides the chip. (kp: ideas/cb-pre-send-prompt-context-token-estimate-chip-r)
+
 ### Path guard (ACP fs bridge)
 
 - **Realpath-based workspace confinement** for non-bypass `fs/*` reads/writes: `createPathGuard(root)` caches a realpathed root; `confine` rejects `../`, absolute outside paths, in-root symlinks that point out, broken symlinks, null bytes, and intermediate-is-file paths via `PathEscapeError` (`PATH_ESCAPE`).
