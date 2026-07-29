@@ -76,6 +76,112 @@ test('updateMeta rewrites the title in index and transcript header', () => {
   assert.equal(store.load('sess-1').meta?.title, 'Fix the parser bug');
 });
 
+test('updateMeta patch RMW: title-then-bsid leaves both intact', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+
+  const afterTitle = store.updateMeta('sess-1', { title: 'Fix the parser bug' });
+  assert.equal(afterTitle?.title, 'Fix the parser bug');
+  assert.equal(afterTitle?.backendSessionId, undefined);
+
+  const afterBsid = store.updateMeta('sess-1', {
+    backendSessionId: 'native-abc',
+    native: { format: 'claude-jsonl', id: 'native-abc' }
+  });
+  assert.equal(afterBsid?.title, 'Fix the parser bug', 'title must survive bsid patch');
+  assert.equal(afterBsid?.backendSessionId, 'native-abc');
+  assert.equal(afterBsid?.native?.id, 'native-abc');
+
+  const loaded = store.load('sess-1').meta;
+  assert.equal(loaded?.title, 'Fix the parser bug');
+  assert.equal(loaded?.backendSessionId, 'native-abc');
+  assert.equal(store.list()[0].title, 'Fix the parser bug');
+  assert.equal(store.list()[0].backendSessionId, 'native-abc');
+});
+
+test('updateMeta patch RMW: bsid-then-title leaves both intact', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+
+  store.updateMeta('sess-1', {
+    backendSessionId: 'native-xyz',
+    native: { format: 'grok-jsonl', id: 'native-xyz' },
+    backendSessionHistory: [
+      { id: 'native-xyz', ts: 1_700_000_000_100, reason: 'initial' }
+    ]
+  });
+  store.updateMeta('sess-1', { title: 'Retitled after bsid' });
+
+  const loaded = store.load('sess-1').meta;
+  assert.equal(loaded?.title, 'Retitled after bsid');
+  assert.equal(loaded?.backendSessionId, 'native-xyz');
+  assert.equal(loaded?.native?.format, 'grok-jsonl');
+  assert.equal(loaded?.backendSessionHistory?.length, 1);
+  assert.equal(loaded?.backendSessionHistory?.[0].id, 'native-xyz');
+});
+
+test('updateMeta full-meta RMW: stale object missing bsid does not erase disk bsid', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'seed');
+
+  store.updateMeta('sess-1', {
+    backendSessionId: 'native-keep',
+    native: { format: 'claude-jsonl', id: 'native-keep' }
+  });
+
+  // Simulate a stale in-memory meta that never saw the bsid capture.
+  const stale: SessionMeta = { ...meta, title: 'Stale retitle only' };
+  assert.equal(stale.backendSessionId, undefined);
+  store.updateMeta(stale);
+
+  const loaded = store.load('sess-1').meta;
+  assert.equal(loaded?.title, 'Stale retitle only');
+  assert.equal(loaded?.backendSessionId, 'native-keep', 'disk bsid must survive stale full write');
+  assert.equal(loaded?.native?.id, 'native-keep');
+});
+
+test('updateMeta interleaved with N appends loses no body lines', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+
+  const N = 20;
+  for (let i = 0; i < N; i++) {
+    store.appendUserText('sess-1', `user-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `chunk-${i}` }
+    });
+    // Alternate patch fields so each rewrite is a real RMW.
+    if (i % 2 === 0) {
+      store.updateMeta('sess-1', { title: `title-${i}` });
+    } else {
+      store.updateMeta('sess-1', {
+        backendSessionId: `native-${i}`,
+        native: { format: 'claude-jsonl', id: `native-${i}` }
+      });
+    }
+  }
+
+  const { meta: loaded, records } = store.load('sess-1');
+  assert.equal(records.length, N * 2, 'every user + update line must survive meta rewrites');
+  for (let i = 0; i < N; i++) {
+    assert.equal(records[i * 2].type, 'user');
+    assert.equal((records[i * 2] as { text: string }).text, `user-${i}`);
+    assert.equal(records[i * 2 + 1].type, 'update');
+  }
+  // Last even title patch was i=N-2 if N even, or last odd leaves prior title.
+  assert.equal(loaded?.title, `title-${N - 2}`);
+  assert.equal(loaded?.backendSessionId, `native-${N - 1}`);
+  assert.equal(loaded?.native?.id, `native-${N - 1}`);
+});
+
 test('exporter produces Claude-style turn JSONL Code Sessions can read', () => {
   const records = [
     { type: 'user', text: 'build X' },

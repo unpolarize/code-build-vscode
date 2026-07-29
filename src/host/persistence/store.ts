@@ -60,16 +60,59 @@ export class SessionStore {
     this.upsertIndex(meta);
   }
 
-  /** Update the stored meta (e.g. a derived title) both in the index and the transcript header. */
-  updateMeta(meta: SessionMeta): void {
-    this.flushSync(meta.id);
-    if (this.isIndexed(meta.id)) this.upsertIndex(meta);
-    const p = this.transcriptPath(meta.id);
-    if (!fs.existsSync(p)) return;
+  /**
+   * Read-modify-write the session meta header (and index row when present).
+   *
+   * Two call shapes:
+   * - `updateMeta(meta)` — full in-memory meta (legacy callers). Still RMW-merges
+   *   onto the on-disk header so fields only present on disk (e.g. a concurrent
+   *   `backendSessionId` patch) are not clobbered by a stale full object that
+   *   omits them. `undefined` optional fields on the argument do not erase disk
+   *   values.
+   * - `updateMeta(id, patch)` — partial patch. Only defined keys in `patch` are
+   *   applied; `id` is never rewritten. Returns the merged meta, or `undefined`
+   *   when no transcript exists.
+   *
+   * Always flushes pending body lines first so interleaved `append*` + meta
+   * rewrites never drop transcript rows.
+   */
+  updateMeta(meta: SessionMeta): SessionMeta | undefined;
+  updateMeta(id: string, patch: Partial<SessionMeta>): SessionMeta | undefined;
+  updateMeta(
+    metaOrId: SessionMeta | string,
+    patch?: Partial<SessionMeta>
+  ): SessionMeta | undefined {
+    if (typeof metaOrId === 'string') {
+      return this.patchMeta(metaOrId, patch ?? {});
+    }
+    return this.patchMeta(metaOrId.id, metaOrId);
+  }
+
+  /**
+   * Load the meta header from disk, merge defined keys from `patch`, rewrite
+   * line 0 only (body lines untouched), and upsert the index when indexed.
+   */
+  private patchMeta(id: string, patch: Partial<SessionMeta>): SessionMeta | undefined {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    if (!fs.existsSync(p)) return undefined;
     const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
-    if (lines.length === 0) return;
-    lines[0] = JSON.stringify({ type: 'meta', meta });
+    if (lines.length === 0) return undefined;
+
+    let current: SessionMeta | undefined;
+    try {
+      const first = JSON.parse(lines[0]) as { type?: string; meta?: SessionMeta };
+      if (first.type === 'meta' && first.meta) current = first.meta;
+    } catch {
+      /* corrupt header */
+    }
+    if (!current) return undefined;
+
+    const merged = mergeSessionMeta(current, patch);
+    lines[0] = JSON.stringify({ type: 'meta', meta: merged });
     fs.writeFileSync(p, lines.join('\n') + '\n');
+    if (this.isIndexed(id)) this.upsertIndex(merged);
+    return merged;
   }
 
   appendUpdate(id: string, update: SessionUpdate): void {
@@ -268,4 +311,26 @@ export class SessionStore {
   dispose(): void {
     this.flushSync();
   }
+}
+
+/**
+ * Patch-merge session meta: defined keys in `patch` win; `id` is always the
+ * on-disk identity; `undefined` values in the patch are skipped so a stale
+ * full-meta write cannot erase optional fields (backendSessionId, native, …)
+ * that only exist on disk.
+ */
+export function mergeSessionMeta(
+  current: SessionMeta,
+  patch: Partial<SessionMeta>
+): SessionMeta {
+  const merged: SessionMeta = { ...current, id: current.id };
+  for (const key of Object.keys(patch) as (keyof SessionMeta)[]) {
+    if (key === 'id') continue;
+    const value = patch[key];
+    if (value !== undefined) {
+      // Assignment is per-key; cast keeps Partial optional fields workable.
+      (merged as unknown as Record<string, unknown>)[key] = value as unknown;
+    }
+  }
+  return merged;
 }
