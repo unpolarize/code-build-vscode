@@ -19,6 +19,13 @@ const NATIVE_FORMATS: Partial<Record<BackendId, NativeTranscriptFormat>> = {
   codex: 'codex-rollout'
 };
 
+/** Native transcript format for a backend, or undefined when we don't know
+ * its store layout (opencode, cline). Shared with the offline backfill so
+ * both paths agree on which backends get a `native` pointer. */
+export function nativeFormatFor(backend: BackendId): NativeTranscriptFormat | undefined {
+  return NATIVE_FORMATS[backend];
+}
+
 /**
  * Apply a `system_init` native id to the session meta. Returns true when the
  * meta changed (caller should persist + broadcast), false when the id matched
