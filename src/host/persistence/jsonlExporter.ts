@@ -16,16 +16,24 @@ export interface ExportRecord {
 
 export function exportToClaudeJsonl(meta: SessionMeta, records: ExportRecord[]): string {
   const lines: string[] = [];
-  lines.push(
-    JSON.stringify({
-      type: 'summary',
-      sessionId: meta.id,
-      source: 'code-build',
-      backend: meta.backend,
-      cwd: meta.cwd,
-      timestamp: new Date(meta.createdAt).toISOString()
-    })
-  );
+  // Summary is additive for dual-write identity (CROSS-LINK.md): include
+  // backendSessionId + native only when present so older CSV parsers and
+  // golden baselines stay byte-identical when those fields are absent.
+  const summary: Record<string, unknown> = {
+    type: 'summary',
+    sessionId: meta.id,
+    source: 'code-build',
+    backend: meta.backend,
+    cwd: meta.cwd,
+    timestamp: new Date(meta.createdAt).toISOString()
+  };
+  if (meta.backendSessionId !== undefined) {
+    summary.backendSessionId = meta.backendSessionId;
+  }
+  if (meta.native !== undefined) {
+    summary.native = { format: meta.native.format, id: meta.native.id };
+  }
+  lines.push(JSON.stringify(summary));
 
   for (const rec of records) {
     if (rec.type === 'user' && rec.text != null) {

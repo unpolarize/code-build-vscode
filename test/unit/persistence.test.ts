@@ -202,6 +202,77 @@ test('exporter produces Claude-style turn JSONL Code Sessions can read', () => {
   assert.equal(exportHasTurns([]), false);
 });
 
+// Dual-write identity (CROSS-LINK.md): summary fields are additive only.
+test('exporter summary omits backendSessionId/native when absent (no null spam)', () => {
+  const records = [{ type: 'user', text: 'hi' }];
+  const jsonl = exportToClaudeJsonl(meta, records as never);
+  // Golden: pre-dual-write shape — key order and absence of null fields.
+  assert.equal(
+    jsonl,
+    [
+      JSON.stringify({
+        type: 'summary',
+        sessionId: 'sess-1',
+        source: 'code-build',
+        backend: 'claude',
+        cwd: '/repo',
+        timestamp: new Date(1_700_000_000_000).toISOString()
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'hi' }] }
+      }),
+      ''
+    ].join('\n')
+  );
+  const summary = JSON.parse(jsonl.trim().split('\n')[0]);
+  assert.equal('backendSessionId' in summary, false);
+  assert.equal('native' in summary, false);
+  assert.equal(summary.backendSessionId, undefined);
+  assert.equal(summary.native, undefined);
+});
+
+test('exporter summary includes backendSessionId + native when present', () => {
+  const withId: SessionMeta = {
+    ...meta,
+    backendSessionId: 'native-abc',
+    native: { format: 'claude-jsonl', id: 'native-abc' }
+  };
+  const records = [{ type: 'user', text: 'hi' }];
+  const jsonl = exportToClaudeJsonl(withId, records as never);
+  const summary = JSON.parse(jsonl.trim().split('\n')[0]);
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.sessionId, 'sess-1');
+  assert.equal(summary.backendSessionId, 'native-abc');
+  assert.deepEqual(summary.native, { format: 'claude-jsonl', id: 'native-abc' });
+  // Golden full first line (additive keys after the stable prefix).
+  assert.equal(
+    jsonl.split('\n')[0],
+    JSON.stringify({
+      type: 'summary',
+      sessionId: 'sess-1',
+      source: 'code-build',
+      backend: 'claude',
+      cwd: '/repo',
+      timestamp: new Date(1_700_000_000_000).toISOString(),
+      backendSessionId: 'native-abc',
+      native: { format: 'claude-jsonl', id: 'native-abc' }
+    })
+  );
+});
+
+test('exporter summary includes backendSessionId alone when native is unset', () => {
+  // Unmapped backends (opencode/cline) track id/history but no native pointer.
+  const withBsidOnly: SessionMeta = {
+    ...meta,
+    backend: 'opencode' as SessionMeta['backend'],
+    backendSessionId: 'native-only'
+  };
+  const summary = JSON.parse(exportToClaudeJsonl(withBsidOnly, []).trim().split('\n')[0]);
+  assert.equal(summary.backendSessionId, 'native-only');
+  assert.equal('native' in summary, false);
+});
+
 test('markdown exporter renders user/assistant turns in order and coalesces chunks', () => {
   const records = [
     { type: 'user', text: 'build X' },
