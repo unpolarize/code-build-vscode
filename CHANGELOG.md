@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.3 — 2026-08-13
+
+### Dual-write session identity (final slice)
+
+- **CROSS-LINK join contract** — `docs/CROSS-LINK.md` freezes CB↔native keys (`meta.id`, `backendSessionId`, `backendSessionHistory`, `native`), N:1 mapping, external-open rule, and the native format map for CSV/analytics consumers.
+- **Exporter summary fields** — `exportToClaudeJsonl` includes `backendSessionId` + `native` on the summary line only when set (additive; absent metas stay byte-identical, no null spam). (kp: ideas/cb-dual-write-backendsessionid-shared-grok-cb-se)
+- **Fixtures-first native-id backfill** + `updateMeta` read-modify-write for dual-write identity.
+
+### Pre-send token estimate chip
+
+- Composer shows a rough outbound token estimate next to Send (`~12k tok · ~8% window`) while you type. Heuristic is chars÷4 (no tokenizer API call); debounced 200ms. Window % uses a small hardcoded model-family table when the selected model is known. Does not block send; estimate failure hides the chip. (kp: ideas/cb-pre-send-prompt-context-token-estimate-chip-r)
+
 ## 0.13.2 — 2026-07-25
 
 ### Voice STT that actually works (host path + honest webview errors)
