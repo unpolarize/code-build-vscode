@@ -3,6 +3,11 @@ import type { ChatItem } from '../store';
 
 interface Props {
   items: ChatItem[];
+  /** True while the transcript is pinned to the live tail. */
+  follow?: boolean;
+  /** idx of the user turn navigated to; isLast when that turn is the latest. */
+  onNavigate?: (idx: number, isLast: boolean) => void;
+  onJumpLatest?: () => void;
 }
 
 /** Floating navigator that lets the user jump between their own messages in
@@ -19,7 +24,7 @@ interface Props {
  * node (set by MessageList.tsx). We rely on the DOM rather than fed-through
  * refs because items are reordered on every reduce() and refs would churn.
  */
-export function MessageNav({ items }: Props) {
+export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
   const userItems = items.filter((it) => it.kind === 'user');
   const [openList, setOpenList] = useState(false);
   // Track the message the user last navigated to so prev/next have a frame
@@ -47,11 +52,13 @@ export function MessageNav({ items }: Props) {
     if (!target) return;
     const el = document.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(target.id)}"]`);
     if (el) {
+      // Pin the user prompt at the top so the reply is visible below.
       el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       // Visual ping so the user can find it in a wall of text.
       el.classList.add('msg-highlight');
       setTimeout(() => el.classList.remove('msg-highlight'), 1200);
     }
+    onNavigate?.(idx, idx === userItems.length - 1);
   }
 
   function prev() {
@@ -127,6 +134,16 @@ export function MessageNav({ items }: Props) {
       >
         ↓
       </button>
+      {follow === false && onJumpLatest && (
+        <button
+          className="msg-nav-btn msg-nav-latest"
+          onClick={onJumpLatest}
+          title="Jump to latest"
+          aria-label="Jump to latest"
+        >
+          latest
+        </button>
+      )}
 
       {openList && (
         <div className="msg-nav-list">

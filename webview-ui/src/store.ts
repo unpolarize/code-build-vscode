@@ -174,6 +174,8 @@ export interface ChatState {
   };
   /** Host reports VIS active. */
   visActive: boolean;
+  /** Effective stall auto-cancel (seconds). 0 = warn-only. */
+  stallAutoCancelSeconds: number;
 }
 
 export const initialState: ChatState = {
@@ -210,7 +212,8 @@ export const initialState: ChatState = {
     sttEngine: 'webview',
     hostSttAvailable: false
   },
-  visActive: false
+  visActive: false,
+  stallAutoCancelSeconds: 0
 };
 
 let seq = 0;
@@ -246,8 +249,11 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
           sttEngine: msg.state.voice?.sttEngine ?? 'webview',
           hostSttAvailable: msg.state.voice?.hostSttAvailable ?? false
         },
-        visActive: msg.state.session?.sessionKind === 'voice-ideation'
+        visActive: msg.state.session?.sessionKind === 'voice-ideation',
+        stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0
       };
+    case 'stallTimeout':
+      return { ...state, stallAutoCancelSeconds: msg.seconds };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
     case 'perfHud':
@@ -467,7 +473,12 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       // semantic state ("answered" / "awaiting answer") so the ToolCard
       // is pure noise.
       const name = u.toolCall.title;
-      if (name === 'AskUserQuestion' || name === 'TodoWrite' || name === 'todo_write') {
+      if (
+        name === 'AskUserQuestion' ||
+        name === 'ask_user_question' ||
+        name === 'TodoWrite' ||
+        name === 'todo_write'
+      ) {
         return state;
       }
       items.push({ kind: 'tool', id: nextId(), createdAt: now(), tool: u.toolCall });

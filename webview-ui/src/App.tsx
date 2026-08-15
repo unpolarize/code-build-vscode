@@ -16,6 +16,13 @@ import { ActivityStrip } from './components/ActivityStrip';
 import { PerfPanel } from './components/PerfPanel';
 import { VoiceBar } from './components/VoiceBar';
 import { useVoiceController } from './voice/useVoiceController';
+import {
+  clampComposerHeight,
+  COMPOSER_MIN_HEIGHT,
+  loadComposerLayout,
+  maximizedComposerHeight,
+  saveComposerLayout
+} from './util/composerLayout';
 
 type Action =
   | { kind: 'host'; msg: HostToWebview }
@@ -48,6 +55,13 @@ export function App() {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [dragActive, setDragActive] = useState(false);
   const [composerSeed, setComposerSeed] = useState<string | undefined>(undefined);
+  const [follow, setFollow] = useState(true);
+  const initialLayout = loadComposerLayout();
+  const [composerHeight, setComposerHeight] = useState(initialLayout.height);
+  const [composerMax, setComposerMax] = useState(initialLayout.maximized);
+  const composerHeightRef = useRef(composerHeight);
+  composerHeightRef.current = composerHeight;
+  const appRef = useRef<HTMLDivElement>(null);
   const lastHostMsgAt = useRef(performance.now());
   const reduceMsBuf = useRef<number[]>([]);
   const prevBusy = useRef(false);
@@ -355,6 +369,47 @@ export function App() {
     if (text) blocks.push({ type: 'text', text });
     for (const img of images) blocks.push({ type: 'image', mimeType: img.mimeType, data: img.data });
     post({ type: 'prompt', blocks, interjected });
+    setFollow(true);
+  }
+
+  function panelHeight(): number {
+    return appRef.current?.clientHeight ?? window.innerHeight;
+  }
+
+  function persistComposer(height: number, maximized: boolean) {
+    saveComposerLayout({ height, maximized });
+  }
+
+  function onSplitterDown(e: React.MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = composerHeightRef.current;
+    const maxH = panelHeight();
+    function move(ev: MouseEvent) {
+      const next = clampComposerHeight(startH + (startY - ev.clientY), maxH);
+      setComposerHeight(next);
+      setComposerMax(false);
+    }
+    function up() {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      persistComposer(composerHeightRef.current, false);
+    }
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  }
+
+  function toggleComposerMax() {
+    const ph = panelHeight();
+    if (composerMax) {
+      setComposerMax(false);
+      persistComposer(composerHeight, false);
+    } else {
+      const next = maximizedComposerHeight(ph);
+      setComposerHeight(next);
+      setComposerMax(true);
+      persistComposer(next, true);
+    }
   }
 
   function onPickBackend(id: string) {
@@ -395,6 +450,7 @@ export function App() {
 
   return (
     <div
+      ref={appRef}
       className={`app${dragActive ? ' app-drop-active' : ''}`}
       onDragOver={onAppDragOver}
       onDragLeave={onAppDragLeave}
@@ -415,6 +471,7 @@ export function App() {
           post({ type: 'togglePerfPanel' });
           post({ type: 'requestPerfSnapshot' });
         }}
+        onSetStallTimeout={(seconds) => post({ type: 'setStallTimeout', seconds })}
       />
       <ActivityStrip
         segments={state.activitySegments}
@@ -465,12 +522,19 @@ export function App() {
       <MessageList
         items={state.items}
         busy={state.busy}
+        follow={follow}
+        onFollowChange={setFollow}
         onAskUserAnswer={(toolCallId, answers) => {
           dispatch({ kind: 'askUserAnswered', toolCallId, answers });
           post({ type: 'askUserAnswer', toolCallId, answers });
         }}
       />
-      <MessageNav items={state.items} />
+      <MessageNav
+        items={state.items}
+        follow={follow}
+        onNavigate={(_idx, isLast) => setFollow(isLast)}
+        onJumpLatest={() => setFollow(true)}
+      />
       {state.permissionQueue.length > 0 && (
         <PermissionPrompt
           permission={state.permissionQueue[0]}
@@ -484,19 +548,37 @@ export function App() {
         visActive={state.visActive}
         onEndVis={() => post({ type: 'endVoiceIdeation' })}
       />
-      <Composer
-        busy={state.busy}
-        commands={allCommands}
-        fileSuggestions={state.fileSuggestions}
-        onSend={onSend}
-        onCancel={() => post({ type: 'cancel' })}
-        onRequestFileSuggestions={onRequestFileSuggestions}
-        seedText={composerSeed}
-        onSeedConsumed={() => setComposerSeed(undefined)}
-        listening={voice.listening && voice.mode === 'dictation'}
-        onToggleDictation={() => voice.toggleDictation()}
-        model={state.session?.model}
-      />
+      <div
+        className="composer-shell"
+        style={{
+          height: composerMax
+            ? maximizedComposerHeight(panelHeight())
+            : Math.max(COMPOSER_MIN_HEIGHT, composerHeight)
+        }}
+      >
+        <div
+          className="composer-split"
+          onMouseDown={onSplitterDown}
+          title="Drag to resize the input"
+          role="separator"
+          aria-orientation="horizontal"
+        />
+        <Composer
+          busy={state.busy}
+          commands={allCommands}
+          fileSuggestions={state.fileSuggestions}
+          onSend={onSend}
+          onCancel={() => post({ type: 'cancel' })}
+          onRequestFileSuggestions={onRequestFileSuggestions}
+          seedText={composerSeed}
+          onSeedConsumed={() => setComposerSeed(undefined)}
+          listening={voice.listening && voice.mode === 'dictation'}
+          onToggleDictation={() => voice.toggleDictation()}
+          model={state.session?.model}
+          maximized={composerMax}
+          onToggleMaximize={toggleComposerMax}
+        />
+      </div>
     </div>
   );
 }

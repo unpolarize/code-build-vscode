@@ -62,6 +62,13 @@ export interface AgentSession {
   /** Subscribe to the normalized event stream. Returns an unsubscribe fn. */
   onEvent(cb: (update: SessionUpdate) => void): () => void;
 
+  /**
+   * Resolve a blocking ACP `_x.ai/ask_user_question` (Grok). Returns true
+   * if this transport was waiting on that toolCallId. Claude's path stays
+   * on tool_result via `prompt()`.
+   */
+  answerAskUserQuestion?(toolCallId: string, answers: Record<string, string>): boolean;
+
   dispose(): void;
 }
 

@@ -46,6 +46,8 @@ interface Props {
   primerChars?: number;
   /** Optional measured MCP tool-schema overhead in tokens. */
   schemaTokens?: number;
+  maximized?: boolean;
+  onToggleMaximize?: () => void;
 }
 
 export function Composer({
@@ -61,7 +63,9 @@ export function Composer({
   onToggleDictation,
   model,
   primerChars,
-  schemaTokens
+  schemaTokens,
+  maximized,
+  onToggleMaximize
 }: Props) {
   const [text, setText] = useState('');
   const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -420,6 +424,17 @@ export function Composer({
         rows={3}
       />
       <div className="composer-actions">
+        {onToggleMaximize && (
+          <button
+            type="button"
+            className="btn-composer-max"
+            onClick={onToggleMaximize}
+            title={maximized ? 'Restore composer height' : 'Maximize composer'}
+            aria-label={maximized ? 'Restore composer' : 'Maximize composer'}
+          >
+            {maximized ? '▾' : '▴'}
+          </button>
+        )}
         {estimateLabel && (
           <span
             className="token-estimate-chip"

@@ -6,6 +6,7 @@ import { AskUserQuestionCard } from './AskUserQuestionCard';
 import { TaskListCard } from './TaskListCard';
 import { post } from '../vscodeApi';
 import { formatRelative, formatHover } from '../util/time';
+import { isNearBottom } from '../util/composerLayout';
 
 interface Props {
   items: ChatItem[];
@@ -15,19 +16,36 @@ interface Props {
   /** Called when the user clicks an option inside an AskUserQuestion card.
    * Forwarded to App, which posts `askUserAnswer` back to the host. */
   onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
+  /** When false, do not jump to the latest event (user scrolled or navigated). */
+  follow?: boolean;
+  onFollowChange?: (follow: boolean) => void;
 }
 
-export function MessageList({ items, busy, onAskUserAnswer }: Props) {
+export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFollowChange }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const ignoreScroll = useRef(false);
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
     last && (last.kind === 'assistant' || last.kind === 'thought') ? last.text.length : 0;
 
   useEffect(() => {
-    // Instant scroll while streaming — smooth fights high-rate chunks.
+    if (!follow) return;
+    ignoreScroll.current = true;
     endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' });
-  }, [lastId, lastLen, busy, items.length]);
+    const t = window.setTimeout(() => {
+      ignoreScroll.current = false;
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [lastId, lastLen, busy, items.length, follow]);
+
+  function onScroll() {
+    if (ignoreScroll.current || !listRef.current || !onFollowChange) return;
+    const near = isNearBottom(listRef.current);
+    if (near && !follow) onFollowChange(true);
+    if (!near && follow) onFollowChange(false);
+  }
 
   // Show the working indicator only when we're busy AND the agent hasn't
   // started streaming a response yet (last item is the user's message or a
@@ -40,7 +58,7 @@ export function MessageList({ items, busy, onAskUserAnswer }: Props) {
     busy && last && (last.kind === 'assistant' || last.kind === 'thought') ? last.id : null;
 
   return (
-    <div className="messages">
+    <div className="messages" ref={listRef} onScroll={onScroll}>
       {items.length === 0 && !busy && (
         <div className="empty">
           <h3>Code Build</h3>

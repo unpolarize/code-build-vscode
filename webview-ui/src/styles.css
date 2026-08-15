@@ -41,7 +41,8 @@ body {
 .backend-picker,
 .mode-picker,
 .model-picker,
-.effort-picker {
+.effort-picker,
+.stall-picker {
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border, transparent);
@@ -979,7 +980,38 @@ body {
 }
 
 /* Composer */
+.composer-shell {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 72px;
+}
+.composer-split {
+  height: 6px;
+  cursor: row-resize;
+  flex: 0 0 6px;
+  background: transparent;
+  position: relative;
+}
+.composer-split::after {
+  content: '';
+  position: absolute;
+  left: 20%;
+  right: 20%;
+  top: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+}
+.composer-split:hover::after,
+.composer-split:active::after {
+  background: var(--vscode-focusBorder);
+}
 .composer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
   padding: 8px 10px;
 }
@@ -997,7 +1029,9 @@ body {
 }
 .composer textarea {
   width: 100%;
-  resize: vertical;
+  flex: 1;
+  min-height: 48px;
+  resize: none;
   background: var(--vscode-input-background);
   color: var(--vscode-input-foreground);
   border: 1px solid var(--vscode-input-border, transparent);
@@ -1015,6 +1049,24 @@ body {
   align-items: center;
   gap: 8px;
   margin-top: 6px;
+  flex-shrink: 0;
+}
+.btn-composer-max {
+  background: transparent;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  color: var(--vscode-foreground);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.85em;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.btn-composer-max:hover {
+  opacity: 1;
+  background: var(--vscode-list-hoverBackground, rgba(128, 128, 128, 0.12));
+}
+.msg-nav-latest {
+  font-size: 0.75em;
 }
 /* Pre-send token estimate — rough chars/4 heuristic next to Send.
  * Hidden when empty / estimate fails. Does not block send. */

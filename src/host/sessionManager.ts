@@ -176,6 +176,8 @@ export class SessionManager {
    * human decision). Combined with pending AskUserQuestions, this tells the
    * stall watchdog the turn is legitimately paused on the user, not stuck. */
   private awaitingPermission = false;
+  /** Per-session stall auto-cancel override (seconds). Undefined = use setting. */
+  private stallAutoCancelOverride: number | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -251,6 +253,9 @@ export class SessionManager {
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
+        break;
+      case 'setStallTimeout':
+        this.setStallTimeout(msg.seconds);
         break;
       case 'prompt': {
         // Hold the user's prompt while a cross-backend handoff is in
@@ -833,7 +838,8 @@ export class SessionManager {
       memoryByProvider: memTotals.byProvider,
       showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true),
       perfDebug: this.perfDebugMode(),
-      voice: this.voiceHydrateConfig()
+      voice: this.voiceHydrateConfig(),
+      stallAutoCancelSeconds: this.effectiveStallAutoCancelSeconds()
     };
     this.perf.setMode(state.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
@@ -1584,7 +1590,10 @@ export class SessionManager {
     const input = update.toolCall.rawInput as any;
     if (!name || !input) return;
 
-    if (name === 'AskUserQuestion' && Array.isArray(input.questions)) {
+    if (
+      (name === 'AskUserQuestion' || name === 'ask_user_question') &&
+      Array.isArray(input.questions)
+    ) {
       // Claude's AskUserQuestion shape: each entry has { question, header,
       // multiSelect, options: [{label, description, preview}] }.
       const questions = (input.questions as Array<any>).map((q) => ({
@@ -1766,7 +1775,7 @@ export class SessionManager {
     this.openToolCalls.clear();
     this.awaitingPermission = false;
     const warnMs = Math.max(0, this.config.get<number>('stallWarnSeconds', 45)) * 1000;
-    const autoCancelMs = Math.max(0, this.config.get<number>('stallAutoCancelSeconds', 120)) * 1000;
+    const autoCancelMs = Math.max(0, this.effectiveStallAutoCancelSeconds()) * 1000;
     const be = this.meta?.backend ?? 'agent';
     this.watchdog = new TurnWatchdog({
       warnMs,
@@ -1964,10 +1973,30 @@ export class SessionManager {
    * built-in AskUserQuestion handler and the agent continues its
    * turn. Also flip busy=true so the working… indicator reappears
    * while claude processes the answer. */
+  private effectiveStallAutoCancelSeconds(): number {
+    if (this.stallAutoCancelOverride != null) return this.stallAutoCancelOverride;
+    const remembered = this.context.globalState.get<number>('lastStallAutoCancelSeconds');
+    if (typeof remembered === 'number' && Number.isFinite(remembered)) return Math.max(0, remembered);
+    return Math.max(0, this.config.get<number>('stallAutoCancelSeconds', 0));
+  }
+
+  private setStallTimeout(seconds: number): void {
+    const secs = Math.max(0, Math.round(seconds));
+    this.stallAutoCancelOverride = secs;
+    void this.context.globalState.update('lastStallAutoCancelSeconds', secs);
+    this.panel.post({ type: 'stallTimeout', seconds: secs });
+    if (this.watchdog?.active) this.armWatchdog();
+  }
+
   private answerAskUserQuestion(toolCallId: string, answers: Record<string, string>): void {
     const pending = this.pendingAskUserQuestions.get(toolCallId);
     if (!pending) return;
     this.pendingAskUserQuestions.delete(toolCallId);
+    // Grok ACP: the turn is blocked on the ext-method RPC, not a tool_result.
+    if (this.session?.answerAskUserQuestion?.(toolCallId, answers)) {
+      this.panel.post({ type: 'busy', busy: true });
+      return;
+    }
     const payload = JSON.stringify({ answers });
     const blocks: ContentBlock[] = [
       {

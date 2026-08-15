@@ -18,7 +18,15 @@ interface Props {
   onResumeSession: (id: string, source?: 'codebuild' | 'claude' | 'grok', cwd?: string) => void;
   onRefreshSessions: () => void;
   onTogglePerf?: () => void;
+  onSetStallTimeout?: (seconds: number) => void;
 }
+
+const STALL_OPTIONS: Array<{ seconds: number; label: string }> = [
+  { seconds: 0, label: 'timeout: never' },
+  { seconds: 120, label: 'timeout: 2m' },
+  { seconds: 300, label: 'timeout: 5m' },
+  { seconds: 600, label: 'timeout: 10m' }
+];
 
 function fmtHudMs(ms?: number): string {
   if (ms == null || Number.isNaN(ms)) return '—';
@@ -37,7 +45,8 @@ export function Header({
   onOpenInNewWindow,
   onResumeSession,
   onRefreshSessions,
-  onTogglePerf
+  onTogglePerf,
+  onSetStallTimeout
 }: Props) {
   const current = state.session?.backend ?? '';
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -117,6 +126,26 @@ export function Header({
         <span className="session-kind-badge" title="Voice Ideation Session">
           VIS
         </span>
+      )}
+
+      {onSetStallTimeout && (
+        <select
+          className="stall-picker"
+          value={String(state.stallAutoCancelSeconds)}
+          onChange={(e) => onSetStallTimeout(Number(e.target.value))}
+          title="Auto-stop after this much silence. Never = warn only, do not interrupt long waits."
+        >
+          {STALL_OPTIONS.map((o) => (
+            <option key={o.seconds} value={o.seconds}>
+              {o.label}
+            </option>
+          ))}
+          {!STALL_OPTIONS.some((o) => o.seconds === state.stallAutoCancelSeconds) && (
+            <option value={state.stallAutoCancelSeconds}>
+              timeout: {state.stallAutoCancelSeconds}s
+            </option>
+          )}
+        </select>
       )}
 
       <div className="header-spacer" />

@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -390,9 +390,9 @@
         },
         "codeBuild.stallAutoCancelSeconds": {
           "type": "number",
-          "default": 120,
+          "default": 0,
           "minimum": 0,
-          "description": "Seconds of total silence before CB auto-stops a stuck turn so the UI never stays frozen. Suppressed while a tool/command is running (long builds are silent by design — you Stop those yourself). Must exceed stallWarnSeconds; set to 0 (or ≤ stallWarnSeconds) for warn-only, where you always click Stop."
+          "description": "Seconds of total silence before CB auto-stops a stuck turn. Default 0 = warn-only (alert, never kill). The chat header picker overrides this per session (never / 2m / 5m / 10m). Suppressed while a tool/command is running. Must exceed stallWarnSeconds when set."
         },
         "codeBuild.defaultModel": {
           "type": "string",
@@ -543,7 +543,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.14.0.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.15.0.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

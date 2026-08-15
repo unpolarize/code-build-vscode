@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.15.0 — 2026-08-14
+
+### Resizable composer
+
+- Drag the handle above the input to grow or shrink it. A maximize/restore button expands the composer to most of the panel. Height persists across reloads.
+
+### Turn navigation stays on the prompt
+
+- ↑/↓ (and Alt+arrows) pin the user prompt at the top so the reply is visible below. Manual scroll or navigation pauses follow-the-bottom; Send, **latest**, or ↓ to the last turn resumes it. Streaming no longer jumps you off a turn you just scrolled to.
+
+### Stall timeout is warn-only by default
+
+- `codeBuild.stallAutoCancelSeconds` default is now `0` (alert, do not kill). A header picker sets the current session to never / 2m / 5m / 10m and remembers the last choice for new sessions.
+
+### Grok question picker (ACP)
+
+- CB implements `_x.ai/ask_user_question` / `x.ai/ask_user_question`. Grok's blocking questionnaire now opens the existing AskUserQuestion card instead of failing with `Method not found`. Answers resolve the ACP request (not a Claude-style tool_result).
+
 ## 0.14.0 — 2026-08-14
 
 ### Quill-style streaming STT engines (voice input that actually hears you)

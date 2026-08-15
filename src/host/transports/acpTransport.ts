@@ -21,6 +21,12 @@ import {
   resolveAcpMcpServersFromInspect,
   type AcpMcpServer
 } from './mcpServers';
+import {
+  buildAskUserQuestionAccepted,
+  buildAskUserQuestionCancelled,
+  isAskUserQuestionMethod,
+  parseAskUserQuestionParams
+} from './askUserQuestion';
 
 export type { AcpMcpServer };
 export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
@@ -93,6 +99,8 @@ export class AcpTransport extends BaseAgentSession {
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
   private pendingPermissions = new PendingPermissionResolvers();
+  /** In-flight Grok `_x.ai/ask_user_question` RPC resolvers, keyed by toolCallId. */
+  private pendingAskUser = new Map<string, (value: unknown) => void>();
   /** Resolves when initialize + session/new have completed (or rejects on
    * any failure). prompt() awaits this so the user can hit Send while the
    * ACP handshake is still in flight — the prompt is queued instead of
@@ -317,8 +325,58 @@ export class AcpTransport extends BaseAgentSession {
       case 'session/request_permission':
         return this.handlePermission(params as Record<string, unknown>);
       default:
+        if (isAskUserQuestionMethod(method)) {
+          return this.handleAskUserQuestion(params);
+        }
         throw new Error(`Method not found: ${method}`);
     }
+  }
+
+  /**
+   * Grok blocks the turn on this reverse-request. Show the existing
+   * AskUserQuestion card and resolve the JSON-RPC when the user answers
+   * (or cancel with `{ outcome: "cancelled" }` on dispose).
+   */
+  private handleAskUserQuestion(params: unknown): Promise<unknown> {
+    const parsed = parseAskUserQuestionParams(params);
+    if (!parsed) {
+      throw new Error('Invalid x.ai/ask_user_question params');
+    }
+    this.emit({
+      kind: 'tool_call',
+      toolCall: {
+        toolCallId: parsed.toolCallId,
+        title: 'AskUserQuestion',
+        status: 'pending',
+        rawInput: { questions: parsed.questions, mode: parsed.mode }
+      }
+    });
+    return new Promise((resolve) => {
+      this.pendingAskUser.set(parsed.toolCallId, resolve);
+    });
+  }
+
+  answerAskUserQuestion(toolCallId: string, answers: Record<string, string>): boolean {
+    const resolve = this.pendingAskUser.get(toolCallId);
+    if (!resolve) return false;
+    this.pendingAskUser.delete(toolCallId);
+    this.emit({
+      kind: 'tool_call_update',
+      toolCall: { toolCallId, status: 'completed' }
+    });
+    resolve(buildAskUserQuestionAccepted(answers));
+    return true;
+  }
+
+  private cancelPendingAskUser(): void {
+    for (const [id, resolve] of this.pendingAskUser) {
+      resolve(buildAskUserQuestionCancelled());
+      this.emit({
+        kind: 'tool_call_update',
+        toolCall: { toolCallId: id, status: 'failed' }
+      });
+    }
+    this.pendingAskUser.clear();
   }
 
   private handlePermission(params: Record<string, unknown>): Promise<{ outcome: PermissionOutcome }> {
@@ -425,7 +483,10 @@ export class AcpTransport extends BaseAgentSession {
       startupStderr: this.startupStderr,
       emit: (u) => this.emit(u),
       disposeRpc: () => rpc?.dispose(),
-      cancelPermissions: () => this.pendingPermissions.cancelAll()
+      cancelPermissions: () => {
+        this.pendingPermissions.cancelAll();
+        this.cancelPendingAskUser();
+      }
     });
   }
 
@@ -447,7 +508,7 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   override hasPendingPermissions(): boolean {
-    return this.pendingPermissions.size > 0;
+    return this.pendingPermissions.size > 0 || this.pendingAskUser.size > 0;
   }
 
   override dispose(): void {
@@ -462,6 +523,7 @@ export class AcpTransport extends BaseAgentSession {
     // Cancel (not drop) every outstanding request — a bare .clear() left
     // the agent's request_permission promises hanging forever.
     this.pendingPermissions.cancelAll();
+    this.cancelPendingAskUser();
   }
 }
 

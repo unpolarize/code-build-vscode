@@ -120,6 +120,8 @@ export interface HydrateState {
   perfDebug?: 'off' | 'hud' | 'full';
   /** Voice feature config snapshot (settings → webview). */
   voice?: VoiceHydrateConfig;
+  /** Effective stall auto-cancel for this session (seconds). `0` = warn-only. */
+  stallAutoCancelSeconds?: number;
 }
 
 /** Voice settings + capability flags sent on hydrate. */
@@ -172,6 +174,8 @@ export type WebviewToHost =
   | { type: 'setModel'; model: string }
   /** Change the active effort/thinking-budget level. Same respawn rules. */
   | { type: 'setEffort'; effort: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' }
+  /** Per-session stall auto-cancel override (seconds). `0` = warn-only, never auto-stop. */
+  | { type: 'setStallTimeout'; seconds: number }
   | { type: 'newSession'; backend?: BackendId }
   /** User's answer to the cross-backend context-handoff prompt:
    *   - 'full'   = prepend the prior conversation verbatim
@@ -311,6 +315,8 @@ export type HostToWebview =
   | { type: 'sessionUpdates'; sessionId: string; updates: SessionUpdate[] }
   | { type: 'sessionMeta'; session: SessionMeta }
   | { type: 'busy'; busy: boolean }
+  /** Host confirms the effective stall auto-cancel after a picker change. */
+  | { type: 'stallTimeout'; seconds: number }
   | { type: 'perfHud'; hud: PerfHudMsg }
   | { type: 'activityStrip'; segments: ActivitySegmentMsg[]; turnDurationMs: number }
   | { type: 'perfSnapshot'; snapshot: PerfSnapshotMsg }
