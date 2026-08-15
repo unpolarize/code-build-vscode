@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.13.3",
+  "version": "0.14.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -507,12 +507,29 @@
           "type": "string",
           "enum": [
             "auto",
+            "xai",
+            "transcribe",
             "host",
             "webview",
             "off"
           ],
           "default": "auto",
-          "description": "Speech-to-text engine. 'auto' prefers host STT when the VS Code Speech extension (ms-vscode.vscode-speech) is installed — that path uses the OS mic grant via a scratch editor + editor dictation. Otherwise falls back to webview Web Speech (often blocked by the chat iframe sandbox). 'host' forces host STT (requires VS Code Speech). 'webview' forces in-iframe SpeechRecognition. 'off' disables mic STT."
+          "description": "Speech-to-text engine. 'auto' prefers 'xai' (Quill-style streaming STT against wss://api.x.ai/v1/stt using the grok CLI login in ~/.grok/auth.json or codeBuild.voice.xaiApiKey; macOS), then 'transcribe' (Amazon Transcribe streaming with your AWS credential chain — the same creds Claude-on-Bedrock uses; macOS), then 'host' (VS Code Speech extension bridge), then webview Web Speech (often blocked by the chat iframe sandbox). Forcing an engine that is unavailable disables STT with guidance."
+        },
+        "codeBuild.voice.xaiApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional xAI API key for the 'xai' STT engine (console.x.ai). Wins over the grok CLI subscription login; XAI_API_KEY env also works. Leave empty to reuse ~/.grok/auth.json."
+        },
+        "codeBuild.voice.awsRegion": {
+          "type": "string",
+          "default": "us-west-2",
+          "description": "AWS region for the 'transcribe' STT engine (Amazon Transcribe streaming)."
+        },
+        "codeBuild.voice.awsProfile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional AWS profile for the 'transcribe' STT engine. Empty = default credential chain (env, SSO, ~/.aws) — the same chain Claude Code on Bedrock uses."
         }
       }
     }
@@ -526,21 +543,25 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.13.3.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-0.14.0.vsix --force",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {
+    "@aws-sdk/client-transcribe-streaming": "^3.700.0",
+    "@aws-sdk/credential-providers": "^3.700.0",
     "@unpolarize/agent-memory-core": "^0.0.1",
     "dompurify": "^3.4.7",
     "marked": "^18.0.4",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@types/vscode": "^1.90.0",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.1",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.21.5",

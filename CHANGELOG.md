@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.0 — 2026-08-14
+
+### Quill-style streaming STT engines (voice input that actually hears you)
+
+- **New `xai` STT engine** — reimplements [xfreeze2/quill](https://github.com/xfreeze2/quill)'s verified pipeline in the extension host: bundled Swift mic helper (16 kHz mono PCM16, compiled once via `xcrun swiftc`, uses VS Code's own mic grant) → `wss://api.x.ai/v1/stt` with the **grok CLI subscription login** (`~/.grok/auth.json`; `codeBuild.voice.xaiApiKey`/`XAI_API_KEY` override). Live interim partials + per-segment finals; last-write-wins segment model; `audio.done` tail flush. Verified live end-to-end (`test/manual/xaiSttLive.ts`).
+- **New `transcribe` STT engine** — Amazon Transcribe streaming for Bedrock-only work machines (Anthropic/Bedrock have no STT); reuses the same AWS credential chain Claude-on-Bedrock uses. Settings: `codeBuild.voice.awsRegion`, `codeBuild.voice.awsProfile`.
+- **`codeBuild.voice.sttEngine`** enum extended: `auto | xai | transcribe | host | webview | off`; auto order xai → transcribe → host (VS Code Speech bridge) → webview. Webview protocol unchanged.
+- Design doc: `docs/specs/2026-08-14-quill-stt-engines-design.md`; `docs/VOICE.md` updated.
+- Deps: `ws`, `@aws-sdk/client-transcribe-streaming`, `@aws-sdk/credential-providers`.
+
 ## 0.13.3 — 2026-08-13
 
 ### Dual-write session identity (final slice)

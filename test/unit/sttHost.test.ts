@@ -1,30 +1,52 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hostSttUnavailableDetail, resolveSttEngine } from '../../src/host/voice/sttResolve';
+import {
+  engineUnavailableDetail,
+  hostSttUnavailableDetail,
+  resolveSttEngine,
+  webviewSttEngine,
+  type SttAvailability
+} from '../../src/host/voice/sttResolve';
 
-test('resolveSttEngine: auto prefers host when available', () => {
-  assert.equal(resolveSttEngine('auto', true), 'host');
-  assert.equal(resolveSttEngine(undefined, true), 'host');
+const none: SttAvailability = { xai: false, transcribe: false, speechExt: false };
+const all: SttAvailability = { xai: true, transcribe: true, speechExt: true };
+
+test('resolveSttEngine: auto prefers xai, then transcribe, then speech ext', () => {
+  assert.equal(resolveSttEngine('auto', all), 'xai');
+  assert.equal(resolveSttEngine(undefined, all), 'xai');
+  assert.equal(resolveSttEngine('auto', { ...all, xai: false }), 'transcribe');
+  assert.equal(resolveSttEngine('auto', { ...all, xai: false, transcribe: false }), 'host');
+  assert.equal(resolveSttEngine('auto', none), 'webview');
 });
 
-test('resolveSttEngine: auto falls back to webview when host unavailable', () => {
-  assert.equal(resolveSttEngine('auto', false), 'webview');
-});
-
-test('resolveSttEngine: host forces host or off', () => {
-  assert.equal(resolveSttEngine('host', true), 'host');
-  assert.equal(resolveSttEngine('host', false), 'off');
+test('resolveSttEngine: forced engines resolve or fall to off', () => {
+  assert.equal(resolveSttEngine('xai', all), 'xai');
+  assert.equal(resolveSttEngine('xai', none), 'off');
+  assert.equal(resolveSttEngine('transcribe', all), 'transcribe');
+  assert.equal(resolveSttEngine('transcribe', none), 'off');
+  assert.equal(resolveSttEngine('host', all), 'host');
+  assert.equal(resolveSttEngine('host', none), 'off');
 });
 
 test('resolveSttEngine: webview and off are sticky', () => {
-  assert.equal(resolveSttEngine('webview', true), 'webview');
-  assert.equal(resolveSttEngine('webview', false), 'webview');
-  assert.equal(resolveSttEngine('off', true), 'off');
+  assert.equal(resolveSttEngine('webview', all), 'webview');
+  assert.equal(resolveSttEngine('webview', none), 'webview');
+  assert.equal(resolveSttEngine('off', all), 'off');
 });
 
-test('hostSttUnavailableDetail mentions Speech extension and dictation', () => {
+test('webviewSttEngine maps host engines to host', () => {
+  assert.equal(webviewSttEngine('xai'), 'host');
+  assert.equal(webviewSttEngine('transcribe'), 'host');
+  assert.equal(webviewSttEngine('host'), 'host');
+  assert.equal(webviewSttEngine('webview'), 'webview');
+  assert.equal(webviewSttEngine('off'), 'off');
+});
+
+test('unavailability details are actionable per engine', () => {
+  assert.match(engineUnavailableDetail('xai'), /grok|xaiApiKey/i);
+  assert.match(engineUnavailableDetail('transcribe'), /AWS/i);
+  assert.match(engineUnavailableDetail('host'), /VS Code Speech/i);
   const d = hostSttUnavailableDetail();
   assert.match(d, /VS Code Speech/i);
   assert.match(d, /Fn Fn|dictation/i);
-  assert.match(d, /webview/i);
 });

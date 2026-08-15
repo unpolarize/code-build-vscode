@@ -51,9 +51,35 @@ Only **assistant reply text** is spoken (markdown stripped; code fences omitted)
 
 ## STT
 
-### Host STT (default when VS Code Speech is installed) — **preferred**
+### xAI streaming STT (`xai`) — **preferred, auto-selected on macOS with a grok login**
 
-`codeBuild.voice.sttEngine: auto` resolves to **host** when [VS Code Speech](https://marketplace.visualstudio.com/items?itemName=ms-vscode.vscode-speech) (`ms-vscode.vscode-speech`) is installed.
+The [Quill](https://github.com/xfreeze2/quill) approach (MIT), reimplemented in the extension
+host — design: `docs/specs/2026-08-14-quill-stt-engines-design.md`:
+
+1. A tiny bundled Swift helper (`resources/mic/MicCap.swift`, compiled once with
+   `xcrun swiftc` into globalStorage) captures the mic as **16 kHz mono PCM16**. The mic TCC
+   grant is VS Code's own — no extra permission dance.
+2. The host streams frames to **`wss://api.x.ai/v1/stt`**, authenticated with the **grok CLI
+   subscription login** (`~/.grok/auth.json`) — the same token Grok Build's `/voice` uses.
+   Nothing metered, no API key needed. `codeBuild.voice.xaiApiKey` / `XAI_API_KEY` override
+   for people without a subscription.
+3. Live partials show as interim text; each closed segment lands as a final chunk in the
+   composer / hands-free pipeline.
+
+Requires: macOS, Xcode Command Line Tools (one-time compile), a grok CLI login or xAI key.
+
+### Amazon Transcribe streaming (`transcribe`) — the work-machine engine
+
+For machines where the only model access is **AWS** (e.g. Claude via Bedrock): Anthropic has
+no STT API and Bedrock hosts no streaming STT model, so CB points the **same AWS credential
+chain Bedrock uses** (env / SSO / `~/.aws`, optional `codeBuild.voice.awsProfile`) at
+**Amazon Transcribe streaming** in `codeBuild.voice.awsRegion`. Needs
+`transcribe:StartStreamTranscription` permission. Same mic helper, same UX.
+
+### Host STT via VS Code Speech (`host`)
+
+`codeBuild.voice.sttEngine: auto` resolves to **host** when neither `xai` nor `transcribe`
+is available and [VS Code Speech](https://marketplace.visualstudio.com/items?itemName=ms-vscode.vscode-speech) (`ms-vscode.vscode-speech`) is installed.
 
 How it works:
 
@@ -88,7 +114,10 @@ Before starting, CB runs a **`getUserMedia({ audio: true })` preflight** so fail
 | `codeBuild.voice.enabled` | `true` | Show Voice bar |
 | `codeBuild.voice.lang` | `en-US` | STT/TTS language (also best-effort `accessibility.voice.speechLanguage`) |
 | `codeBuild.voice.utteranceEndMs` | `1400` | Silence before auto-send |
-| `codeBuild.voice.sttEngine` | `auto` | `auto` \| `host` \| `webview` \| `off` |
+| `codeBuild.voice.sttEngine` | `auto` | `auto` \| `xai` \| `transcribe` \| `host` \| `webview` \| `off` — auto order: xai → transcribe → host → webview |
+| `codeBuild.voice.xaiApiKey` | `""` | Optional xAI key for `xai`; wins over the grok CLI login |
+| `codeBuild.voice.awsRegion` | `us-west-2` | Region for `transcribe` |
+| `codeBuild.voice.awsProfile` | `""` | Optional AWS profile for `transcribe` (default chain otherwise) |
 
 ## Slash commands
 

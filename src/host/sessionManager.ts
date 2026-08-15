@@ -20,12 +20,17 @@ import {
   type SessionKind
 } from '../shared/voiceIdeation';
 import { resolveTtsEngine, speakWithSay, stopSay } from './voice/ttsHost';
+import { HostSttSession, isHostSttSupported, resolveSttEngine } from './voice/sttHost';
 import {
-  HostSttSession,
-  hostSttUnavailableDetail,
-  isHostSttSupported,
-  resolveSttEngine
-} from './voice/sttHost';
+  engineUnavailableDetail,
+  webviewSttEngine,
+  type SttAvailability,
+  type SttEnginePref
+} from './voice/sttResolve';
+import { XaiSttSession } from './voice/xaiSttSession';
+import { TranscribeSttSession, isTranscribeCredsLikely } from './voice/transcribeStt';
+import { resolveXaiCreds, xaiCredsLikely } from './voice/grokAuth';
+import { isMicCaptureSupported } from './voice/micCapture';
 import { isKpConfigured, writeVisClosePayload } from './voice/kpWrite';
 import type { ChatSurface } from './webviewHtml';
 import { detectAll, detectBackend, BACKENDS, resolveBin, claudeFamilyAlias, modelsFor } from './backendRegistry';
@@ -178,7 +183,7 @@ export class SessionManager {
   /** Pending openSession options (session kind / force KP). */
   private pendingOpenOpts: { sessionKind?: SessionKind; forceKp?: boolean } = {};
   /** Host-side STT session (macOS Speech helper), if listening. */
-  private hostStt: HostSttSession | undefined;
+  private hostStt: { stop(): void } | undefined;
 
   constructor(
     private readonly panel: ChatSurface,
@@ -483,9 +488,10 @@ export class SessionManager {
       'voice.ttsEngine',
       'auto'
     );
-    const hostSttAvailable = isHostSttSupported();
-    const sttPref = this.config.get<'auto' | 'webview' | 'host' | 'off'>('voice.sttEngine', 'auto');
-    const sttEngine = resolveSttEngine(sttPref, hostSttAvailable);
+    const sttPref = this.config.get<SttEnginePref>('voice.sttEngine', 'auto');
+    const resolved = resolveSttEngine(sttPref, this.sttAvailability());
+    const sttEngine = webviewSttEngine(resolved);
+    const hostSttAvailable = sttEngine === 'host';
     return {
       enabled,
       ttsEngine: configured,
@@ -502,34 +508,88 @@ export class SessionManager {
     };
   }
 
+  /** Which host STT engines could run on this machine right now. */
+  private sttAvailability(): SttAvailability {
+    const mic = isMicCaptureSupported();
+    return {
+      xai: mic && xaiCredsLikely({ settingKey: this.config.get<string>('voice.xaiApiKey', '') }),
+      transcribe: mic && isTranscribeCredsLikely(),
+      speechExt: isHostSttSupported()
+    };
+  }
+
   private async hostSttStart(lang?: string): Promise<void> {
-    if (!isHostSttSupported()) {
+    const sttPref = this.config.get<SttEnginePref>('voice.sttEngine', 'auto');
+    const resolved = resolveSttEngine(sttPref, this.sttAvailability());
+    const effLang = lang || this.config.get<string>('voice.lang', 'en-US') || 'en-US';
+    const handlers = {
+      onResult: (r: { transcript: string; isFinal: boolean }) => {
+        this.panel.post({
+          type: 'sttResult',
+          transcript: r.transcript,
+          isFinal: r.isFinal
+        });
+      },
+      onStatus: (status: 'idle' | 'listening' | 'error' | 'unsupported' | 'starting', detail?: string) => {
+        this.panel.post({ type: 'sttStatus', status, detail });
+      }
+    };
+    this.hostSttStop();
+
+    if (resolved === 'off' || resolved === 'webview') {
       this.panel.post({
         type: 'sttStatus',
         status: 'unsupported',
-        detail: hostSttUnavailableDetail()
+        detail: engineUnavailableDetail(sttPref)
       });
       return;
     }
-    this.hostSttStop();
-    const session = new HostSttSession(
-      {
-        lang: lang || this.config.get<string>('voice.lang', 'en-US') || 'en-US',
-        context: this.context
-      },
-      {
-        onResult: (r) => {
-          this.panel.post({
-            type: 'sttResult',
-            transcript: r.transcript,
-            isFinal: r.isFinal
-          });
-        },
-        onStatus: (status, detail) => {
-          this.panel.post({ type: 'sttStatus', status, detail });
-        }
-      }
+
+    const helperSource = path.join(
+      this.context.extensionUri.fsPath,
+      'resources',
+      'mic',
+      'MicCap.swift'
     );
+    const storageDir = this.context.globalStorageUri.fsPath;
+
+    if (resolved === 'xai') {
+      const creds = resolveXaiCreds({
+        settingKey: this.config.get<string>('voice.xaiApiKey', ''),
+        env: process.env
+      });
+      if (!creds) {
+        this.panel.post({
+          type: 'sttStatus',
+          status: 'unsupported',
+          detail: engineUnavailableDetail('xai')
+        });
+        return;
+      }
+      const session = new XaiSttSession({ lang: effLang, creds, helperSource, storageDir }, handlers);
+      this.hostStt = session;
+      await session.start();
+      return;
+    }
+
+    if (resolved === 'transcribe') {
+      const session = new TranscribeSttSession(
+        {
+          lang: effLang,
+          region: this.config.get<string>('voice.awsRegion', 'us-west-2') || 'us-west-2',
+          profile: this.config.get<string>('voice.awsProfile', '') || undefined,
+          helperSource,
+          storageDir
+        },
+        handlers
+      );
+      this.hostStt = session;
+      // start() resolves only when the result stream ends — don't block on it.
+      void session.start();
+      return;
+    }
+
+    const session = new HostSttSession({ lang: effLang, context: this.context }, handlers);
     this.hostStt = session;
     await session.start();
   }
