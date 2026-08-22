@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -444,6 +444,11 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "schemaTokens": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Optional host-only schema-token override for the MCP budget knapsack. Not sent to the ACP backend."
               }
             }
           }
@@ -452,6 +457,20 @@
           "type": "boolean",
           "default": false,
           "description": "When true, do not inject the default chrome-devtools + playwright MCP servers on ACP session/new. Explicit codeBuild.mcpServers entries (if set) are still passed through; with no override, an empty list is sent (no default npx spawns)."
+        },
+        "codeBuild.mcpSchemaTokenBudget": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 0,
+          "description": "Max estimated tool-schema tokens to inject on ACP session/new|load. Default stack costs: chrome-devtools ≈ 5811, playwright ≈ 4617. At the default 6000, playwright is deferred so the session starts under budget. Set to 0 to disable the filter and pass every resolved server (restore-all). Unknown-cost servers are included fail-open. The kp MCP entry is always exempt. See the 'Code Build: MCP' output channel for the included/deferred log line."
+        },
+        "codeBuild.mcpPriority": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Preferred MCP server names (highest priority first) when codeBuild.mcpSchemaTokenBudget is > 0. Servers not listed keep their relative mcpServers / default order after the priority list. Higher priority is never dropped to fit a lower one. Empty = use mcpServers array order, else the default browser stack order."
         },
         "codeBuild.kpMcp.enabled": {
           "type": "boolean",

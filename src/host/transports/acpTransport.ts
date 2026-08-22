@@ -22,6 +22,10 @@ import {
   type AcpMcpServer
 } from './mcpServers';
 import {
+  applyMcpSchemaBudget,
+  toAcpMcpPayload
+} from './mcpSchemaBudget';
+import {
   buildAskUserQuestionAccepted,
   buildAskUserQuestionCancelled,
   isAskUserQuestionMethod,
@@ -30,6 +34,14 @@ import {
 
 export type { AcpMcpServer };
 export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
+
+let mcpOutput: vscode.OutputChannel | undefined;
+function getMcpOutput(): vscode.OutputChannel {
+  if (!mcpOutput) {
+    mcpOutput = vscode.window.createOutputChannel('Code Build: MCP');
+  }
+  return mcpOutput;
+}
 
 interface InitializeResult {
   protocolVersion: number;
@@ -50,6 +62,10 @@ interface PromptResult {
  * no servers (no npx default spawns). Populated array → as configured.
  * Uses `inspect` because package.json default is `[]` and `get()` cannot
  * distinguish unset from explicit empty.
+ *
+ * After kp append, applies `codeBuild.mcpSchemaTokenBudget` knapsack (PR1
+ * static table). budget 0/unset → identity. Host-only `schemaTokens` fields
+ * are stripped before the ACP payload.
  */
 export function resolveAcpMcpServers(kpContext?: {
   backend: BackendId;
@@ -63,28 +79,56 @@ export function resolveAcpMcpServers(kpContext?: {
     cfg.inspect('mcpServers'),
     cfg.get<boolean>('disableDefaultMcpServers') === true
   );
-  if (!kpContext) return base;
-  const enabled =
-    kpContext.forceKp === true || cfg.get<boolean>('kpMcp.enabled') === true;
-  const { servers, skip } = appendKpMcpServer(base, {
-    enabled,
-    command: cfg.get<string>('kp.command'),
-    root: cfg.get<string>('kp.root'),
-    backend: kpContext.backend,
-    model: kpContext.model,
-    sessionId: kpContext.sessionId
-  });
-  if (skip === 'missing-command' || skip === 'missing-root') {
-    // Fail-open: the session still starts, just without kp tools.
-    console.warn(
-      `[code-build] KP MCP requested (enabled=${enabled}, force=${Boolean(
-        kpContext.forceKp
-      )}) but codeBuild.kp.${
-        skip === 'missing-command' ? 'command' : 'root'
-      } is not set — skipping kp MCP injection`
-    );
+  let servers = base;
+  if (kpContext) {
+    const enabled =
+      kpContext.forceKp === true || cfg.get<boolean>('kpMcp.enabled') === true;
+    const { servers: withKp, skip } = appendKpMcpServer(base, {
+      enabled,
+      command: cfg.get<string>('kp.command'),
+      root: cfg.get<string>('kp.root'),
+      backend: kpContext.backend,
+      model: kpContext.model,
+      sessionId: kpContext.sessionId
+    });
+    if (skip === 'missing-command' || skip === 'missing-root') {
+      // Fail-open: the session still starts, just without kp tools.
+      console.warn(
+        `[code-build] KP MCP requested (enabled=${enabled}, force=${Boolean(
+          kpContext.forceKp
+        )}) but codeBuild.kp.${
+          skip === 'missing-command' ? 'command' : 'root'
+        } is not set — skipping kp MCP injection`
+      );
+    }
+    servers = withKp;
   }
-  return servers;
+
+  const budgetRaw = cfg.get<number>('mcpSchemaTokenBudget');
+  const budget =
+    typeof budgetRaw === 'number' && Number.isFinite(budgetRaw) ? budgetRaw : 0;
+  const priorityRaw = cfg.get<unknown>('mcpPriority');
+  const priority = Array.isArray(priorityRaw)
+    ? priorityRaw.filter((p): p is string => typeof p === 'string' && p.length > 0)
+    : [];
+
+  try {
+    const result = applyMcpSchemaBudget(servers, { budget, priority });
+    if (budget > 0) {
+      const ch = getMcpOutput();
+      ch.appendLine(result.logLine);
+      for (const w of result.warnings) ch.appendLine(w);
+    }
+    return toAcpMcpPayload(result.included);
+  } catch (err) {
+    // Fail-open: malformed budget path never blocks session start.
+    console.warn(
+      `[code-build] MCP schema budget failed — using unfiltered list: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    );
+    return toAcpMcpPayload(servers);
+  }
 }
 
 /**

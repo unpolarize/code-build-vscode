@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.1 — 2026-08-22
+
+### MCP schema token budget (PR1)
+
+- New settings `codeBuild.mcpSchemaTokenBudget` (default 6000) and `codeBuild.mcpPriority`.
+- On ACP session/new|load, known MCP tool-schema costs are knapsacked under the budget; at the default, playwright (~4617) is deferred so chrome-devtools (~5811) fits. Set budget to `0` to restore the full list.
+- Per-server optional `schemaTokens` on `codeBuild.mcpServers` overrides the static table; unknown-cost servers are included fail-open; `kp` is always exempt.
+- Log line on the **Code Build: MCP** output channel: `MCP schema budget: included=[…] deferred=[…] budget=N`.
+- Live tools/list probe + cache is deferred to PR2. (kp: ideas/cb-mcp-schema-token-budget-measure-tool-schema-t, agent: grok)
+
 ## 0.15.0 — 2026-08-14
 
 ### Resizable composer
