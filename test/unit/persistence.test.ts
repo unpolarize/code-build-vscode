@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { SessionStore } from '../../src/host/persistence/store';
+import { SessionStore, writeFileAtomic } from '../../src/host/persistence/store';
 import {
   exportToClaudeJsonl,
   exportToMarkdown,
@@ -303,4 +303,69 @@ test('markdown exporter renders user/assistant turns in order and coalesces chun
   const iUser2 = md.indexOf('next');
   const iAsst2 = md.indexOf('reply');
   assert.ok(iUser1 < iAsst1 && iAsst1 < iUser2 && iUser2 < iAsst2);
+});
+
+test('writeFileAtomic replaces target and leaves no .tmp behind', () => {
+  const dir = tmpRoot();
+  const target = path.join(dir, 'index.json');
+  fs.writeFileSync(target, JSON.stringify([{ id: 'old' }]));
+  writeFileAtomic(target, JSON.stringify([{ id: 'new' }], null, 2));
+  assert.equal(JSON.parse(fs.readFileSync(target, 'utf8'))[0].id, 'new');
+  assert.equal(fs.existsSync(`${target}.tmp`), false);
+});
+
+test('writeFileAtomic crash window: prior file survives when rename never happens', () => {
+  const dir = tmpRoot();
+  const target = path.join(dir, 'index.json');
+  const prior = JSON.stringify([{ id: 'prior-session', title: 'safe' }], null, 2);
+  fs.writeFileSync(target, prior);
+  // Simulate crash after tmp write, before rename: both files coexist.
+  fs.writeFileSync(`${target}.tmp`, 'CORRUPT{{{not-json');
+  const still = JSON.parse(fs.readFileSync(target, 'utf8'));
+  assert.equal(still[0].id, 'prior-session');
+  assert.equal(still[0].title, 'safe');
+});
+
+test('SessionStore init cleans orphan .tmp next to index and transcripts', () => {
+  const root = tmpRoot();
+  const sessionsDir = path.join(root, 'sessions');
+  fs.mkdirSync(sessionsDir, { recursive: true });
+  const indexTmp = path.join(root, 'index.json.tmp');
+  const transcriptTmp = path.join(sessionsDir, 'sess-1.jsonl.tmp');
+  const perfTmp = path.join(sessionsDir, 'sess-1.perf.json.tmp');
+  fs.writeFileSync(indexTmp, 'orphan-index');
+  fs.writeFileSync(transcriptTmp, 'orphan-transcript');
+  fs.writeFileSync(perfTmp, 'orphan-perf');
+  // Keep a real index so list() has something to parse after cleanup.
+  fs.writeFileSync(path.join(root, 'index.json'), '[]');
+
+  new SessionStore(root);
+
+  assert.equal(fs.existsSync(indexTmp), false);
+  assert.equal(fs.existsSync(transcriptTmp), false);
+  assert.equal(fs.existsSync(perfTmp), false);
+  assert.equal(fs.existsSync(path.join(root, 'index.json')), true);
+});
+
+test('atomic index upsert: store commits leave parseable index.json (no bare writeFileSync)', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'seed');
+  store.updateMeta('sess-1', { title: 'Atomic title' });
+  store.writePerfExport('sess-1', { ok: true });
+
+  const indexPath = path.join(store.getRoot(), 'index.json');
+  const transcriptPath = store.transcriptPath('sess-1');
+  const perfPath = path.join(store.getRoot(), 'sessions', 'sess-1.perf.json');
+
+  assert.equal(fs.existsSync(`${indexPath}.tmp`), false);
+  assert.equal(fs.existsSync(`${transcriptPath}.tmp`), false);
+  assert.equal(fs.existsSync(`${perfPath}.tmp`), false);
+
+  const indexed = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as SessionMeta[];
+  assert.equal(indexed[0].id, 'sess-1');
+  assert.equal(indexed[0].title, 'Atomic title');
+  assert.equal(store.load('sess-1').meta?.title, 'Atomic title');
+  assert.deepEqual(JSON.parse(fs.readFileSync(perfPath, 'utf8')), { ok: true });
 });
