@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.15.1",
+  "version": "0.16.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -393,6 +393,40 @@
           "default": 0,
           "minimum": 0,
           "description": "Seconds of total silence before CB auto-stops a stuck turn. Default 0 = warn-only (alert, never kill). The chat header picker overrides this per session (never / 2m / 5m / 10m). Suppressed while a tool/command is running. Must exceed stallWarnSeconds when set."
+        },
+        "codeBuild.governor.mode": {
+          "type": "string",
+          "enum": ["off", "warn", "hard"],
+          "default": "warn",
+          "description": "Stop governor: what happens when a session crosses a budget (tool calls / active time / estimated spend). 'warn' (default) shows a sticky banner and records the event but never interrupts; 'hard' also cancels the active stream (the session stays resumable); 'off' disables all budgets. Each budget fires at most once per session."
+        },
+        "codeBuild.governor.maxToolCalls": {
+          "type": "number",
+          "default": 400,
+          "minimum": 0,
+          "description": "Stop governor: total tool calls allowed per session. 0 disables this budget. The high default only catches genuine runaway loops."
+        },
+        "codeBuild.governor.maxWallMinutes": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop governor: minutes of ACTIVE agent time per session (turn-open wall clock, summed; idle time between your messages never counts). 0 (default) disables this budget."
+        },
+        "codeBuild.governor.maxEstUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop governor: estimated USD spend per session, from the backend's cumulative usage cost. 0 (default) disables this budget."
+        },
+        "codeBuild.governor.dupToolStop": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop governor: reserved — duplicate tool-signature loop detector (identical tool+args N times in a row). Not yet active; the detector ships as a follow-up slice."
+        },
+        "codeBuild.governor.noProgressStop": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop governor: reserved — no-progress detector (subgoals unchanged across steps). Not yet active; the detector ships as a follow-up slice."
         },
         "codeBuild.defaultModel": {
           "type": "string",

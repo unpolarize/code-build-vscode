@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.0 — 2026-08-23
+
+### Host-side stop governor (umbrella slice)
+
+- **New `src/host/stopGovernor.ts`** — per-session budgets that catch runaway agent sessions at the ACP host layer, across every backend: `maxToolCalls` (default 400), `maxWallMinutes` of ACTIVE agent time (turn-open wall clock only — idle time between your messages never counts; default off), and `maxEstUsd` from the backend's cumulative usage cost (default off). Each budget fires at most once per session.
+- **Warn-only by default**: `codeBuild.governor.mode` = `warn` shows a sticky banner (tripped budget + last 5 tool titles + session counters) and records the event, but never interrupts. `hard` also cancels the active stream — the session stays resumable (context intact; next message resumes). `off` disables everything. Existing sessions see zero behavior change until a limit is actually crossed.
+- **Stop events persist on SessionMeta** (`stopEvents[]`: budget, action, counters, last tools) so CSV can join stop outcomes to sessions later.
+- Config surface reserved for the delegated detector slices: `codeBuild.governor.dupToolStop` and `codeBuild.governor.noProgressStop` (both default false, not yet active — identical-tool-signature and no-progress detectors are child KP items that will reuse this trip/banner plumbing).
+- 9 new unit tests (pure, injected clock — no VS Code, no network). (kp: ideas/cb-host-side-stop-governor-tool-call-time-spend)
+
 ## 0.15.1 — 2026-08-22
 
 ### MCP schema token budget (PR1)

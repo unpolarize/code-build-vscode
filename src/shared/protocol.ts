@@ -90,6 +90,24 @@ export interface SessionMeta {
   backendSessions?: Partial<Record<BackendId, string>>;
   /** Session kind — coding (default) or voice-ideation (VIS). */
   sessionKind?: SessionKind;
+  /** Stop-governor trips (warn or hard stop) recorded on this session,
+   * oldest first. Persisted so CSV can join stop outcomes to sessions. */
+  stopEvents?: StopEventRecord[];
+}
+
+/** One stop-governor trip: which budget fired, what the counters were. */
+export interface StopEventRecord {
+  at: number;
+  budget: 'toolCalls' | 'wallClock' | 'estUsd';
+  action: 'warn' | 'stop';
+  /** The configured limit that was crossed (calls, ms, or USD). */
+  limit: number;
+  toolCalls: number;
+  /** Active (in-turn) wall-clock ms at trip time. */
+  activeMs: number;
+  estUsd?: number;
+  /** Last few tool titles before the trip, oldest first. */
+  lastTools: string[];
 }
 
 /** Snapshot used to (re)hydrate the webview on load / window-move reload. */
