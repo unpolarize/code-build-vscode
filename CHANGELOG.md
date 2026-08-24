@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16.0 — 2026-08-23
+
+### Host-side stop governor (umbrella slice)
+
+- **New `src/host/stopGovernor.ts`** — per-session budgets that catch runaway agent sessions at the ACP host layer, across every backend: `maxToolCalls` (default 400), `maxWallMinutes` of ACTIVE agent time (turn-open wall clock only — idle time between your messages never counts; default off), and `maxEstUsd` from the backend's cumulative usage cost (default off). Each budget fires at most once per session.
+- **Warn-only by default**: `codeBuild.governor.mode` = `warn` shows a sticky banner (tripped budget + last 5 tool titles + session counters) and records the event, but never interrupts. `hard` also cancels the active stream — the session stays resumable (context intact; next message resumes). `off` disables everything. Existing sessions see zero behavior change until a limit is actually crossed.
+- **Stop events persist on SessionMeta** (`stopEvents[]`: budget, action, counters, last tools) so CSV can join stop outcomes to sessions later.
+- Config surface reserved for the delegated detector slices: `codeBuild.governor.dupToolStop` and `codeBuild.governor.noProgressStop` (both default false, not yet active — identical-tool-signature and no-progress detectors are child KP items that will reuse this trip/banner plumbing).
+- 9 new unit tests (pure, injected clock — no VS Code, no network). (kp: ideas/cb-host-side-stop-governor-tool-call-time-spend)
+
+## 0.15.1 — 2026-08-22
+
+### MCP schema token budget (PR1)
+
+- New settings `codeBuild.mcpSchemaTokenBudget` (default 6000) and `codeBuild.mcpPriority`.
+- On ACP session/new|load, known MCP tool-schema costs are knapsacked under the budget; at the default, playwright (~4617) is deferred so chrome-devtools (~5811) fits. Set budget to `0` to restore the full list.
+- Per-server optional `schemaTokens` on `codeBuild.mcpServers` overrides the static table; unknown-cost servers are included fail-open; `kp` is always exempt.
+- Log line on the **Code Build: MCP** output channel: `MCP schema budget: included=[…] deferred=[…] budget=N`.
+- Live tools/list probe + cache is deferred to PR2. (kp: ideas/cb-mcp-schema-token-budget-measure-tool-schema-t, agent: grok)
+
 ## 0.15.0 — 2026-08-14
 
 ### Resizable composer

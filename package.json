@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -394,6 +394,40 @@
           "minimum": 0,
           "description": "Seconds of total silence before CB auto-stops a stuck turn. Default 0 = warn-only (alert, never kill). The chat header picker overrides this per session (never / 2m / 5m / 10m). Suppressed while a tool/command is running. Must exceed stallWarnSeconds when set."
         },
+        "codeBuild.governor.mode": {
+          "type": "string",
+          "enum": ["off", "warn", "hard"],
+          "default": "warn",
+          "description": "Stop governor: what happens when a session crosses a budget (tool calls / active time / estimated spend). 'warn' (default) shows a sticky banner and records the event but never interrupts; 'hard' also cancels the active stream (the session stays resumable); 'off' disables all budgets. Each budget fires at most once per session."
+        },
+        "codeBuild.governor.maxToolCalls": {
+          "type": "number",
+          "default": 400,
+          "minimum": 0,
+          "description": "Stop governor: total tool calls allowed per session. 0 disables this budget. The high default only catches genuine runaway loops."
+        },
+        "codeBuild.governor.maxWallMinutes": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop governor: minutes of ACTIVE agent time per session (turn-open wall clock, summed; idle time between your messages never counts). 0 (default) disables this budget."
+        },
+        "codeBuild.governor.maxEstUsd": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Stop governor: estimated USD spend per session, from the backend's cumulative usage cost. 0 (default) disables this budget."
+        },
+        "codeBuild.governor.dupToolStop": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop governor: reserved — duplicate tool-signature loop detector (identical tool+args N times in a row). Not yet active; the detector ships as a follow-up slice."
+        },
+        "codeBuild.governor.noProgressStop": {
+          "type": "boolean",
+          "default": false,
+          "description": "Stop governor: reserved — no-progress detector (subgoals unchanged across steps). Not yet active; the detector ships as a follow-up slice."
+        },
         "codeBuild.defaultModel": {
           "type": "string",
           "default": "",
@@ -444,6 +478,11 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "schemaTokens": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Optional host-only schema-token override for the MCP budget knapsack. Not sent to the ACP backend."
               }
             }
           }
@@ -452,6 +491,20 @@
           "type": "boolean",
           "default": false,
           "description": "When true, do not inject the default chrome-devtools + playwright MCP servers on ACP session/new. Explicit codeBuild.mcpServers entries (if set) are still passed through; with no override, an empty list is sent (no default npx spawns)."
+        },
+        "codeBuild.mcpSchemaTokenBudget": {
+          "type": "number",
+          "default": 6000,
+          "minimum": 0,
+          "description": "Max estimated tool-schema tokens to inject on ACP session/new|load. Default stack costs: chrome-devtools ≈ 5811, playwright ≈ 4617. At the default 6000, playwright is deferred so the session starts under budget. Set to 0 to disable the filter and pass every resolved server (restore-all). Unknown-cost servers are included fail-open. The kp MCP entry is always exempt. See the 'Code Build: MCP' output channel for the included/deferred log line."
+        },
+        "codeBuild.mcpPriority": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Preferred MCP server names (highest priority first) when codeBuild.mcpSchemaTokenBudget is > 0. Servers not listed keep their relative mcpServers / default order after the priority list. Higher priority is never dropped to fit a lower one. Empty = use mcpServers array order, else the default browser stack order."
         },
         "codeBuild.kpMcp.enabled": {
           "type": "boolean",

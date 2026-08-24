@@ -6,6 +6,38 @@ import type { SessionUpdate } from '../../shared/acpTypes';
 import type { SessionMeta } from '../../shared/protocol';
 
 /**
+ * Durable whole-file write: same-directory `.tmp` + fsync + rename.
+ * A crash between tmp write and rename leaves the prior target intact.
+ * Append-path streaming must NOT use this (see flushOneSync / flushOneAsync).
+ */
+export function writeFileAtomic(filePath: string, data: string | NodeJS.ArrayBufferView): void {
+  const tmpPath = `${filePath}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(tmpPath, 'w');
+    fs.writeFileSync(fd, data);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {
+      /* ignore */
+    }
+    throw err;
+  }
+}
+
+/**
  * File-backed session store under ~/.codebuild — not VS Code globalState (which
  * doesn't scale and isn't CLI-shareable). Each session is one JSONL transcript;
  * an index.json lists known sessions.
@@ -15,6 +47,9 @@ import type { SessionMeta } from '../../shared/protocol';
  * Host event loop on `appendFileSync` per chunk. Readers (`load`, `list`,
  * `hasContent`, `updateMeta`) flush pending lines for the affected session
  * first so tests and rehydrate never miss data.
+ *
+ * Whole-file rewrites (index.json, transcript meta header, perf export) go
+ * through {@link writeFileAtomic} so a mid-write crash cannot truncate them.
  */
 export class SessionStore {
   private readonly root: string;
@@ -35,6 +70,28 @@ export class SessionStore {
     this.indexPath = path.join(root, 'index.json');
     this.flushMs = flushMs;
     fs.mkdirSync(this.sessionsDir, { recursive: true });
+    this.cleanupOrphanTmp();
+  }
+
+  /** Remove leftover `*.tmp` from a prior crash window (same-dir atomic writes). */
+  private cleanupOrphanTmp(): void {
+    const unlinkQuiet = (p: string) => {
+      try {
+        if (fs.existsSync(p)) fs.unlinkSync(p);
+      } catch {
+        /* ignore */
+      }
+    };
+    unlinkQuiet(`${this.indexPath}.tmp`);
+    let entries: string[] = [];
+    try {
+      entries = fs.readdirSync(this.sessionsDir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (name.endsWith('.tmp')) unlinkQuiet(path.join(this.sessionsDir, name));
+    }
   }
 
   getRoot(): string {
@@ -52,7 +109,7 @@ export class SessionStore {
    */
   createSession(meta: SessionMeta): void {
     this.flushSync(meta.id);
-    fs.writeFileSync(this.transcriptPath(meta.id), JSON.stringify({ type: 'meta', meta }) + '\n');
+    writeFileAtomic(this.transcriptPath(meta.id), JSON.stringify({ type: 'meta', meta }) + '\n');
   }
 
   /** Promote a session into the history index (idempotent). */
@@ -110,7 +167,7 @@ export class SessionStore {
 
     const merged = mergeSessionMeta(current, patch);
     lines[0] = JSON.stringify({ type: 'meta', meta: merged });
-    fs.writeFileSync(p, lines.join('\n') + '\n');
+    writeFileAtomic(p, lines.join('\n') + '\n');
     if (this.isIndexed(id)) this.upsertIndex(merged);
     return merged;
   }
@@ -289,7 +346,7 @@ export class SessionStore {
   /** Write a perf export next to the session transcript. */
   writePerfExport(id: string, data: unknown): string {
     const p = path.join(this.sessionsDir, `${id}.perf.json`);
-    fs.writeFileSync(p, JSON.stringify(data, null, 2));
+    writeFileAtomic(p, JSON.stringify(data, null, 2));
     return p;
   }
 
@@ -305,7 +362,7 @@ export class SessionStore {
     }
     all = all.filter((m) => m.id !== meta.id);
     all.unshift(meta);
-    fs.writeFileSync(this.indexPath, JSON.stringify(all.slice(0, 500), null, 2));
+    writeFileAtomic(this.indexPath, JSON.stringify(all.slice(0, 500), null, 2));
   }
 
   dispose(): void {

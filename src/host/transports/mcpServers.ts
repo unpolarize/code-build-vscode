@@ -20,6 +20,11 @@ export interface AcpMcpServer {
   args?: string[];
   /** Required by ACP untagged enum — always send an array (empty OK). */
   env: AcpMcpEnvVar[];
+  /**
+   * Host-only schema-token override for the MCP budget knapsack.
+   * Stripped by `toAcpMcpPayload` before session/new|load — never sent to ACP.
+   */
+  schemaTokens?: number;
 }
 
 /** Default browser stack for personal Chrome (zhirafovod@gmail.com via CDP autoConnect). */
@@ -77,7 +82,19 @@ export function normalizeMcpServerConfig(raw: unknown): AcpMcpServer[] | null {
     const args = Array.isArray(o.args)
       ? o.args.filter((a): a is string => typeof a === 'string')
       : undefined;
-    out.push({ name, command, args, env: normalizeEnv(o.env) });
+    const schemaTokens =
+      typeof o.schemaTokens === 'number' &&
+      Number.isFinite(o.schemaTokens) &&
+      o.schemaTokens >= 0
+        ? Math.floor(o.schemaTokens)
+        : undefined;
+    out.push({
+      name,
+      command,
+      args,
+      env: normalizeEnv(o.env),
+      ...(schemaTokens !== undefined ? { schemaTokens } : {})
+    });
   }
   // Explicit array that yielded nothing after filtering → empty, not null.
   return out;

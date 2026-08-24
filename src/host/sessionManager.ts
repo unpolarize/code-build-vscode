@@ -9,6 +9,7 @@ import type {
   HydrateState,
   SessionMeta,
   SessionSource,
+  StopEventRecord,
   WebviewToHost
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
@@ -65,6 +66,7 @@ import { spawn } from 'node:child_process';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
+import { StopGovernor, type GovernorConfig, type GovernorTrip } from './stopGovernor';
 import {
   SessionPerfCollector,
   type PerfDebugMode
@@ -178,6 +180,12 @@ export class SessionManager {
   private awaitingPermission = false;
   /** Per-session stall auto-cancel override (seconds). Undefined = use setting. */
   private stallAutoCancelOverride: number | undefined;
+  /** Per-session stop governor — tool-call / active-time / spend budgets that
+   * warn (default) or hard-cancel a runaway session. Rebuilt when the session
+   * id changes so counters never leak across sessions. */
+  private governor?: StopGovernor;
+  /** Session id the current governor instance belongs to. */
+  private governorSessionId: string | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -1774,6 +1782,7 @@ export class SessionManager {
     this.watchdog?.clear();
     this.openToolCalls.clear();
     this.awaitingPermission = false;
+    this.armGovernor();
     const warnMs = Math.max(0, this.config.get<number>('stallWarnSeconds', 45)) * 1000;
     const autoCancelMs = Math.max(0, this.effectiveStallAutoCancelSeconds()) * 1000;
     const be = this.meta?.backend ?? 'agent';
@@ -1823,6 +1832,7 @@ export class SessionManager {
    * the turn ends. system_init / available_commands_update / current_mode_update
    * are deliberately NOT treated as progress — claude emits them while idle. */
   private watchTurnLiveness(update: SessionUpdate): void {
+    this.feedGovernor(update);
     if (!this.watchdog) return;
     switch (update.kind) {
       case 'tool_call':
@@ -1858,6 +1868,119 @@ export class SessionManager {
         break;
       default:
         break;
+    }
+  }
+
+  /** (Re)build the governor when the session changes, then open a turn span.
+   * Config is re-read every prompt: a new session gets a fresh instance,
+   * an ongoing one keeps its counters but picks up limit/mode edits. */
+  private armGovernor(): void {
+    const sid = this.meta?.id;
+    if (!this.governor || this.governorSessionId !== sid) {
+      this.governor = new StopGovernor(this.readGovernorConfig());
+      this.governorSessionId = sid;
+    } else {
+      this.governor.setConfig(this.readGovernorConfig());
+    }
+    this.governor.startTurn(Date.now());
+  }
+
+  private readGovernorConfig(): GovernorConfig {
+    const mode = this.config.get<'off' | 'warn' | 'hard'>('governor.mode', 'warn');
+    return {
+      mode,
+      maxToolCalls: Math.max(0, this.config.get<number>('governor.maxToolCalls', 400)),
+      maxWallMs: Math.max(0, this.config.get<number>('governor.maxWallMinutes', 0)) * 60_000,
+      maxEstUsd: Math.max(0, this.config.get<number>('governor.maxEstUsd', 0)),
+      enableDupToolStop: this.config.get<boolean>('governor.dupToolStop', false),
+      enableNoProgressStop: this.config.get<boolean>('governor.noProgressStop', false)
+    };
+  }
+
+  /** Feed session-budget counters from the live event stream, then evaluate.
+   * Runs on EVERY update (unlike the watchdog, which needs an armed turn). */
+  private feedGovernor(update: SessionUpdate): void {
+    const gov = this.governor;
+    if (!gov) return;
+    // A replacement session's startup events must never feed a governor
+    // built for the previous session (teardown also clears it — belt+braces).
+    if (this.meta && this.governorSessionId !== this.meta.id) return;
+    switch (update.kind) {
+      case 'tool_call':
+        gov.noteToolCall(update.toolCall.title || 'tool');
+        break;
+      case 'usage':
+        gov.noteUsage(update.usage.costUsd);
+        break;
+      case 'result':
+        // Claude reports costUsd only on the final result usage — mid-turn
+        // `usage` events carry tokens but no cost.
+        gov.noteUsage(update.usage?.costUsd);
+        gov.endTurn(Date.now());
+        break;
+      case 'error':
+        gov.endTurn(Date.now());
+        break;
+      default:
+        break;
+    }
+    const trip = gov.check(Date.now());
+    if (trip) this.onGovernorTrip(trip);
+  }
+
+  /** A budget crossed its limit: record the stop event on SessionMeta (CSV
+   * joins it later), surface a sticky banner, and — in hard mode — cancel the
+   * stream. The session stays resumable either way. */
+  private onGovernorTrip(trip: GovernorTrip): void {
+    const be = this.meta?.backend ?? 'agent';
+    if (this.meta) {
+      const record: StopEventRecord = {
+        at: Date.now(),
+        budget: trip.budget,
+        action: trip.action,
+        limit: trip.limit,
+        toolCalls: trip.toolCalls,
+        activeMs: trip.activeMs,
+        estUsd: trip.estUsd > 0 ? trip.estUsd : undefined,
+        lastTools: trip.lastTools
+      };
+      this.meta.stopEvents = [...(this.meta.stopEvents ?? []), record];
+      this.store.updateMeta(this.meta);
+    }
+    const label =
+      trip.budget === 'toolCalls'
+        ? `${trip.toolCalls} tool calls (limit ${trip.limit})`
+        : trip.budget === 'wallClock'
+          ? `${Math.round(trip.activeMs / 60_000)}m of active agent time (limit ${Math.round(trip.limit / 60_000)}m)`
+          : `~$${trip.estUsd.toFixed(2)} estimated spend (limit $${trip.limit.toFixed(2)})`;
+    const detail =
+      (trip.lastTools.length > 0 ? `Recent tools: ${trip.lastTools.join(', ')}.\n` : '') +
+      `Session counters: ${trip.toolCalls} tool calls, ${Math.round(trip.activeMs / 1000)}s active` +
+      (trip.estUsd > 0 ? `, ~$${trip.estUsd.toFixed(2)} est.` : '') +
+      `\nBudgets are per session — adjust with the codeBuild.governor.* settings.`;
+    if (trip.action === 'stop') {
+      this.session?.cancel();
+      // Close turn accounting NOW: a soft ACP cancel may never yield a
+      // result/error, which would leave the wall clock running through idle
+      // time and let the stall watchdog fire against an already-stopped turn.
+      this.governor?.endTurn(Date.now());
+      this.watchdog?.clear();
+      this.openToolCalls.clear();
+      this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
+      this.panel.post({ type: 'busy', busy: false });
+      this.panel.post({
+        type: 'notice',
+        key: 'governor',
+        text: `⛔ Stop governor cancelled **${be}**: ${label}. Nothing was lost — send a message to resume, or raise the limit in \`codeBuild.governor.*\`.`,
+        detail
+      });
+    } else {
+      this.panel.post({
+        type: 'notice',
+        key: 'governor',
+        text: `⚠️ Stop governor: **${be}** crossed ${label} this session. Warn-only mode — nothing was stopped. Set \`codeBuild.governor.mode\` to \`hard\` to auto-cancel runaway sessions.`,
+        detail
+      });
     }
   }
 
@@ -2321,6 +2444,10 @@ export class SessionManager {
     this.watchdog?.clear();
     this.watchdog = undefined;
     this.openToolCalls.clear();
+    // Drop the stop governor so a replacement session's startup events can't
+    // feed the old counters (or trip against the wrong SessionMeta).
+    this.governor = undefined;
+    this.governorSessionId = undefined;
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────
