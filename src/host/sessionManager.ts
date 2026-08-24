@@ -1872,13 +1872,15 @@ export class SessionManager {
   }
 
   /** (Re)build the governor when the session changes, then open a turn span.
-   * Config is re-read only on session change — budgets are per-session, so
-   * mid-session limit edits apply from the next session. */
+   * Config is re-read every prompt: a new session gets a fresh instance,
+   * an ongoing one keeps its counters but picks up limit/mode edits. */
   private armGovernor(): void {
     const sid = this.meta?.id;
     if (!this.governor || this.governorSessionId !== sid) {
       this.governor = new StopGovernor(this.readGovernorConfig());
       this.governorSessionId = sid;
+    } else {
+      this.governor.setConfig(this.readGovernorConfig());
     }
     this.governor.startTurn(Date.now());
   }
@@ -1900,6 +1902,9 @@ export class SessionManager {
   private feedGovernor(update: SessionUpdate): void {
     const gov = this.governor;
     if (!gov) return;
+    // A replacement session's startup events must never feed a governor
+    // built for the previous session (teardown also clears it — belt+braces).
+    if (this.meta && this.governorSessionId !== this.meta.id) return;
     switch (update.kind) {
       case 'tool_call':
         gov.noteToolCall(update.toolCall.title || 'tool');
@@ -1908,6 +1913,11 @@ export class SessionManager {
         gov.noteUsage(update.usage.costUsd);
         break;
       case 'result':
+        // Claude reports costUsd only on the final result usage — mid-turn
+        // `usage` events carry tokens but no cost.
+        gov.noteUsage(update.usage?.costUsd);
+        gov.endTurn(Date.now());
+        break;
       case 'error':
         gov.endTurn(Date.now());
         break;
@@ -1950,6 +1960,13 @@ export class SessionManager {
       `\nBudgets are per session — adjust with the codeBuild.governor.* settings.`;
     if (trip.action === 'stop') {
       this.session?.cancel();
+      // Close turn accounting NOW: a soft ACP cancel may never yield a
+      // result/error, which would leave the wall clock running through idle
+      // time and let the stall watchdog fire against an already-stopped turn.
+      this.governor?.endTurn(Date.now());
+      this.watchdog?.clear();
+      this.openToolCalls.clear();
+      this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
       this.panel.post({ type: 'busy', busy: false });
       this.panel.post({
         type: 'notice',
@@ -2427,6 +2444,10 @@ export class SessionManager {
     this.watchdog?.clear();
     this.watchdog = undefined;
     this.openToolCalls.clear();
+    // Drop the stop governor so a replacement session's startup events can't
+    // feed the old counters (or trip against the wrong SessionMeta).
+    this.governor = undefined;
+    this.governorSessionId = undefined;
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────

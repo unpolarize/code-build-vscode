@@ -106,6 +106,23 @@ test('estUsd is a cumulative high-water mark and trips at the limit', () => {
 
 // --- independence / ordering ------------------------------------------------------
 
+test('setConfig swaps mode/limits without resetting counters or fired budgets', () => {
+  const g = new StopGovernor({ ...base, maxToolCalls: 2 });
+  g.noteToolCall('Bash');
+  g.noteToolCall('Bash');
+  assert.equal(g.check(0)?.action, 'warn'); // toolCalls budget now fired
+  // Flip to hard + add a spend limit mid-session: counters survive,
+  // the already-fired toolCalls budget stays fired, spend trips as stop.
+  g.setConfig({ ...base, mode: 'hard', maxToolCalls: 2, maxEstUsd: 1 });
+  g.noteToolCall('Bash');
+  assert.equal(g.check(1), undefined);
+  g.noteUsage(1.5);
+  const trip = g.check(2);
+  assert.equal(trip?.budget, 'estUsd');
+  assert.equal(trip?.action, 'stop');
+  assert.equal(trip?.toolCalls, 3);
+});
+
 test('each budget fires independently, tool calls take precedence', () => {
   const g = new StopGovernor({ ...base, maxToolCalls: 1, maxEstUsd: 1 });
   g.noteToolCall('Bash');

@@ -74,7 +74,14 @@ export class StopGovernor {
   private turnStartedAt: number | undefined;
   private fired = new Set<GovernorBudget>();
 
-  constructor(private readonly cfg: GovernorConfig) {}
+  constructor(private cfg: GovernorConfig) {}
+
+  /** Swap limits/mode without resetting counters or already-fired budgets —
+   * lets a settings edit (e.g. warn → hard mid-runaway) apply on the very
+   * next prompt of the SAME session. */
+  setConfig(cfg: GovernorConfig): void {
+    this.cfg = cfg;
+  }
 
   /** A prompt was sent. Idempotent while a turn is already open. */
   startTurn(now: number): void {
