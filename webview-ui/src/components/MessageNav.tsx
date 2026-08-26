@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChatItem } from '../store';
+import {
+  childOffsetInScroller,
+  clampTurnIndex,
+  findMessagesScroller,
+  stepUserTurn,
+  userMessageTops,
+  visibleUserTurnIndex
+} from '../util/messageNav';
 
 interface Props {
   items: ChatItem[];
@@ -19,6 +27,11 @@ interface Props {
  *   so the user doesn't have to mouse over.
  * - A ☰ button toggles a dropdown listing every user message with its text
  *   preview; clicking jumps directly to that message.
+ * - **latest** jumps to the live tail and the counter follows (N/N).
+ *
+ * The counter is a scroll-spy of the transcript: manual scrolling updates
+ * `currentIdx` to the user turn at the top of the pane, so ↑/↓ always step
+ * from what is on screen rather than a stale click index.
  *
  * The component finds messages by `data-msg-id` on each user-message DOM
  * node (set by MessageList.tsx). We rely on the DOM rather than fed-through
@@ -27,51 +40,142 @@ interface Props {
 export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
   const userItems = items.filter((it) => it.kind === 'user');
   const [openList, setOpenList] = useState(false);
-  // Track the message the user last navigated to so prev/next have a frame
-  // of reference; starts at the latest user message so ↑ jumps to the one
-  // before the current prompt.
   const [currentIdx, setCurrentIdx] = useState(userItems.length - 1);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const userItemsRef = useRef(userItems);
+  userItemsRef.current = userItems;
+  const followRef = useRef(follow);
+  followRef.current = follow;
+  const idxRef = useRef(currentIdx);
+  idxRef.current = currentIdx;
+  const navLock = useRef(false);
+  const onNavigateRef = useRef(onNavigate);
+  onNavigateRef.current = onNavigate;
+  const onJumpLatestRef = useRef(onJumpLatest);
+  onJumpLatestRef.current = onJumpLatest;
 
-  // Re-anchor on new user messages so the indicator stays in sync as the
-  // conversation grows. We only auto-bump to the latest if the user was
-  // already there — preserves a deliberate scroll-back.
-  useEffect(() => {
-    setCurrentIdx((idx) => {
-      const lastReal = userItems.length - 1;
-      if (lastReal < 0) return -1;
-      if (idx < 0 || idx === lastReal - 1) return lastReal;
-      if (idx > lastReal) return lastReal;
-      return idx;
+  function setIdx(idx: number) {
+    idxRef.current = idx;
+    setCurrentIdx(idx);
+  }
+
+  function lockNav(scroller: HTMLElement | null, ms = 200) {
+    navLock.current = true;
+    const unlock = () => {
+      navLock.current = false;
+    };
+    if (scroller) scroller.addEventListener('scrollend', unlock, { once: true });
+    window.setTimeout(unlock, ms);
+  }
+
+  function visibleIdx(scroller: HTMLElement | null): number {
+    const users = userItemsRef.current;
+    if (users.length === 0) return -1;
+    if (followRef.current) return users.length - 1;
+    if (!scroller) return clampTurnIndex(idxRef.current, users.length);
+    const tops = userMessageTops(
+      scroller,
+      users.map((u) => u.id)
+    );
+    return visibleUserTurnIndex({
+      scrollTop: scroller.scrollTop,
+      clientHeight: scroller.clientHeight,
+      scrollHeight: scroller.scrollHeight,
+      userTops: tops
     });
+  }
+
+  // Keep the counter in lockstep with the scroller. Programmatic jumps set
+  // navLock so a mid-animation scroll doesn't flicker the number backwards.
+  useEffect(() => {
+    const scroller = findMessagesScroller();
+    if (!scroller) return;
+
+    const sync = () => {
+      if (navLock.current) return;
+      const idx = visibleIdx(scroller);
+      if (idx >= 0 && idx !== idxRef.current) setIdx(idx);
+    };
+
+    scroller.addEventListener('scroll', sync, { passive: true });
+    sync();
+    return () => scroller.removeEventListener('scroll', sync);
+    // Re-bind when the conversation length changes so a newly mounted
+    // scroller (session switch) is picked up.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userItems.length]);
 
-  function scrollTo(idx: number) {
-    const target = userItems[idx];
-    if (!target) return;
-    const el = document.querySelector<HTMLElement>(`[data-msg-id="${CSS.escape(target.id)}"]`);
-    if (el) {
-      // Pin the user prompt at the top so the reply is visible below.
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      // Visual ping so the user can find it in a wall of text.
-      el.classList.add('msg-highlight');
-      setTimeout(() => el.classList.remove('msg-highlight'), 1200);
+  // Follow-the-tail pins the counter to N/N. Also clamps after a shorter
+  // session is loaded into the same panel.
+  useEffect(() => {
+    const lastReal = userItems.length - 1;
+    if (lastReal < 0) {
+      setIdx(-1);
+      return;
     }
-    onNavigate?.(idx, idx === userItems.length - 1);
+    if (follow) {
+      setIdx(lastReal);
+      return;
+    }
+    setCurrentIdx((idx) => {
+      const next = clampTurnIndex(idx, userItems.length);
+      idxRef.current = next;
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userItems.length, follow]);
+
+  function scrollTo(idx: number) {
+    const users = userItemsRef.current;
+    const target = users[idx];
+    if (!target) return;
+    const scroller = findMessagesScroller();
+    const el = scroller?.querySelector<HTMLElement>(
+      `[data-msg-id="${cssEscape(target.id)}"]`
+    );
+    setIdx(idx);
+    if (scroller && el) {
+      lockNav(scroller);
+      // Instant scroll on the transcript pane only — scrollIntoView was
+      // racing follow-the-bottom (smooth + ancestor scrollports).
+      scroller.scrollTo({ top: childOffsetInScroller(scroller, el), behavior: 'auto' });
+      el.classList.add('msg-highlight');
+      window.setTimeout(() => el.classList.remove('msg-highlight'), 1200);
+    }
+    onNavigateRef.current?.(idx, idx === users.length - 1);
   }
 
   function prev() {
-    if (userItems.length === 0) return;
-    const next = Math.max(0, currentIdx - 1);
-    setCurrentIdx(next);
+    const users = userItemsRef.current;
+    if (users.length === 0) return;
+    const from = visibleIdx(findMessagesScroller());
+    const next = stepUserTurn(from, -1, users.length);
+    if (next === from && next === 0) {
+      setIdx(0);
+      return;
+    }
     scrollTo(next);
   }
+
   function next() {
-    if (userItems.length === 0) return;
-    const n = Math.min(userItems.length - 1, currentIdx + 1);
-    setCurrentIdx(n);
+    const users = userItemsRef.current;
+    if (users.length === 0) return;
+    const from = visibleIdx(findMessagesScroller());
+    const n = stepUserTurn(from, 1, users.length);
+    if (n === from && n === users.length - 1) {
+      setIdx(n);
+      return;
+    }
     scrollTo(n);
+  }
+
+  function jumpLatest() {
+    const last = userItemsRef.current.length - 1;
+    if (last < 0) return;
+    const scroller = findMessagesScroller();
+    lockNav(scroller, 1000);
+    setIdx(last);
+    onJumpLatestRef.current?.();
   }
 
   // Document-level keyboard shortcuts. We scope them with Alt+Arrow because
@@ -90,8 +194,9 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
+    // prev/next read refs, so this listener is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userItems.length, currentIdx]);
+  }, []);
 
   // Click-outside closes the dropdown.
   useEffect(() => {
@@ -106,12 +211,15 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
   // Hide when there's nothing to navigate (no point showing "0 / 0").
   if (userItems.length === 0) return null;
 
+  const atFirst = currentIdx <= 0;
+  const atLast = currentIdx >= userItems.length - 1;
+
   return (
     <div className="msg-nav" ref={wrapRef}>
       <button
         className="msg-nav-btn"
         onClick={prev}
-        disabled={currentIdx <= 0}
+        disabled={atFirst}
         title="Previous user message (Alt+↑)"
         aria-label="Previous message"
       >
@@ -128,7 +236,7 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
       <button
         className="msg-nav-btn"
         onClick={next}
-        disabled={currentIdx >= userItems.length - 1}
+        disabled={atLast}
         title="Next user message (Alt+↓)"
         aria-label="Next message"
       >
@@ -137,7 +245,7 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
       {follow === false && onJumpLatest && (
         <button
           className="msg-nav-btn msg-nav-latest"
-          onClick={onJumpLatest}
+          onClick={jumpLatest}
           title="Jump to latest"
           aria-label="Jump to latest"
         >
@@ -154,7 +262,6 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
                 key={it.id}
                 className={`msg-nav-item${idx === currentIdx ? ' msg-nav-item-current' : ''}`}
                 onClick={() => {
-                  setCurrentIdx(idx);
                   scrollTo(idx);
                   setOpenList(false);
                 }}
@@ -169,4 +276,9 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
       )}
     </div>
   );
+}
+
+function cssEscape(id: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(id);
+  return id.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }

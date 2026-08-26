@@ -348,7 +348,11 @@ export type HostToWebview =
       items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
     }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
-  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
+  | {
+      type: 'historyLoaded';
+      meta: SessionMeta;
+      records: Array<{ type: string; text?: string; update?: SessionUpdate; ts?: number }>;
+    }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`
    * is the BackendId (not the human label) of the source — the host

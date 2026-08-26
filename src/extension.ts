@@ -168,7 +168,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const mgr = attach(new ChatPanel(panel, context.extensionUri));
       const stored = state as { lastSessionId?: string } | undefined;
       if (stored && typeof stored.lastSessionId === 'string' && stored.lastSessionId) {
-        mgr.queueResume(stored.lastSessionId);
+        // Transcript only — do not spawn on window reload. First prompt reconnects.
+        mgr.queueResume(stored.lastSessionId, { connect: false });
       }
     }
   });

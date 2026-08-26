@@ -218,9 +218,22 @@ export const initialState: ChatState = {
 
 let seq = 0;
 const nextId = () => `i${seq++}`;
-/** Now-in-ms helper. Centralised so a future test harness can swap in a
- * deterministic clock without sed'ing every call site. */
-const now = (): number => Date.now();
+/** Now-in-ms helper. Centralised so replay can pin the clock to a stored
+ * transcript timestamp (without that, every restored bubble reads "just now"). */
+let nowFn = (): number => Date.now();
+const now = (): number => nowFn();
+
+/** Run `fn` with `now()` frozen at `ms`. Used by history replay so restored
+ * items keep their original stamps instead of Date.now() at reload. */
+export function withClock<T>(ms: number, fn: () => T): T {
+  const prev = nowFn;
+  nowFn = () => ms;
+  try {
+    return fn();
+  } finally {
+    nowFn = prev;
+  }
+}
 
 /** Pure reducer: (state, host message) -> next state. Streaming chunks patch in place. */
 export function reduce(state: ChatState, msg: HostToWebview): ChatState {
@@ -387,8 +400,23 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
     // sessionUpdates handled above (batch)
-    case 'historyLoaded':
-      return replayRecords(state, msg.meta, msg.records);
+    case 'historyLoaded': {
+      const incoming = replayRecords(state, msg.meta, msg.records);
+      // A prompt echoed locally can race a resume/historyLoaded that was
+      // snapshotted before appendUserText flushed. Keep those bubbles.
+      const replayed = new Set(
+        incoming.items.filter((it) => it.kind === 'user').map((it) => it.text),
+      );
+      const extra = state.items.filter(
+        (it) => it.kind === 'user' && it.text && !replayed.has(it.text),
+      );
+      if (extra.length === 0) return incoming;
+      return {
+        ...incoming,
+        items: [...incoming.items, ...extra],
+        busy: state.busy || incoming.busy,
+      };
+    }
     case 'ttsDone':
       // Webview voice controller listens via window message; state no-op.
       return state;
@@ -638,8 +666,17 @@ function collectModifiedFiles(items: ChatItem[]): FileChange[] {
 }
 
 /** One element of a `historyLoaded` records[] payload — a persisted user
- * prompt or a raw SessionUpdate, exactly as SessionStore wrote them. */
-type ReplayRecord = { type: string; text?: string; update?: SessionUpdate };
+ * prompt or a raw SessionUpdate, exactly as SessionStore wrote them.
+ * `ts` is epoch-ms written from 0.17.0; older transcripts omit it. */
+type ReplayRecord = { type: string; text?: string; update?: SessionUpdate; ts?: number };
+
+/** Timestamp for a replayed record: stored `ts` wins; otherwise the session
+ * createdAt (so a yesterday chat does not render as "3s ago" on reload). */
+export function replayTimestamp(rec: ReplayRecord, meta: SessionMeta): number {
+  if (typeof rec.ts === 'number' && Number.isFinite(rec.ts) && rec.ts > 0) return rec.ts;
+  if (typeof meta.createdAt === 'number' && meta.createdAt > 0) return meta.createdAt;
+  return 0;
+}
 
 /**
  * Rebuild ChatState from a persisted transcript by routing every stored
@@ -663,20 +700,22 @@ function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecor
     busy: false
   };
   for (const rec of records) {
-    if (rec.type === 'user' && rec.text) {
-      next = {
-        ...next,
-        items: [...next.items, { kind: 'user', id: nextId(), createdAt: now(), text: rec.text }]
-      };
-      continue;
-    }
-    if (rec.type !== 'update' || !rec.update) continue;
-    const u = rec.update;
-    // A restored transcript must never resurrect a live interaction:
-    // permission modals can't be answered (the agent process is gone)
-    // and the meta header already carries the session's current mode.
-    if (u.kind === 'permission_request' || u.kind === 'current_mode_update') continue;
-    next = applyUpdate(replayStructuredCard(next, u) ?? next, u);
+    const at = replayTimestamp(rec, meta);
+    next = withClock(at, () => {
+      if (rec.type === 'user' && rec.text) {
+        return {
+          ...next,
+          items: [...next.items, { kind: 'user', id: nextId(), createdAt: now(), text: rec.text }]
+        };
+      }
+      if (rec.type !== 'update' || !rec.update) return next;
+      const u = rec.update;
+      // A restored transcript must never resurrect a live interaction:
+      // permission modals can't be answered (the agent process is gone)
+      // and the meta header already carries the session's current mode.
+      if (u.kind === 'permission_request' || u.kind === 'current_mode_update') return next;
+      return applyUpdate(replayStructuredCard(next, u) ?? next, u);
+    });
   }
   return { ...next, busy: false };
 }

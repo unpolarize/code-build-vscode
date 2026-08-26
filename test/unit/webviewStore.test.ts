@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionUpdate, ToolCall } from '../../src/shared/acpTypes';
 import type { HostToWebview, SessionMeta } from '../../src/shared/protocol';
-import { initialState, reduce, type ChatState } from '../../webview-ui/src/store';
+import { appendUser, initialState, reduce, replayTimestamp, type ChatState } from '../../webview-ui/src/store';
 
 const meta: SessionMeta = {
   id: 's1',
@@ -293,6 +293,38 @@ describe('historyLoaded replay', () => {
     assert.deepEqual(s.items.map((it) => it.kind), ['user']);
   });
 
+  it('replays stored ts onto items so a remount is not "just now"', () => {
+    const sessionStart = 1_700_000_000_000;
+    const userAt = sessionStart + 60_000;
+    const asstAt = sessionStart + 90_000;
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta: { ...meta, createdAt: sessionStart },
+      records: [
+        { type: 'user', text: 'hello from yesterday', ts: userAt },
+        { type: 'update', ts: asstAt, update: msgChunk('hi back') }
+      ]
+    } as HostToWebview);
+    assert.equal(s.items[0].kind, 'user');
+    assert.equal(s.items[0].createdAt, userAt);
+    assert.equal(s.items[1].kind, 'assistant');
+    assert.equal(s.items[1].createdAt, asstAt);
+    const now = Date.now();
+    assert.ok(now - s.items[0].createdAt > 60_000, 'restored stamp must not be Date.now()');
+  });
+
+  it('legacy records without ts fall back to session createdAt, not Date.now()', () => {
+    const sessionStart = 1_700_000_000_000;
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta: { ...meta, createdAt: sessionStart },
+      records: [userRec('old prompt'), rec(msgChunk('old reply'))]
+    } as HostToWebview);
+    assert.equal(s.items[0].createdAt, sessionStart);
+    assert.equal(s.items[1].createdAt, sessionStart);
+    assert.equal(replayTimestamp({ type: 'user', text: 'x' }, { ...meta, createdAt: sessionStart }), sessionStart);
+  });
+
   it('restores usage_breakdown for imported transcripts', () => {
     const s = reduce(initialState, {
       type: 'historyLoaded',
@@ -304,6 +336,21 @@ describe('historyLoaded replay', () => {
     } as HostToWebview);
     assert.equal(s.usageBreakdown.length, 1);
     assert.deepEqual(s.usage, { inputTokens: 7 });
+  });
+
+  it('keeps an optimistic user bubble that is not yet in the replayed records', () => {
+    let s = appendUser(initialState, 'why only today?');
+    assert.equal(s.items.filter((it) => it.kind === 'user').length, 1);
+    s = reduce(s, {
+      type: 'historyLoaded',
+      meta,
+      records: [userRec('older prompt'), rec(msgChunk('older reply'))]
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 2);
+    assert.equal(users[0].text, 'older prompt');
+    assert.equal(users[1].text, 'why only today?');
+    assert.equal(s.busy, true);
   });
 });
 

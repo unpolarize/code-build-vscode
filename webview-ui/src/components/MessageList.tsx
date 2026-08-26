@@ -22,22 +22,39 @@ interface Props {
 }
 
 export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFollowChange }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const ignoreScroll = useRef(false);
+  const unlockTimer = useRef<number | null>(null);
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
     last && (last.kind === 'assistant' || last.kind === 'thought') ? last.text.length : 0;
 
-  useEffect(() => {
-    if (!follow) return;
+  function lockFollowSync(ms: number) {
     ignoreScroll.current = true;
-    endRef.current?.scrollIntoView({ behavior: busy ? 'auto' : 'smooth' });
-    const t = window.setTimeout(() => {
+    if (unlockTimer.current != null) window.clearTimeout(unlockTimer.current);
+    const unlock = () => {
       ignoreScroll.current = false;
-    }, 400);
-    return () => window.clearTimeout(t);
+      unlockTimer.current = null;
+    };
+    listRef.current?.addEventListener('scrollend', unlock, { once: true });
+    unlockTimer.current = window.setTimeout(unlock, ms);
+  }
+
+  useEffect(() => {
+    if (!follow || !listRef.current) return;
+    // Instant while streaming so the tail keeps up; smooth only for the
+    // idle "latest" jump. Hold ignoreScroll until scrollend so a mid-smooth
+    // frame cannot flip follow back off (that left the counter stuck on e.g. 8/11).
+    lockFollowSync(busy ? 80 : 1000);
+    listRef.current.scrollTo({
+      top: listRef.current.scrollHeight,
+      behavior: busy ? 'auto' : 'smooth'
+    });
+    return () => {
+      if (unlockTimer.current != null) window.clearTimeout(unlockTimer.current);
+      ignoreScroll.current = false;
+    };
   }, [lastId, lastLen, busy, items.length, follow]);
 
   function onScroll() {
@@ -58,7 +75,7 @@ export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFol
     busy && last && (last.kind === 'assistant' || last.kind === 'thought') ? last.id : null;
 
   return (
-    <div className="messages" ref={listRef} onScroll={onScroll}>
+    <div className="messages" ref={listRef} onScroll={onScroll} data-cb-scroller="">
       {items.length === 0 && !busy && (
         <div className="empty">
           <h3>Code Build</h3>
@@ -84,7 +101,6 @@ export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFol
           </div>
         </div>
       )}
-      <div ref={endRef} />
     </div>
   );
 }

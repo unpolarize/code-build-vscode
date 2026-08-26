@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.16.0",
+  "version": "0.17.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -380,7 +380,7 @@
         "codeBuild.autoStartSession": {
           "type": "boolean",
           "default": true,
-          "description": "Connect to the default backend as soon as a chat opens (so slash commands and the agent are ready immediately, like Claude Code). Disable to start only on first prompt."
+          "description": "Connect to the default backend as soon as a *new empty* chat opens. Restored chats (VS Code reload / sidebar remount) load the transcript idle and only spawn on the first prompt, so old work does not look like it just started."
         },
         "codeBuild.stallWarnSeconds": {
           "type": "number",
