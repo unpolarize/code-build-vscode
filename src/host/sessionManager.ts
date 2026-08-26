@@ -215,6 +215,19 @@ export class SessionManager {
     void this.handle(msg);
   }
 
+  /** Called from Code Sessions rename so the panel tab matches the tree title. */
+  applyExternalTitle(id: string | undefined, title: string): boolean {
+    const t = title.trim();
+    if (!t) return false;
+    if (id && this.meta && this.meta.id !== id) return false;
+    if (!this.meta) return false;
+    this.meta.title = t;
+    this.store.updateMeta(this.meta);
+    this.panel.setTitle?.(t);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+    return true;
+  }
+
   /** Push a host→webview event (voice keybindings, etc.). */
   postHostEvent(msg: import('../shared/protocol').HostToWebview): void {
     this.panel.post(msg);

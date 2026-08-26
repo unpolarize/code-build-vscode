@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.17.2 — 2026-08-26
+
+### Rename from Code Sessions updates the chat tab
+
+- Command `codeBuild.setSessionTitle` applies a new title to the live panel + store so CSV rename and the Code Build header stay in sync.
+
 ## 0.17.1 — 2026-08-26
 
 ### User prompt stays visible after resume/replay

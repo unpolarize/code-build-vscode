@@ -106,6 +106,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('codeBuild.showFlightRecorder', () => {
       vscode.window.createOutputChannel('Code Build: Flight Recorder').show(true);
     }),
+    vscode.commands.registerCommand(
+      'codeBuild.setSessionTitle',
+      (arg?: { id?: string; title?: string }) => {
+        const title = arg?.title?.trim();
+        if (!title) return;
+        for (const mgr of managers) {
+          if (mgr.applyExternalTitle(arg?.id, title)) return;
+        }
+      },
+    ),
     // Voice mode keybindings / palette — route to the latest editor chat.
     vscode.commands.registerCommand('codeBuild.voice.toggleDictation', () => {
       voiceHostCommand(managers, openChat, 'toggleDictation');
