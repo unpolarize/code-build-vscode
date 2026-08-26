@@ -369,3 +369,36 @@ test('atomic index upsert: store commits leave parseable index.json (no bare wri
   assert.equal(store.load('sess-1').meta?.title, 'Atomic title');
   assert.deepEqual(JSON.parse(fs.readFileSync(perfPath, 'utf8')), { ok: true });
 });
+
+test('compact marker round-trips: order preserved between the two segments', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'long conversation');
+  store.appendUpdate('sess-1', { kind: 'agent_message_chunk', content: { type: 'text', text: 'reply' } });
+  store.appendCompactMarker('sess-1', {
+    at: 1_700_000_100_000,
+    preTokens: 150_000,
+    summaryPreview: 'Goal: ship the thing…',
+    instructions: 'focus on the migration'
+  });
+  store.appendUserText('sess-1', 'post-compact prompt');
+
+  const { records } = store.load('sess-1');
+  assert.deepEqual(
+    records.map((r) => r.type),
+    ['user', 'update', 'compact', 'user']
+  );
+  const marker = (records[2] as { marker: { at: number; preTokens?: number; summaryPreview: string; instructions?: string } }).marker;
+  assert.equal(marker.at, 1_700_000_100_000);
+  assert.equal(marker.preTokens, 150_000);
+  assert.equal(marker.summaryPreview, 'Goal: ship the thing…');
+  assert.equal(marker.instructions, 'focus on the migration');
+});
+
+test('compact marker alone is not content', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.appendCompactMarker('sess-1', { at: 1, summaryPreview: '' });
+  assert.equal(store.hasContent('sess-1'), false);
+});

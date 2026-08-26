@@ -95,6 +95,25 @@ export interface SessionMeta {
   stopEvents?: StopEventRecord[];
 }
 
+/** Compact boundary marker — written to the transcript when a host-side
+ * /compact summarizes the conversation and respawns the backend at the
+ * same CB session id. Renders as a divider (never a bubble) between the
+ * pre-compact scrollback and the post-compact continuation; on reload the
+ * persisted record replays both segments around the divider. */
+export interface CompactMarker {
+  /** Epoch-ms when the compact completed (marker append time). */
+  at: number;
+  /** Input-token level just before the compact (from the last usage event),
+   * when known — lets the divider say what was reclaimed. */
+  preTokens?: number;
+  /** First ~200 chars of the generated summary, for the divider tooltip.
+   * The full summary travels to the agent as the next-prompt primer and
+   * is auditable via the contextInjected card, not stored here. */
+  summaryPreview: string;
+  /** User's `/compact <focus>` instructions, when given. */
+  instructions?: string;
+}
+
 /** One stop-governor trip: which budget fired, what the counters were. */
 export interface StopEventRecord {
   at: number;
@@ -241,6 +260,13 @@ export type WebviewToHost =
   /** /handoff — write a structured HANDOFF.md pack for continuing this
    * work on another backend. */
   | { type: 'handoff' }
+  /** /compact [focus] — summarize the transcript and respawn the backend at
+   * the same CB session id with a summary primer (host-side for all
+   * backends; never forwarded to the agent as prompt text). `focus` is the
+   * optional user steer for the summary. Host handler lands with the
+   * compact verb slice; the marker plumbing (CompactMarker + compactMarker
+   * event + persistence) is already wired. */
+  | { type: 'compact'; focus?: string }
   /** Start a Voice Ideation Session (new chat + VIS preamble + KP bias). */
   | { type: 'startVoiceIdeation'; backend?: BackendId }
   /** End VIS: send close prompt and parse/write KP objects from the reply. */
@@ -348,7 +374,11 @@ export type HostToWebview =
       items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
     }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
-  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate }> }
+  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate; marker?: CompactMarker }> }
+  /** A compact completed on the live session — append the divider to the
+   * timeline. Reload replay comes from the persisted `compact` transcript
+   * record via `historyLoaded`, not this event. */
+  | { type: 'compactMarker'; marker: CompactMarker }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`
    * is the BackendId (not the human label) of the source — the host

@@ -1,6 +1,7 @@
 import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTypes';
 import type {
   ActivitySegmentMsg,
+  CompactMarker,
   HostToWebview,
   HydrateState,
   PerfHudMsg,
@@ -96,6 +97,9 @@ export type ChatItem =
       answers: Record<string, string> | null;
     })
   | (WithTimestamps & { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] })
+  /** /compact boundary — renders as a divider between the pre-compact
+   * scrollback and the post-compact continuation, never a bubble. */
+  | (WithTimestamps & { kind: 'compact'; id: string; marker: CompactMarker })
   | (WithTimestamps & {
       kind: 'context';
       id: string;
@@ -373,6 +377,11 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       else items.push(next);
       return { ...state, items };
     }
+    case 'compactMarker': {
+      const items = state.items.slice();
+      items.push({ kind: 'compact', id: nextId(), createdAt: now(), marker: msg.marker });
+      return { ...state, items };
+    }
     case 'sessionMeta':
       return {
         ...state,
@@ -603,7 +612,9 @@ function collectModifiedFiles(items: ChatItem[]): FileChange[] {
   const map = new Map<string, FileChange>();
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.kind === 'user' || it.kind === 'files') break; // turn boundary
+    // Turn boundary — a compact divider also stops the scan so pre-compact
+    // edits are never re-attributed to the post-compact turn's files card.
+    if (it.kind === 'user' || it.kind === 'files' || it.kind === 'compact') break;
     if (it.kind !== 'tool') continue;
     const diffs = (it.tool.content ?? []).filter(
       (b): b is { type: 'diff'; path: string; oldText: string; newText: string } => b.type === 'diff'
@@ -639,7 +650,7 @@ function collectModifiedFiles(items: ChatItem[]): FileChange[] {
 
 /** One element of a `historyLoaded` records[] payload — a persisted user
  * prompt or a raw SessionUpdate, exactly as SessionStore wrote them. */
-type ReplayRecord = { type: string; text?: string; update?: SessionUpdate };
+type ReplayRecord = { type: string; text?: string; update?: SessionUpdate; marker?: CompactMarker };
 
 /**
  * Rebuild ChatState from a persisted transcript by routing every stored
@@ -668,6 +679,10 @@ function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecor
         ...next,
         items: [...next.items, { kind: 'user', id: nextId(), createdAt: now(), text: rec.text }]
       };
+      continue;
+    }
+    if (rec.type === 'compact' && rec.marker) {
+      next = reduce(next, { type: 'compactMarker', marker: rec.marker });
       continue;
     }
     if (rec.type !== 'update' || !rec.update) continue;

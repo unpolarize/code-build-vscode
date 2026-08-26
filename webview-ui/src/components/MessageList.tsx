@@ -278,6 +278,35 @@ const Item = memo(function Item({
           onAnswer={onAskUserAnswer}
         />
       );
+    case 'compact': {
+      // Divider, not a bubble — the scrollback above it is the pre-compact
+      // conversation (kept visible), everything below continues on the
+      // respawned backend. Tooltip carries the summary preview + any
+      // /compact <focus> instructions so the boundary is auditable.
+      const m = item.marker;
+      const tip = [
+        m.summaryPreview ? `Summary: ${m.summaryPreview}` : '',
+        m.instructions ? `Focus: ${m.instructions}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n');
+      // preTokens is the input-token LEVEL just before the compact, not the
+      // amount reclaimed — say "from Nk tokens", never "Nk summarized".
+      const tokens =
+        m.preTokens != null && m.preTokens > 0
+          ? ` · from ${m.preTokens >= 1000 ? `${Math.round(m.preTokens / 1000)}k` : m.preTokens} tokens`
+          : '';
+      return (
+        <div className="msg-compact-divider" title={tip || undefined}>
+          <span className="compact-rule" />
+          <span className="compact-label">
+            Context compacted{tokens}
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </span>
+          <span className="compact-rule" />
+        </div>
+      );
+    }
     case 'tasks':
       return <TaskListCard tasks={item.tasks} />;
     case 'context':

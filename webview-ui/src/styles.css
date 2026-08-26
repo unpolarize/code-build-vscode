@@ -374,6 +374,28 @@ body {
   padding: 6px 10px;
   border-radius: 4px;
 }
+/* /compact boundary — a horizontal-rule divider between the pre-compact
+ * scrollback and the post-compact continuation. Deliberately quiet: the
+ * detail (summary preview, focus) lives in the hover tooltip. */
+.msg-compact-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  user-select: none;
+}
+.msg-compact-divider .compact-rule {
+  flex: 1;
+  border-top: 1px dashed var(--vscode-editorWidget-border, #555);
+}
+.msg-compact-divider .compact-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
 .msg-plan ol {
   margin: 4px 0;
   padding-left: 20px;

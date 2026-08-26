@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { SessionUpdate } from '../../shared/acpTypes';
-import type { SessionMeta } from '../../shared/protocol';
+import type { CompactMarker, SessionMeta } from '../../shared/protocol';
 
 /**
  * Durable whole-file write: same-directory `.tmp` + fsync + rename.
@@ -178,6 +178,14 @@ export class SessionStore {
 
   appendUserText(id: string, text: string): void {
     this.enqueue(id, JSON.stringify({ type: 'user', text }) + '\n');
+  }
+
+  /** Persist a /compact boundary. Replays through `load()` like any other
+   * body record so `historyLoaded` reconstructs both segments around the
+   * divider. Not "content" for hasContent() — a compact can only follow
+   * real turns, so it never has to rescue an otherwise-empty session. */
+  appendCompactMarker(id: string, marker: CompactMarker): void {
+    this.enqueue(id, JSON.stringify({ type: 'compact', marker }) + '\n');
   }
 
   private enqueue(id: string, line: string): void {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.1 — 2026-08-26
+
+### /compact marker plumbing (slice 1 of the built-in /compact)
+
+- **`CompactMarker` in `shared/protocol.ts`** — `{ at, preTokens?, summaryPreview, instructions? }`, plus the `compactMarker` host→webview event, the `compact` webview→host command type (handler lands with the compact verb slice), and a `marker` field on `historyLoaded` records.
+- **`SessionStore.appendCompactMarker`** persists a `{ type: 'compact', marker }` transcript record; it replays through `load()`/`historyLoaded` like any body line, and a marker alone never counts as content.
+- **Webview timeline** — new `compact` ChatItem renders as a quiet dashed divider ("Context compacted · Nk tokens summarized", summary/focus in the hover tooltip), never a bubble; scrollback above it is kept. The divider is also a turn boundary: `result` after a compact never aggregates pre-compact tool edits into the files card.
+- 5 new unit tests: store round-trip + not-content, reducer append, replay of both segments around the divider, files-card boundary. (kp: tasks/cb-built-in-compact-one-click-context-compaction)
+
 ## 0.16.0 — 2026-08-23
 
 ### Host-side stop governor (umbrella slice)

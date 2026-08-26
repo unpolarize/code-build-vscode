@@ -355,3 +355,52 @@ describe('permission FIFO queue', () => {
     assert.equal(s.permissionQueue[0].tool.rawInput, undefined);
   });
 });
+
+describe('compact marker (divider plumbing)', () => {
+  const marker = {
+    at: 1_700_000_100_000,
+    preTokens: 150_000,
+    summaryPreview: 'Goal: ship the thing…',
+    instructions: 'focus on the migration'
+  };
+
+  it('compactMarker appends a compact item to the timeline', () => {
+    const s = reduce(initialState, { type: 'compactMarker', marker } as HostToWebview);
+    assert.equal(s.items.length, 1);
+    assert.equal(s.items[0].kind, 'compact');
+    assert.deepEqual((s.items[0] as any).marker, marker);
+  });
+
+  it('historyLoaded replays both segments around the persisted compact record', () => {
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [
+        { type: 'user', text: 'before compact' },
+        { type: 'update', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'old reply' } } },
+        { type: 'compact', marker },
+        { type: 'user', text: 'after compact' },
+        { type: 'update', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'new reply' } } }
+      ]
+    } as HostToWebview);
+    assert.deepEqual(
+      s.items.map((it) => it.kind),
+      ['user', 'assistant', 'compact', 'user', 'assistant']
+    );
+    assert.deepEqual((s.items[2] as any).marker, marker);
+  });
+
+  it('compact divider is a turn boundary — pre-compact edits never join the post-compact files card', () => {
+    let s = apply(
+      initialState,
+      toolCall({ toolCallId: 't1', title: 'Edit', rawInput: { file_path: '/pre.ts' } })
+    );
+    s = reduce(s, { type: 'compactMarker', marker } as HostToWebview);
+    s = apply(s, { kind: 'result', stopReason: 'end_turn' });
+    assert.equal(
+      s.items.some((it) => it.kind === 'files'),
+      false,
+      'result after the divider must not aggregate pre-compact tool edits'
+    );
+  });
+});
