@@ -47,7 +47,10 @@ export interface AgentSession {
   start(opts: StartOpts): Promise<void>;
   prompt(blocks: ContentBlock[]): Promise<void>;
   cancel(): void;
-  setMode(mode: PermissionMode): void;
+  /** Apply a permission-mode change. Rejects when the agent refuses (ACP
+   * session/set_mode error or unsupported mode id) — callers revert their
+   * optimistic UI and must NOT persist the selection on rejection. */
+  setMode(mode: PermissionMode): Promise<void>;
   respondPermission(requestId: string, outcome: PermissionOutcome): void;
 
   /** Whether any permission request is still awaiting a user decision.
@@ -87,7 +90,7 @@ export abstract class BaseAgentSession implements AgentSession {
   abstract start(opts: StartOpts): Promise<void>;
   abstract prompt(blocks: ContentBlock[]): Promise<void>;
   abstract cancel(): void;
-  abstract setMode(mode: PermissionMode): void;
+  abstract setMode(mode: PermissionMode): Promise<void>;
   abstract respondPermission(requestId: string, outcome: PermissionOutcome): void;
 
   hasPendingPermissions(): boolean {

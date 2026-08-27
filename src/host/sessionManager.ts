@@ -2188,12 +2188,30 @@ export class SessionManager {
   }
 
   private setMode(mode: PermissionMode): void {
-    if (this.meta) {
-      this.meta.mode = mode;
+    // Optimistic: update meta + chip immediately, but persist lastMode only
+    // after the transport accepts the change. On rejection (ACP
+    // session/set_mode error, unsupported mode id) revert both — persisting
+    // a refused mode would silently re-apply it on every future session.
+    const prevMode = this.meta?.mode;
+    const applyMeta = (m: PermissionMode) => {
+      if (!this.meta) return;
+      this.meta.mode = m;
       this.panel.post({ type: 'sessionMeta', session: this.meta });
-    }
-    this.session?.setMode(mode);
-    this.rememberConfig();
+    };
+    applyMeta(mode);
+    const applied = this.session ? this.session.setMode(mode) : Promise.resolve();
+    applied.then(
+      () => this.rememberConfig(),
+      (err: unknown) => {
+        if (prevMode !== undefined) applyMeta(prevMode);
+        this.panel.post({
+          type: 'notice',
+          text: `Mode change to **${mode}** was rejected: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        });
+      }
+    );
   }
 
   /** Apply a new model selection. Persists onto meta so the picker stays

@@ -579,7 +579,9 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
         ]
       };
     case 'current_mode_update':
-      return state.session
+      // mode is null for non-permission vendor ids (opencode agent roles) —
+      // keep the host-tracked mode rather than lying on the chip.
+      return state.session && u.mode
         ? { ...state, session: { ...state.session, mode: u.mode } }
         : state;
     default:

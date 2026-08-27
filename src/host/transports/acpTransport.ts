@@ -13,6 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { acpIdForPermissionMode, permissionModeFromAcpId } from '../../shared/permissionModes';
 import { settleAcpProcessExit } from './acpProcessExit';
 import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
 import { createPathGuard, type PathGuard } from '../pathGuard';
@@ -47,8 +48,15 @@ interface InitializeResult {
   protocolVersion: number;
   agentCapabilities?: { loadSession?: boolean };
 }
+/** `modes` object on the ACP session/new | session/load RESPONSE. There is
+ * no available_modes_update event — this response is the only inventory. */
+interface SessionModes {
+  currentModeId: string;
+  availableModes?: { id: string; name?: string; description?: string }[];
+}
 interface NewSessionResult {
   sessionId: string;
+  modes?: SessionModes;
 }
 interface PromptResult {
   stopReason: string;
@@ -142,6 +150,10 @@ export class AcpTransport extends BaseAgentSession {
   private acpSessionId?: string;
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
+  /** Mode ids advertised on session/new|load `modes.availableModes`, when
+   * present. setMode validates against this so an unsupported selection
+   * fails fast (and the caller reverts) instead of a wire round-trip. */
+  private availableModeIds?: string[];
   private pendingPermissions = new PendingPermissionResolvers();
   /** In-flight Grok `_x.ai/ask_user_question` RPC resolvers, keyed by toolCallId. */
   private pendingAskUser = new Map<string, (value: unknown) => void>();
@@ -241,13 +253,14 @@ export class AcpTransport extends BaseAgentSession {
           // restores on-disk transcript + context. History may also stream
           // as session/update notifications; CB already replays from disk.
           try {
-            await this.rpc!.request('session/load', {
+            const loadResult = await this.rpc!.request<{ modes?: SessionModes }>('session/load', {
               sessionId: opts.resumeId,
               cwd: opts.cwd,
               mcpServers
             });
             this.acpSessionId = opts.resumeId;
             this.emit({ kind: 'system_init', backendSessionId: opts.resumeId! });
+            this.ingestModes(loadResult?.modes);
             loaded = true;
           } catch (err) {
             // session/load can reject for reasons that don't doom the
@@ -282,6 +295,7 @@ export class AcpTransport extends BaseAgentSession {
           // After a resume_fallback this OVERWRITES the stale id, so the
           // next reload resumes the session that actually exists.
           this.emit({ kind: 'system_init', backendSessionId: session.sessionId });
+          this.ingestModes(session.modes);
         }
       } catch (err) {
         // Surface handshake failures in the chat (the message handler's
@@ -547,11 +561,44 @@ export class AcpTransport extends BaseAgentSession {
     }
   }
 
-  setMode(mode: PermissionMode): void {
-    // Track the mode so handlePermission can auto-approve in bypass/acceptEdits.
-    // (ACP session/set_mode for the agent's own mode tracking lands later;
-    // the auto-approve path is what actually unblocks the user today.)
+  /** Ingest the `modes` object from a session/new|load response: remember
+   * the advertised inventory (setMode validates against it) and seed the
+   * webview picker + chip before any current_mode_update arrives. */
+  private ingestModes(modes: SessionModes | undefined): void {
+    if (!modes?.currentModeId) return;
+    const available = (modes.availableModes ?? [])
+      .filter((m) => typeof m?.id === 'string' && m.id.length > 0)
+      .map((m) => ({ id: m.id, name: m.name || m.id, description: m.description }));
+    this.availableModeIds = available.length > 0 ? available.map((m) => m.id) : undefined;
+    this.emit({ kind: 'modes_update', currentModeId: modes.currentModeId, availableModes: available });
+    this.emit({
+      kind: 'current_mode_update',
+      mode: permissionModeFromAcpId(modes.currentModeId),
+      vendorModeId: modes.currentModeId
+    });
+  }
+
+  async setMode(mode: PermissionMode): Promise<void> {
+    // Track the mode locally first so handlePermission can auto-approve in
+    // bypass/acceptEdits; before the handshake completes there is no wire
+    // session yet, so local tracking is the whole effect.
+    const prev = this.mode;
     this.mode = mode;
+    if (!this.rpc || !this.acpSessionId) return;
+    const modeId = acpIdForPermissionMode(mode);
+    // When the agent advertised its inventory on session/new|load, reject
+    // unsupported ids locally instead of guessing — the caller reverts the
+    // chip and skips persisting the selection.
+    if (this.availableModeIds && !this.availableModeIds.includes(modeId)) {
+      this.mode = prev;
+      throw new Error(`${this.backend} does not support permission mode '${mode}'`);
+    }
+    try {
+      await this.rpc.request('session/set_mode', { sessionId: this.acpSessionId, modeId });
+    } catch (err) {
+      this.mode = prev;
+      throw err;
+    }
   }
 
   respondPermission(requestId: string, outcome: PermissionOutcome): void {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.1 — 2026-08-26
+
+### Permission-mode truth on ACP backends (slice 1 of the mode pin chip)
+
+- **`PermissionMode` extended with `auto` and `dontAsk`** (`shared/acpTypes.ts`) so Claude's post-2026-08-14 Auto default is representable. New `shared/permissionModes.ts` maps Claude wire ids both ways: `default`/`manual`→`default`, `bypassPermissions`↔`bypass`, unknown vendor ids (opencode agent roles, codex presets) → `null`, never coerced.
+- **ACP `current_mode_update` normalizer stub replaced** — it hardcoded `'default'` for every mode change. Now maps the real `currentModeId` and always carries `vendorModeId` for labeled passthrough; the webview keeps the host-tracked mode when the vendor id has no permission meaning.
+- **`modes` ingested from the ACP session/new|load response** (the only inventory — ACP has no available_modes_update event): new `modes_update` SessionUpdate seeds the future picker, current mode emitted immediately, advertised ids validate later `setMode` calls.
+- **`AcpTransport.setMode` actually sends `session/set_mode {sessionId, modeId}`** (it previously only set a local field). `AgentSession.setMode` is now async; SessionManager applies optimistically and on rejection reverts the chip, posts a notice, and — fix — no longer persists `lastMode` for a refused mode (persist moved behind transport success).
+- **Claude spawn mapping**: selecting `auto`/`dontAsk` now emits the matching `--permission-mode` instead of silently spawning `default`. Codex sandbox mapping unchanged (auto/dontAsk stay read-only — conservative). Unit tables for the wire-id map, normalizer passthrough, and spawn args. (kp: ideas/cb-permission-mode-pin-chip-auto-mode-default-da)
+
 ## 0.18.0 — 2026-08-26
 
 ### Write-checkpoint timeline — restore code to any prior edit (multi-backend /rewind parity)

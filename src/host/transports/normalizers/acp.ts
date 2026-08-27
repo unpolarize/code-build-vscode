@@ -1,4 +1,5 @@
 import type { ContentBlock, PlanEntry, SessionUpdate, ToolCall } from '../../../shared/acpTypes';
+import { permissionModeFromAcpId } from '../../../shared/permissionModes';
 
 /** Shape of an ACP `session/update` notification's `update` field (partial). */
 interface AcpUpdate {
@@ -40,8 +41,17 @@ export function normalizeAcpUpdate(u: AcpUpdate): SessionUpdate[] {
     case 'available_commands_update':
       return [{ kind: 'available_commands_update', commands: u.availableCommands ?? [] }];
     case 'current_mode_update':
+      // Wire field is `currentModeId` (schema SSOT; some doc examples show
+      // `modeId`). Unknown ids pass through with mode:null — never throw,
+      // never coerce to 'default' (opencode reports agent roles here).
       return u.currentModeId
-        ? [{ kind: 'current_mode_update', mode: 'default' }] // mode mapping refined in P5
+        ? [
+            {
+              kind: 'current_mode_update',
+              mode: permissionModeFromAcpId(u.currentModeId),
+              vendorModeId: u.currentModeId
+            }
+          ]
         : [];
     default:
       return [];

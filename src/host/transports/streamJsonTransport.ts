@@ -254,7 +254,7 @@ export class StreamJsonTransport extends BaseAgentSession {
     }, 2500);
   }
 
-  setMode(mode: PermissionMode): void {
+  async setMode(mode: PermissionMode): Promise<void> {
     this.mode = mode;
     // Claude reads --permission-mode at spawn; a mid-session change takes effect
     // on the next process (re)spawn. Full live mode-switch is wired in P3.

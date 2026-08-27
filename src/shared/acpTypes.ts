@@ -4,7 +4,12 @@
 
 export type BackendId = 'claude' | 'grok' | 'codex' | 'opencode' | 'cline';
 
-export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'bypass';
+/** Host permission vocabulary. Superset of Claude Code's wire ids so the
+ * chip can display Claude's post-2026-08-14 default (`auto`) truthfully:
+ * wire `bypassPermissions` ↔ `bypass`, wire `manual` reads as `default`.
+ * Non-permission ACP "modes" (opencode agent roles like `build`) do NOT
+ * map here — they pass through as vendorModeId on current_mode_update. */
+export type PermissionMode = 'default' | 'plan' | 'acceptEdits' | 'bypass' | 'auto' | 'dontAsk';
 
 /** A piece of content in a message or tool result (subset of the ACP ContentBlock model). */
 export type ContentBlock =
@@ -83,7 +88,18 @@ export type SessionUpdate =
   | { kind: 'tool_call_update'; toolCall: Partial<ToolCall> & { toolCallId: string } }
   | { kind: 'plan'; entries: PlanEntry[] }
   | { kind: 'available_commands_update'; commands: { name: string; description?: string }[] }
-  | { kind: 'current_mode_update'; mode: PermissionMode }
+  /** Agent-reported mode change. `mode` is null when the vendor id has no
+   * permission-mode meaning (e.g. opencode agent roles); `vendorModeId`
+   * always carries the raw wire id for labeled passthrough on the chip. */
+  | { kind: 'current_mode_update'; mode: PermissionMode | null; vendorModeId: string }
+  /** Mode inventory from the ACP session/new|load RESPONSE (`modes` field —
+   * ACP has no available_modes_update event). Seeds the picker options and
+   * current selection before any current_mode_update arrives. */
+  | {
+      kind: 'modes_update';
+      currentModeId: string;
+      availableModes: { id: string; name: string; description?: string }[];
+    }
   | { kind: 'usage'; usage: UsageInfo }
   /** Per-model usage breakdown — one entry per (model, provider). Aggregated
    * totals still arrive via `usage` so the header cost display keeps working;
