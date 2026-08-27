@@ -532,7 +532,12 @@ export function App() {
       <MessageNav
         items={state.items}
         follow={follow}
-        onNavigate={(_idx, isLast) => setFollow(isLast)}
+        onNavigate={(_idx, isLast) => {
+          // Arrows pin a prompt; they must not resume follow-the-tail even
+          // on the last turn (a long last reply sits well above the tail).
+          // Only Send and **latest** pin to the live end.
+          if (!isLast) setFollow(false);
+        }}
         onJumpLatest={() => setFollow(true)}
       />
       {state.permissionQueue.length > 0 && (

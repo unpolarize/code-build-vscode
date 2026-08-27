@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.16.1 — 2026-08-26
+## 0.17.3 — 2026-08-26
 
 ### /compact marker plumbing (slice 1 of the built-in /compact)
 
@@ -8,6 +8,36 @@
 - **`SessionStore.appendCompactMarker`** persists a `{ type: 'compact', marker }` transcript record; it replays through `load()`/`historyLoaded` like any body line, and a marker alone never counts as content.
 - **Webview timeline** — new `compact` ChatItem renders as a quiet dashed divider ("Context compacted · Nk tokens summarized", summary/focus in the hover tooltip), never a bubble; scrollback above it is kept. The divider is also a turn boundary: `result` after a compact never aggregates pre-compact tool edits into the files card.
 - 5 new unit tests: store round-trip + not-content, reducer append, replay of both segments around the divider, files-card boundary. (kp: tasks/cb-built-in-compact-one-click-context-compaction)
+
+## 0.17.2 — 2026-08-26
+
+### Rename from Code Sessions updates the chat tab
+
+- Command `codeBuild.setSessionTitle` applies a new title to the live panel + store so CSV rename and the Code Build header stay in sync.
+
+## 0.17.1 — 2026-08-26
+
+### User prompt stays visible after resume/replay
+
+- `historyLoaded` used to replace the whole timeline. A prompt echoed in the webview could race a resume snapshot taken before `appendUserText` flushed, so the **You** bubble (and the sticky question banner) vanished while the agent was already working.
+- Replay now keeps optimistic user bubbles whose text is not in the loaded records. Test covers the race.
+
+## 0.17.0 — 2026-08-25
+
+### Restore no longer pretends work just started
+
+- **Transcript timestamps persist.** Each JSONL `user` / `update` record now carries epoch-ms `ts`. Replay stamps chat bubbles from that value. Legacy transcripts without `ts` fall back to `SessionMeta.createdAt`, so a yesterday session remounts as "at 14:32" / the original date — not "3s ago".
+- **Idle restore on VS Code reload.** Serialized chat panels and the sidebar restore the last session as transcript-only. The agent is **not** spawned until you send a message. Previously `autoStartSession` (default true) plus `loadExistingSession` always started the CLI, which produced "Starting grok agent…" / "first event in 0.8s" notices that looked like old work had resumed.
+- Sidebar remembers `codeBuild.lastSessionId` in `globalState` so the activity-bar chat (which is not a serialized panel) remounts the last thread instead of a blank auto-spawn.
+
+## 0.16.1 — 2026-08-24
+
+### Turn navigator tracks the transcript
+
+- The `N/M` counter is a scroll-spy of the user turns on screen, not the last click. Manual scrolling updates it, so ↑/↓ step from the turn you are actually reading (the stale index was why the arrows often looked dead — ↓ was disabled while you were looking at turn 8 of 11).
+- **latest** now jumps the counter to `M/M` as well as the live tail. Previously it only set follow-the-bottom, so the badge stayed on e.g. `8/11`.
+- Arrows pin the targeted prompt (`scrollTo` on the `.messages` pane). They no longer resume follow-the-tail on the last turn — a long last reply sits well above the tail, and yanking to the end made ↓ feel broken. Send and **latest** still pin to the live end.
+- Follow-the-bottom holds its scroll lock until `scrollend` (1s fallback) so a mid-smooth frame cannot flip `follow` back off.
 
 ## 0.16.0 — 2026-08-23
 

@@ -27,6 +27,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ChatSurface
     // Bind a fresh SessionManager the first time the sidebar resolves.
     if (!this.manager) {
       this.manager = new SessionManager(this, this.context);
+      // Sidebar is not a serialized webview panel — without this, every
+      // VS Code start auto-spawns a blank agent. Restore the last chat
+      // as transcript-only; the first prompt reconnects.
+      const last = this.context.globalState.get<string>('codeBuild.lastSessionId');
+      if (last) this.manager.queueResume(last, { connect: false });
     }
   }
 

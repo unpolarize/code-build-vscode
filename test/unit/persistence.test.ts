@@ -402,3 +402,34 @@ test('compact marker alone is not content', () => {
   store.appendCompactMarker('sess-1', { at: 1, summaryPreview: '' });
   assert.equal(store.hasContent('sess-1'), false);
 });
+
+test('appendUserText/appendUpdate persist epoch-ms ts on each record', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  const tUser = 1_700_000_111_000;
+  const tUpd = 1_700_000_222_000;
+  store.appendUserText('sess-1', 'hello', tUser);
+  store.appendUpdate('sess-1', { kind: 'result', stopReason: 'end_turn' }, tUpd);
+  const { records } = store.load('sess-1');
+  assert.equal(records[0].type, 'user');
+  assert.equal((records[0] as { ts?: number }).ts, tUser);
+  assert.equal(records[1].type, 'update');
+  assert.equal((records[1] as { ts?: number }).ts, tUpd);
+});
+
+test('legacy transcripts without ts still load', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  const p = store.transcriptPath('sess-1');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(
+    p,
+    JSON.stringify({ type: 'meta', meta }) +
+      '\n' +
+      JSON.stringify({ type: 'user', text: 'old' }) +
+      '\n'
+  );
+  const { records } = store.load('sess-1');
+  assert.equal(records[0].type, 'user');
+  assert.equal((records[0] as { ts?: number }).ts, undefined);
+});

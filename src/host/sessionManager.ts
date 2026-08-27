@@ -92,6 +92,14 @@ export class SessionManager {
   private unsubscribe?: () => void;
   private titled = false;
   private pendingResumeId?: string;
+  /** When set, the queued resume loads transcript only (no agent spawn). */
+  private pendingResumeConnect?: boolean;
+  /**
+   * Transcript is on screen but the agent process is not running. Set after a
+   * VS Code remount / sidebar restore so we don't auto-spawn and stamp
+   * "Starting … agent" as if work just began. First prompt connects.
+   */
+  private idleResume = false;
   private webviewReady = false;
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
@@ -207,6 +215,19 @@ export class SessionManager {
     void this.handle(msg);
   }
 
+  /** Called from Code Sessions rename so the panel tab matches the tree title. */
+  applyExternalTitle(id: string | undefined, title: string): boolean {
+    const t = title.trim();
+    if (!t) return false;
+    if (id && this.meta && this.meta.id !== id) return false;
+    if (!this.meta) return false;
+    this.meta.title = t;
+    this.store.updateMeta(this.meta);
+    this.panel.setTitle?.(t);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+    return true;
+  }
+
   /** Push a host→webview event (voice keybindings, etc.). */
   postHostEvent(msg: import('../shared/protocol').HostToWebview): void {
     this.panel.post(msg);
@@ -229,8 +250,10 @@ export class SessionManager {
         // historyLoaded message isn't dropped (the React app only listens after mount).
         if (this.pendingResumeId) {
           const id = this.pendingResumeId;
+          const connect = this.pendingResumeConnect ?? true;
           this.pendingResumeId = undefined;
-          await this.loadExistingSession(id);
+          this.pendingResumeConnect = undefined;
+          await this.loadExistingSession(id, { connect });
         } else if (this.pendingExternal) {
           const ext = this.pendingExternal;
           this.pendingExternal = undefined;
@@ -251,6 +274,7 @@ export class SessionManager {
         // Fresh slate — clear the per-backend restore memory so the
         // new chat doesn't accidentally inherit any prior thread.
         this.previousSessionByBackend.clear();
+        this.idleResume = false;
         await this.openSession(msg.backend);
         break;
       case 'pickBackend':
@@ -869,6 +893,11 @@ export class SessionManager {
   }
 
   private async ensureSession(): Promise<void> {
+    if (this.idleResume && this.meta && !this.session) {
+      this.idleResume = false;
+      await this.loadExistingSession(this.meta.id, { connect: true, skipReplay: true });
+      return;
+    }
     if (!this.session) {
       await this.openSession(this.defaultBackend());
     }
@@ -2184,11 +2213,13 @@ export class SessionManager {
    * historyLoaded before mount would be dropped. If the webview is already ready
    * (e.g. resuming into the current panel), load immediately.
    */
-  queueResume(id: string): void {
+  queueResume(id: string, opts?: { connect?: boolean }): void {
+    const connect = opts?.connect ?? true;
     if (this.webviewReady) {
-      void this.loadExistingSession(id);
+      void this.loadExistingSession(id, { connect });
     } else {
       this.pendingResumeId = id;
+      this.pendingResumeConnect = connect;
     }
   }
 
@@ -2419,6 +2450,7 @@ export class SessionManager {
     this.store.updateMeta(this.meta);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
   }
 
   private teardownSession(): void {
@@ -2907,8 +2939,19 @@ export class SessionManager {
     this.currentAssistantBuf = '';
   }
 
-  /** Load a previous persisted session (history + live continuation). Called from the "Open Previous" command. */
-  async loadExistingSession(id: string): Promise<void> {
+  /**
+   * Load a previous persisted session.
+   * - `connect: true` (default) — spawn the agent (Open Previous / first prompt).
+   * - `connect: false` — replay transcript only. VS Code remount / sidebar
+   *   restore uses this so we don't auto-start an agent and stamp "Starting…"
+   *   as if work just began.
+   * - `skipReplay: true` — connect a session whose transcript is already on
+   *   screen (idle-resume → first prompt).
+   */
+  async loadExistingSession(
+    id: string,
+    opts?: { connect?: boolean; skipReplay?: boolean }
+  ): Promise<void> {
     const loaded = this.store.load(id);
     if (!loaded.meta) {
       this.panel.post({
@@ -2919,12 +2962,19 @@ export class SessionManager {
       return;
     }
 
-    this.teardownSession();
-    // Reset per-session classifier state so a fresh chat starts the
-    // turn counter at 0.
-    this.userTurnsSent = 0;
-    this.lastUserText = '';
-    this.currentAssistantBuf = '';
+    const connect = opts?.connect ?? true;
+    const skipReplay = opts?.skipReplay === true;
+
+    if (!skipReplay) {
+      this.teardownSession();
+      // Reset per-session classifier state so a fresh chat starts the
+      // turn counter at 0.
+      this.userTurnsSent = 0;
+      this.lastUserText = '';
+      this.currentAssistantBuf = '';
+    } else {
+      this.teardownSession();
+    }
 
     const be = loaded.meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
@@ -2941,6 +2991,71 @@ export class SessionManager {
       (loaded.meta.source === 'claude' || loaded.meta.source === 'grok'
         ? loaded.meta.id
         : undefined);
+    this.meta = loaded.meta;
+    // Re-hydrate the per-backend native-session memory so a panel reopened on
+    // this conversation knows which backends already have a native thread — and
+    // resumes them natively instead of re-summarizing on switch.
+    if (this.meta.backendSessions) {
+      for (const [b, id] of Object.entries(this.meta.backendSessions)) {
+        if (id) this.previousSessionByBackend.set(b as BackendId, id);
+      }
+    }
+    this.titled = true; // existing session already has its title
+    this.panel.setTitle?.(this.meta.title);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
+
+    if (!skipReplay) {
+      // Replay the stored transcript so the UI shows the full conversation history
+      this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
+    }
+
+    // Self-resume primer for backends without native --resume (grok ACP
+    // today). The new agent process has zero memory of the conversation
+    // even though the user sees the history in the UI. Inject the last
+    // N turns verbatim as a one-shot primer on the first prompt so the
+    // agent picks up where it left off. claude with a valid resume id
+    // skips this — its own `--resume` already feeds the jsonl back to
+    // the model. See [[serializeSelfResumePrimer]].
+    const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
+    if (loaded.records.length > 0) {
+      const primer = serializeSelfResumePrimer({
+        records: loaded.records as any,
+        lastNTurns: 10,
+        backendLabel: backendLabel(be)
+      });
+      if (primer && !nativeResume) {
+        this.pendingPrimer = primer;
+        if (connect) {
+          this.panel.post({
+            type: 'notice',
+            text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
+            detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
+          });
+        } else {
+          this.fallbackPrimer = primer;
+        }
+      } else if (primer) {
+        // Native resume attempt (grok session/load or claude --resume).
+        // Held in reserve for handleResumeFallback — see fallbackPrimer.
+        this.fallbackPrimer = primer;
+      }
+    }
+
+    if (!connect) {
+      this.idleResume = true;
+      this.panel.post({
+        type: 'notice',
+        key: 'idle-restore',
+        text: `Transcript restored — agent is idle. Send a message to reconnect. Nothing is running.`,
+        detail: `VS Code remounted this chat (window reload or sidebar restore). Code Build is showing the on-disk transcript and is not spawning ${be}. Previously every restore auto-started the CLI, which made "Starting … agent" / "first event in 0.8s" look like work had just begun.`
+      });
+      return;
+    }
+
+    this.idleResume = false;
+    this.panel.post({ type: 'dismissNotice', key: 'idle-restore' });
+
     const spawnStart = Date.now();
     const cancelNudge = this.postStartupNotice({
       be,
@@ -2972,50 +3087,6 @@ export class SessionManager {
         }
       });
     });
-
-    this.meta = loaded.meta;
-    // Re-hydrate the per-backend native-session memory so a panel reopened on
-    // this conversation knows which backends already have a native thread — and
-    // resumes them natively instead of re-summarizing on switch.
-    if (this.meta.backendSessions) {
-      for (const [b, id] of Object.entries(this.meta.backendSessions)) {
-        if (id) this.previousSessionByBackend.set(b as BackendId, id);
-      }
-    }
-    this.titled = true; // existing session already has its title
-    this.panel.setTitle?.(this.meta.title);
-    this.panel.post({ type: 'sessionMeta', session: this.meta });
-
-    // Replay the stored transcript so the UI shows the full conversation history
-    this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
-
-    // Self-resume primer for backends without native --resume (grok ACP
-    // today). The new agent process has zero memory of the conversation
-    // even though the user sees the history in the UI. Inject the last
-    // N turns verbatim as a one-shot primer on the first prompt so the
-    // agent picks up where it left off. claude with a valid resume id
-    // skips this — its own `--resume` already feeds the jsonl back to
-    // the model. See [[serializeSelfResumePrimer]].
-    const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
-    if (loaded.records.length > 0) {
-      const primer = serializeSelfResumePrimer({
-        records: loaded.records as any,
-        lastNTurns: 10,
-        backendLabel: backendLabel(be)
-      });
-      if (primer && !nativeResume) {
-        this.pendingPrimer = primer;
-        this.panel.post({
-          type: 'notice',
-          text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
-          detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
-        });
-      } else if (primer) {
-        // Native resume attempt (grok session/load or claude --resume).
-        // Held in reserve for handleResumeFallback — see fallbackPrimer.
-        this.fallbackPrimer = primer;
-      }
-    }
 
     // Resume the agent with its NATIVE session id when we have one.
     // Two paths reach a resumable id:

@@ -374,7 +374,17 @@ export type HostToWebview =
       items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
     }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
-  | { type: 'historyLoaded'; meta: SessionMeta; records: Array<{ type: string; text?: string; update?: SessionUpdate; marker?: CompactMarker }> }
+  | {
+      type: 'historyLoaded';
+      meta: SessionMeta;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        marker?: CompactMarker;
+        ts?: number;
+      }>;
+    }
   /** A compact completed on the live session — append the divider to the
    * timeline. Reload replay comes from the persisted `compact` transcript
    * record via `historyLoaded`, not this event. */

@@ -172,12 +172,12 @@ export class SessionStore {
     return merged;
   }
 
-  appendUpdate(id: string, update: SessionUpdate): void {
-    this.enqueue(id, JSON.stringify({ type: 'update', update }) + '\n');
+  appendUpdate(id: string, update: SessionUpdate, ts: number = Date.now()): void {
+    this.enqueue(id, JSON.stringify({ type: 'update', ts, update }) + '\n');
   }
 
-  appendUserText(id: string, text: string): void {
-    this.enqueue(id, JSON.stringify({ type: 'user', text }) + '\n');
+  appendUserText(id: string, text: string, ts: number = Date.now()): void {
+    this.enqueue(id, JSON.stringify({ type: 'user', ts, text }) + '\n');
   }
 
   /** Persist a /compact boundary. Replays through `load()` like any other
