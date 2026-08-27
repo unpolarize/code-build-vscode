@@ -67,6 +67,8 @@ import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
 import { StopGovernor, type GovernorConfig, type GovernorTrip } from './stopGovernor';
+import { WriteCheckpointEngine } from './writeCheckpoint';
+import { createPathGuard } from './pathGuard';
 import {
   SessionPerfCollector,
   type PerfDebugMode
@@ -104,6 +106,10 @@ export class SessionManager {
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
   private readonly perf = new SessionPerfCollector();
+  /** Write-checkpoint engine for the ACTIVE session (lazily rebuilt when
+   * the session id changes — resume loads the persisted index from disk). */
+  private checkpoints?: WriteCheckpointEngine;
+  private checkpointsSessionId?: string;
   /** Coalesced SessionUpdates waiting for the next IPC flush. */
   private ipcQueue: SessionUpdate[] = [];
   private ipcTimer: ReturnType<typeof setTimeout> | undefined;
@@ -405,6 +411,9 @@ export class SessionManager {
         break;
       case 'openDiff':
         await this.editor.openDiff(msg.path, msg.oldText, msg.newText);
+        break;
+      case 'restoreCheckpoint':
+        await this.handleRestoreCheckpoint(msg.toolCallId);
         break;
       case 'revealLocation':
         await this.editor.revealLocation(msg.path, msg.line);
@@ -1606,7 +1615,8 @@ export class SessionManager {
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(remembered.mode),
       forceKp:
-        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation'
+        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation',
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 
@@ -2349,6 +2359,7 @@ export class SessionManager {
         this.panel.post({ type: 'sessionMeta', session: this.meta });
       }
       this.panel.post({ type: 'historyLoaded', meta: this.meta, records: replay.records });
+      this.postCheckpointIds();
     } else {
       // Best-effort: surface the missing-transcript condition in the chat so
       // the user understands why an external resume produced a blank panel.
@@ -2437,7 +2448,8 @@ export class SessionManager {
       model: this.meta?.model,
       effort: this.meta?.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(mode)
+      additionalTrustedDirs: this.trustedDirs(mode),
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 
@@ -2519,6 +2531,119 @@ export class SessionManager {
     }
   }
 
+  /** Re-announce restorable checkpoint ids after a transcript replay so
+   * ToolCards regain their restore action on reload/resume. Idempotent. */
+  private postCheckpointIds(): void {
+    const sessionId = this.meta?.id;
+    const engine = sessionId ? this.ensureCheckpointEngine(sessionId) : undefined;
+    if (engine) {
+      this.panel.post({ type: 'checkpointAvailable', toolCallIds: engine.listCheckpointIds() });
+    }
+  }
+
+  /** ACP fs/write_text_file bridge hook — stage the pre-image of a path
+   * the moment before the host writes it, ahead of any tool_call naming it. */
+  private captureFsPreWrite(absPath: string): void {
+    const sessionId = this.meta?.id;
+    if (sessionId) this.ensureCheckpointEngine(sessionId)?.onFsWrite(absPath);
+  }
+
+  /** Lazily (re)build the write-checkpoint engine for a session. Returns
+   * undefined when there is no usable workspace root (fail closed — no
+   * capture, no restore). Posts the current restorable-id list to the
+   * webview on every rebuild so ToolCards can show the restore action
+   * after a reload/resume. */
+  private ensureCheckpointEngine(sessionId: string): WriteCheckpointEngine | undefined {
+    if (this.checkpoints && this.checkpointsSessionId === sessionId) return this.checkpoints;
+    const cwd = this.meta?.cwd || this.cwd;
+    if (!cwd) return undefined;
+    let confine: (p: string) => string;
+    try {
+      const guard = createPathGuard(cwd);
+      confine = (p) => guard.confine(p);
+    } catch {
+      return undefined;
+    }
+    // NOTE: file-history/ is a sibling of the FLAT sessions/<uuid>.jsonl
+    // store — a nested sessions/<id>/ dir would collide with it.
+    this.checkpoints = new WriteCheckpointEngine({
+      dir: path.join(os.homedir(), '.codebuild', 'file-history', sessionId),
+      cwd,
+      maxEntries: this.config.get<number>('writeCheckpoint.maxEntries', 50),
+      // Codex normalizes full `changes[].old` into diff oldText — a real
+      // pre-image source. Claude's synthesized diffs are fragments; never
+      // trusted (the engine falls back to pre-write disk reads / degraded).
+      trustDiffOldText: this.meta?.backend === 'codex',
+      confine,
+      onCheckpointsChanged: (toolCallIds) =>
+        this.panel.post({ type: 'checkpointAvailable', toolCallIds })
+    });
+    this.checkpointsSessionId = sessionId;
+    this.panel.post({
+      type: 'checkpointAvailable',
+      toolCallIds: this.checkpoints.listCheckpointIds()
+    });
+    return this.checkpoints;
+  }
+
+  /** "Restore code to here" from an edit ToolCard. Code-only: tracked files
+   * revert to their pre-images before the picked tool; the conversation,
+   * tool cards and agent context are untouched. Bash/external writes are
+   * not tracked (universal gap — Claude's own /rewind shares it). */
+  private async handleRestoreCheckpoint(toolCallId: string): Promise<void> {
+    const sessionId = this.meta?.id;
+    const engine = sessionId ? this.ensureCheckpointEngine(sessionId) : undefined;
+    const paths = engine ? engine.planRestorePaths(toolCallId) : null;
+    if (!engine || !paths || paths.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No restorable checkpoint for that tool call — its pre-images were skipped or the checkpoint history was pruned.'
+      });
+      return;
+    }
+    const confirm = 'Restore code';
+    const pick = await vscode.window.showWarningMessage(
+      `Restore ${paths.length} file${paths.length === 1 ? '' : 's'} to the state before this tool call? Unsaved editor changes to those files will be overwritten. Bash/external file changes are not tracked.`,
+      { modal: true, detail: paths.join('\n') },
+      confirm
+    );
+    if (pick !== confirm) return;
+    const result = engine.restore(toolCallId);
+    if (!result) {
+      this.panel.post({ type: 'notice', text: 'Checkpoint restore failed — entry no longer exists.' });
+      return;
+    }
+    await this.reloadRestoredDocs(result.paths);
+    this.panel.post({
+      type: 'notice',
+      text:
+        `Checkpoint restored: ${result.written} file${result.written === 1 ? '' : 's'} rewritten` +
+        (result.deleted ? `, ${result.deleted} deleted` : '') +
+        (result.skipped ? `, ${result.skipped} skipped (degraded / out-of-root / non-regular)` : '') +
+        '. Conversation unchanged.'
+    });
+  }
+
+  /** Documented restore behavior for open editors: clean documents reload
+   * from disk via the file watcher; DIRTY documents are overwritten with
+   * the restored content and saved — the confirm modal warned about it. */
+  private async reloadRestoredDocs(paths: string[]): Promise<void> {
+    for (const p of paths) {
+      const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === p);
+      if (!doc || !doc.isDirty) continue;
+      try {
+        const restored = await fs.readFile(p, 'utf8');
+        const edit = new vscode.WorkspaceEdit();
+        const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        edit.replace(doc.uri, full, restored);
+        await vscode.workspace.applyEdit(edit);
+        await doc.save();
+      } catch {
+        /* file was deleted by the restore or unreadable — watcher surfaces it */
+      }
+    }
+  }
+
   private refreshDualStore(): void {
     if (!this.meta) return;
     const cb = this.store.statTranscript(this.meta.id);
@@ -2565,6 +2690,11 @@ export class SessionManager {
     // lastDiskMs is enqueue cost until flush; use wall for the hot path sample.
     const diskMs = Math.max(this.store.lastDiskMs, performance.now() - t0);
     this.perf.onUpdate(update, { diskMs });
+
+    // Write-checkpoint capture observes the raw stream (edit-class tool_call /
+    // tool_call_update merge + turn boundaries). Same host path for every
+    // backend — claude stream-json included; no "claude has /rewind" carve-out.
+    this.ensureCheckpointEngine(sessionId)?.observeUpdate(update);
 
     this.watchTurnLiveness(update);
     if (
@@ -3008,6 +3138,7 @@ export class SessionManager {
     if (!skipReplay) {
       // Replay the stored transcript so the UI shows the full conversation history
       this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
+      this.postCheckpointIds();
     }
 
     // Self-resume primer for backends without native --resume (grok ACP
@@ -3108,7 +3239,8 @@ export class SessionManager {
       model: this.meta.model,
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(mode)
+      additionalTrustedDirs: this.trustedDirs(mode),
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 }

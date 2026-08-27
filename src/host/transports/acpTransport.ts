@@ -363,6 +363,13 @@ export class AcpTransport extends BaseAgentSession {
       case 'fs/write_text_file': {
         const p = params as { path: string; content: string };
         const safe = this.resolveFsPath(p.path);
+        try {
+          // Pre-image capture must see the disk BEFORE this write lands;
+          // a capture failure must never block the agent's write.
+          this.startOpts?.onFsPreWrite?.(safe);
+        } catch {
+          /* capture is best-effort */
+        }
         await fs.writeFile(safe, p.content, 'utf8');
         return null;
       }

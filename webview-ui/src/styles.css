@@ -483,6 +483,19 @@ body {
   font-size: 0.85em;
   max-height: 280px;
 }
+.tool-restore {
+  margin: 4px 0 2px;
+}
+.tool-restore-btn {
+  cursor: pointer;
+  font-size: 0.85em;
+  opacity: 0.75;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+.tool-restore-btn:hover {
+  opacity: 1;
+  text-decoration: underline;
+}
 
 /* Diffs */
 .diff {

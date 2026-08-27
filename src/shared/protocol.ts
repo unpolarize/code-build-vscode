@@ -227,6 +227,10 @@ export type WebviewToHost =
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
+  /** "Restore code to here" on an edit ToolCard — revert tracked files to
+   * their pre-images before this tool call (code-only; host shows a modal
+   * confirm before touching disk). */
+  | { type: 'restoreCheckpoint'; toolCallId: string }
   | { type: 'openInCodeSessions' }
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
@@ -389,6 +393,9 @@ export type HostToWebview =
    * timeline. Reload replay comes from the persisted `compact` transcript
    * record via `historyLoaded`, not this event. */
   | { type: 'compactMarker'; marker: CompactMarker }
+  /** Full list of tool call ids with a restorable write checkpoint (replaces
+   * the previous list). ToolCards matching an id show "Restore code to here". */
+  | { type: 'checkpointAvailable'; toolCallIds: string[] }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`
    * is the BackendId (not the human label) of the source — the host

@@ -524,6 +524,7 @@ export function App() {
         busy={state.busy}
         follow={follow}
         onFollowChange={setFollow}
+        checkpointIds={state.checkpointIds}
         onAskUserAnswer={(toolCallId, answers) => {
           dispatch({ kind: 'askUserAnswered', toolCallId, answers });
           post({ type: 'askUserAnswer', toolCallId, answers });

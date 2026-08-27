@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.18.0 — 2026-08-26
+
+### Write-checkpoint timeline — restore code to any prior edit (multi-backend /rewind parity)
+
+- **New `src/host/writeCheckpoint.ts`** — host-owned per-`toolCallId` full pre-image blobs + NDJSON index under `~/.codebuild/file-history/<sessionId>/` (sibling of the flat `sessions/<uuid>.jsonl` store). Works for every backend — claude stream-json, codex exec-json, grok/opencode ACP — no "claude has /rewind" carve-out. NOT shadow-git, NOT the user's `.git`, NOT VS Code Local History.
+- **Dual capture, never waits for `completed`:** (A) the ACP `fs/write_text_file` bridge stages the pre-image just before the host writes (new `StartOpts.onFsPreWrite`); (B) edit-class `tool_call` / `tool_call_update` records merged by toolCallId — pre-images from a live disk read at first pending sight, the staged bridge read, or (codex only) trusted full `changes[].old` diffs. A path first seen at `completed` with no trusted source is **degraded** — never an invented baseline — and degraded-only tools produce no restore target; failed tools never do.
+- **"⤺ Restore code to here"** on edit ToolCards (host modal confirm listing the files; unsaved-editor warning). Restore is a timeline union — earliest pre-image ≥ the picked tool per path — code-only: conversation and tool cards unchanged. `null` pre-image (Write-new) → restore deletes the file. Out-of-root paths are re-confined under the session PathGuard and skipped + counted; dirty editors are overwritten with restored content and saved (documented). Bash/external writes are not tracked (universal gap — Claude's /rewind shares it).
+- **Ring cap** `codeBuild.writeCheckpoint.maxEntries` (default 50): oldest entries + orphaned blobs GC'd. Skips: binary/null-byte, >1.5 MB, symlinks/non-regular (counted, reported in the restore notice).
+- Protocol: `restoreCheckpoint` (webview→host), `checkpointAvailable` (host→webview, full-list idempotent). 15 new fixture-stream unit tests (in-memory fs — grok pending→write→completed, write-then-announce staging, Write-new delete, version chain, update-merge, codex `changes[].old`, claude completed-race degraded, ring GC, confinement, persistence across reload). (kp: ideas/cb-host-write-checkpoint-timeline-snapshot-acp-w)
+
 ## 0.17.3 — 2026-08-26
 
 ### /compact marker plumbing (slice 1 of the built-in /compact)

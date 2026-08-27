@@ -29,6 +29,11 @@ export interface StartOpts {
   additionalTrustedDirs?: string[];
   /** Force-inject KP MCP on ACP session/new (Voice Ideation Sessions). */
   forceKp?: boolean;
+  /** Called with the confined absolute path just BEFORE the host's
+   * fs/write_text_file bridge writes to disk — the write-checkpoint
+   * engine's pre-image capture point for client-FS ACP backends. Must
+   * never throw into the write path (callers guard). */
+  onFsPreWrite?: (absPath: string) => void;
 }
 
 /**

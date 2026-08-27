@@ -10,7 +10,7 @@ const STATUS_ICON: Record<string, string> = {
   failed: '✕'
 };
 
-export function ToolCard({ tool }: { tool: ToolCall }) {
+export function ToolCard({ tool, canRestore }: { tool: ToolCall; canRestore?: boolean }) {
   const blocks = tool.content ?? [];
   const diffs = blocks.filter((b): b is Extract<ContentBlock, { type: 'diff' }> => b.type === 'diff');
   const resultText = blocks
@@ -61,6 +61,21 @@ export function ToolCard({ tool }: { tool: ToolCall }) {
       ))}
 
       {resultText && <pre className="tool-result">{resultText}</pre>}
+
+      {canRestore && (
+        <div className="tool-restore">
+          <span
+            className="tool-restore-btn"
+            title="Revert the files this tool touched to their state before this call (code only — the conversation is unchanged; bash/external writes are not tracked). The host asks to confirm."
+            onClick={(e) => {
+              e.preventDefault();
+              post({ type: 'restoreCheckpoint', toolCallId: tool.toolCallId });
+            }}
+          >
+            ⤺ Restore code to here
+          </span>
+        </div>
+      )}
     </details>
   );
 }

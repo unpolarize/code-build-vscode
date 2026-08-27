@@ -180,6 +180,9 @@ export interface ChatState {
   visActive: boolean;
   /** Effective stall auto-cancel (seconds). 0 = warn-only. */
   stallAutoCancelSeconds: number;
+  /** Tool call ids with a restorable host write-checkpoint — edit ToolCards
+   * matching an id show the "Restore code to here" action. */
+  checkpointIds: string[];
 }
 
 export const initialState: ChatState = {
@@ -217,7 +220,8 @@ export const initialState: ChatState = {
     hostSttAvailable: false
   },
   visActive: false,
-  stallAutoCancelSeconds: 0
+  stallAutoCancelSeconds: 0,
+  checkpointIds: []
 };
 
 let seq = 0;
@@ -395,6 +399,9 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       items.push({ kind: 'compact', id: nextId(), createdAt: now(), marker: msg.marker });
       return { ...state, items };
     }
+    case 'checkpointAvailable':
+      // Host sends the FULL restorable list each time (idempotent replace).
+      return { ...state, checkpointIds: msg.toolCallIds };
     case 'sessionMeta':
       return {
         ...state,

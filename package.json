@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.17.3",
+  "version": "0.18.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -491,6 +491,12 @@
           "type": "boolean",
           "default": false,
           "description": "When true, do not inject the default chrome-devtools + playwright MCP servers on ACP session/new. Explicit codeBuild.mcpServers entries (if set) are still passed through; with no override, an empty list is sent (no default npx spawns)."
+        },
+        "codeBuild.writeCheckpoint.maxEntries": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Ring size of the per-session write-checkpoint timeline (pre-image snapshots of edit-class agent tool calls, restorable from each edit's tool card). Past the cap the oldest checkpoints and their orphaned blobs are dropped. Blobs live under ~/.codebuild/file-history/<sessionId>/. Bash/external file changes are never tracked."
         },
         "codeBuild.mcpSchemaTokenBudget": {
           "type": "number",

@@ -19,9 +19,18 @@ interface Props {
   /** When false, do not jump to the latest event (user scrolled or navigated). */
   follow?: boolean;
   onFollowChange?: (follow: boolean) => void;
+  /** Tool call ids with a restorable host write-checkpoint. */
+  checkpointIds?: string[];
 }
 
-export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFollowChange }: Props) {
+export function MessageList({
+  items,
+  busy,
+  onAskUserAnswer,
+  follow = true,
+  onFollowChange,
+  checkpointIds
+}: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const ignoreScroll = useRef(false);
   const unlockTimer = useRef<number | null>(null);
@@ -88,6 +97,9 @@ export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFol
           item={item}
           onAskUserAnswer={onAskUserAnswer}
           streaming={item.id === streamingId}
+          canRestore={
+            item.kind === 'tool' && (checkpointIds?.includes(item.tool.toolCallId) ?? false)
+          }
         />
       ))}
       {awaitingFirstToken && (
@@ -125,12 +137,15 @@ function TimeChip({ createdAt, updatedAt }: { createdAt: number; updatedAt?: num
 const Item = memo(function Item({
   item,
   onAskUserAnswer,
-  streaming
+  streaming,
+  canRestore
 }: {
   item: ChatItem;
   onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
   /** True while this is the live streaming assistant/thought bubble. */
   streaming?: boolean;
+  /** Tool items only: a restorable write checkpoint exists for this call. */
+  canRestore?: boolean;
 }) {
   switch (item.kind) {
     case 'user':
@@ -195,7 +210,7 @@ const Item = memo(function Item({
       );
     }
     case 'tool':
-      return <ToolCard tool={item.tool} />;
+      return <ToolCard tool={item.tool} canRestore={canRestore} />;
     case 'files':
       return (
         <div className="msg msg-files">
