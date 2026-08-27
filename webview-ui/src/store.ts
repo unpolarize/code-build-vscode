@@ -721,7 +721,10 @@ function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecor
     usage: null,
     usageBreakdown: [],
     permissionQueue: [],
-    busy: false
+    busy: false,
+    // Stale restore actions must not survive a session switch; the host
+    // re-posts checkpointAvailable right after historyLoaded.
+    checkpointIds: []
   };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);

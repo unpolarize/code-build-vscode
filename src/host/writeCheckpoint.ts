@@ -233,10 +233,21 @@ export class WriteCheckpointEngine {
     return this.finalized.filter((e) => this.isRestorable(e)).map((e) => e.toolCallId);
   }
 
-  /** Absolute paths a restore-to-this-tool would touch (for the confirm modal). */
+  /** Absolute paths a restore-to-this-tool would actually touch (for the
+   * confirm modal) — pre-filtered through the same confinement restore
+   * applies, so the modal never overlists files that would be skipped. */
   planRestorePaths(toolCallId: string): string[] | null {
-    const plan = this.buildPlan(toolCallId);
-    return plan ? [...plan.plan.keys()] : null;
+    const built = this.buildPlan(toolCallId);
+    if (!built) return null;
+    const out: string[] = [];
+    for (const p of built.plan.keys()) {
+      try {
+        out.push(this.confine ? this.confine(p) : p);
+      } catch {
+        /* out-of-root — restore will skip it too */
+      }
+    }
+    return out;
   }
 
   /** AcpTransport fs/write_text_file hook — MUST run before the write lands. */
@@ -250,7 +261,17 @@ export class WriteCheckpointEngine {
     if (this.staged.has(key)) return; // first write's pre-image wins
     const kind = this.fs.fileKind(key);
     if (kind === 'other') return;
-    this.staged.set(key, kind === 'missing' ? null : this.fs.readFile(key));
+    if (kind === 'missing') {
+      this.staged.set(key, null);
+      return;
+    }
+    // Existing file: stage only a read that passes the same policy as live
+    // captures. An unreadable/oversize/binary pre-image must NOT stage null —
+    // null means Write-new and restore would DELETE the file. Not staging
+    // leaves the path to the degraded-at-completed rule (skip, never lie).
+    const content = this.fs.readFile(key);
+    if (content === null || content.length > this.maxFileBytes || content.includes('\0')) return;
+    this.staged.set(key, content);
   }
 
   observeUpdate(update: SessionUpdate): void {
@@ -309,6 +330,10 @@ export class WriteCheckpointEngine {
         result.skipped++;
         continue;
       }
+      if (ref.blobId !== null && !/^[0-9a-f]{40}$/.test(ref.blobId)) {
+        result.skipped++; // tampered/corrupt index line must not traverse paths
+        continue;
+      }
       if (ref.blobId === null) {
         if (kind !== 'missing') {
           this.fs.deleteFile(target);
@@ -347,11 +372,19 @@ export class WriteCheckpointEngine {
       return;
     }
 
-    // Source 2 (codex): full changes[].old normalized into diff oldText.
+    // Source 2 (codex): full changes[].old normalized into diff oldText —
+    // trusted only WHEN PRESENT (non-empty). The normalizer collapses
+    // `old: undefined` (new file) and `old: ''` (empty file) into '' — an
+    // ambiguity we must not resolve by guessing "delete on restore"; empty
+    // falls through to disk-at-pending / degraded like any other path.
     if (this.trustDiffOldText) {
       const diff = diffBlocks(entry.merged.content).find((b) => this.normalize(b.path) === key);
-      if (diff) {
-        this.record(entry, key, diff.oldText === '' ? null : diff.oldText);
+      if (diff && diff.oldText !== '') {
+        if (diff.oldText.length > this.maxFileBytes || diff.oldText.includes('\0')) {
+          entry.skipped++;
+          return;
+        }
+        this.record(entry, key, diff.oldText);
         return;
       }
     }

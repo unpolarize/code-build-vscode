@@ -256,6 +256,48 @@ test('bypass-mode captures still happen; out-of-root restore stays confined (doc
   assert.equal(fs.files.get('/etc/out.conf'), 'v1');
 });
 
+test('unreadable existing file never stages a null pre-image (restore must not delete it)', () => {
+  const fs = memFs({ '/ws/locked.ts': 'v0' });
+  const readFile = fs.readFile.bind(fs);
+  fs.readFile = (p) => (p === '/ws/locked.ts' ? null : readFile(p)); // EACCES-style
+  const e = engine(fs);
+  e.onFsWrite('/ws/locked.ts'); // exists but unreadable — must NOT stage null
+  fs.files.set('/ws/locked.ts', 'v1');
+  e.observeUpdate(toolCall({ toolCallId: 't1', status: 'completed', locations: [{ path: 'locked.ts' }] }));
+  // degraded-only → no restore target; the file is never deletable via restore
+  assert.deepEqual(e.listCheckpointIds(), []);
+  assert.equal(fs.files.get('/ws/locked.ts'), 'v1');
+});
+
+test('codex empty oldText is ambiguous (new vs empty file) — degraded, never delete-on-restore', () => {
+  const fs = memFs({ '/ws/was-empty.ts': 'v1' });
+  const e = engine(fs, { trustDiffOldText: true });
+  e.observeUpdate(
+    toolCall({
+      toolCallId: 'c1',
+      status: 'completed',
+      content: [{ type: 'diff', path: 'was-empty.ts', oldText: '', newText: 'v1' }]
+    })
+  );
+  assert.deepEqual(e.listCheckpointIds(), []);
+  assert.equal(fs.files.get('/ws/was-empty.ts'), 'v1');
+});
+
+test('planRestorePaths applies confinement so the confirm modal never overlists', () => {
+  const fs = memFs({ '/ws/in.ts': 'v0', '/etc/out.conf': 'v0' });
+  const e = engine(fs, {
+    confine: (p) => {
+      if (!p.startsWith('/ws/')) throw new Error('escape');
+      return p;
+    }
+  });
+  e.observeUpdate(
+    toolCall({ toolCallId: 't1', locations: [{ path: '/ws/in.ts' }, { path: '/etc/out.conf' }] })
+  );
+  e.observeUpdate(toolUpdate({ toolCallId: 't1', status: 'completed' }));
+  assert.deepEqual(e.planRestorePaths('t1'), ['/ws/in.ts']);
+});
+
 test('extractCheckpointPaths unions diff paths, locations and rawInput keys', () => {
   const tc = {
     toolCallId: 'x',
