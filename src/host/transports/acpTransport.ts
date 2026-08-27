@@ -330,7 +330,13 @@ export class AcpTransport extends BaseAgentSession {
     if (method === 'session/update') {
       const p = params as { update?: Record<string, unknown> };
       if (p.update) {
-        for (const u of normalizeAcpUpdate(p.update as never)) this.emit(u);
+        for (const u of normalizeAcpUpdate(p.update as never)) {
+          // Keep the auto-approve mode in lockstep with the agent's own
+          // mode changes — otherwise the chip shows agent truth while
+          // handlePermission still applies the stale spawn-time mode.
+          if (u.kind === 'current_mode_update' && u.mode) this.mode = u.mode;
+          this.emit(u);
+        }
       }
     }
   }
@@ -571,9 +577,11 @@ export class AcpTransport extends BaseAgentSession {
       .map((m) => ({ id: m.id, name: m.name || m.id, description: m.description }));
     this.availableModeIds = available.length > 0 ? available.map((m) => m.id) : undefined;
     this.emit({ kind: 'modes_update', currentModeId: modes.currentModeId, availableModes: available });
+    const mapped = permissionModeFromAcpId(modes.currentModeId);
+    if (mapped) this.mode = mapped;
     this.emit({
       kind: 'current_mode_update',
-      mode: permissionModeFromAcpId(modes.currentModeId),
+      mode: mapped,
       vendorModeId: modes.currentModeId
     });
   }
@@ -585,13 +593,21 @@ export class AcpTransport extends BaseAgentSession {
     const prev = this.mode;
     this.mode = mode;
     if (!this.rpc || !this.acpSessionId) return;
-    const modeId = acpIdForPermissionMode(mode);
+    let modeId = acpIdForPermissionMode(mode);
     // When the agent advertised its inventory on session/new|load, reject
-    // unsupported ids locally instead of guessing — the caller reverts the
-    // chip and skips persisting the selection.
-    if (this.availableModeIds && !this.availableModeIds.includes(modeId)) {
-      this.mode = prev;
-      throw new Error(`${this.backend} does not support permission mode '${mode}'`);
+    // unsupported modes locally instead of guessing — the caller reverts
+    // the chip and skips persisting the selection. Aliases count: an agent
+    // advertising `manual` (not `default`) still accepts mode 'default',
+    // and we send the id the agent actually advertised.
+    if (this.availableModeIds) {
+      const advertised = this.availableModeIds.includes(modeId)
+        ? modeId
+        : this.availableModeIds.find((id) => permissionModeFromAcpId(id) === mode);
+      if (!advertised) {
+        this.mode = prev;
+        throw new Error(`${this.backend} does not support permission mode '${mode}'`);
+      }
+      modeId = advertised;
     }
     try {
       await this.rpc.request('session/set_mode', { sessionId: this.acpSessionId, modeId });

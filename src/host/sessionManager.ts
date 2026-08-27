@@ -2187,6 +2187,19 @@ export class SessionManager {
     void this.session?.prompt(blocks);
   }
 
+  /** Keep host meta truthful when the agent reports its own mode (modes
+   * ingested from session/new|load or a live current_mode_update). Without
+   * this, persisted meta disagrees with the chip after a reload. Does NOT
+   * touch globalState.lastMode — an agent-initiated mode change is not a
+   * user selection. */
+  private syncAgentMode(update: SessionUpdate): void {
+    if (update.kind !== 'current_mode_update' || !update.mode || !this.meta) return;
+    if (this.meta.mode === update.mode) return;
+    this.meta.mode = update.mode;
+    this.store.updateMeta(this.meta);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+  }
+
   private setMode(mode: PermissionMode): void {
     // Optimistic: update meta + chip immediately, but persist lastMode only
     // after the transport accepts the change. On rejection (ACP
@@ -2728,6 +2741,7 @@ export class SessionManager {
     this.onTurnEvent(update);
     this.captureBackendSessionId(update);
     this.handleResumeFallback(update);
+    this.syncAgentMode(update);
 
     const immediate =
       update.kind === 'result' ||

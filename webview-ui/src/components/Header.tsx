@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { PermissionMode } from '../../../src/shared/acpTypes';
 import type { ChatState } from '../store';
 
-const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'bypass'];
+const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypass'];
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 const EFFORT_LEVELS: Effort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 

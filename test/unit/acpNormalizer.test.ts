@@ -102,3 +102,8 @@ test('current_mode_update without currentModeId yields no events', () => {
   const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update' } as never);
   assert.equal(out.length, 0);
 });
+
+test('current_mode_update accepts narrative-docs `modeId` as fallback for `currentModeId`', () => {
+  const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update', modeId: 'plan' } as never);
+  assert.deepEqual(out, [{ kind: 'current_mode_update', mode: 'plan', vendorModeId: 'plan' }]);
+});

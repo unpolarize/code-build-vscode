@@ -339,6 +339,8 @@
             "default",
             "plan",
             "acceptEdits",
+            "auto",
+            "dontAsk",
             "bypass"
           ],
           "default": "bypass",
