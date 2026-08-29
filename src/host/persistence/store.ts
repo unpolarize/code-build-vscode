@@ -63,6 +63,9 @@ export class SessionStore {
   lastDiskMs = 0;
   /** Coalesce window for async appends. */
   private readonly flushMs: number;
+  /** In-memory index.json; invalidated when the file's mtime+size change. */
+  private indexCache: SessionMeta[] | null = null;
+  private indexStat: { mtimeMs: number; size: number } | null = null;
 
   constructor(root = path.join(os.homedir(), '.codebuild'), flushMs = 50) {
     this.root = root;
@@ -112,9 +115,10 @@ export class SessionStore {
     writeFileAtomic(this.transcriptPath(meta.id), JSON.stringify({ type: 'meta', meta }) + '\n');
   }
 
-  /** Promote a session into the history index (idempotent). */
+  /** Promote a session into the history index (idempotent). Empty chats stay
+   * `hasContent: false` until the first user/assistant/tool record. */
   commitSession(meta: SessionMeta): void {
-    this.upsertIndex(meta);
+    this.upsertIndex({ ...meta, hasContent: meta.hasContent === true });
   }
 
   /**
@@ -146,38 +150,40 @@ export class SessionStore {
   }
 
   /**
-   * Load the meta header from disk, merge defined keys from `patch`, rewrite
-   * line 0 only (body lines untouched), and upsert the index when indexed.
+   * Merge `patch` onto index.json (SoT for list/title/model). Does **not**
+   * rewrite the JSONL transcript — that was a ~1 s fsync of a 96 MB file.
+   * `load()` prefers the index row over JSONL line 0.
    */
   private patchMeta(id: string, patch: Partial<SessionMeta>): SessionMeta | undefined {
     this.flushSync(id);
     const p = this.transcriptPath(id);
     if (!fs.existsSync(p)) return undefined;
-    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
-    if (lines.length === 0) return undefined;
-
-    let current: SessionMeta | undefined;
-    try {
-      const first = JSON.parse(lines[0]) as { type?: string; meta?: SessionMeta };
-      if (first.type === 'meta' && first.meta) current = first.meta;
-    } catch {
-      /* corrupt header */
-    }
+    const current = this.findIndexRow(id) ?? readJsonlMetaHead(p);
     if (!current) return undefined;
-
     const merged = mergeSessionMeta(current, patch);
-    lines[0] = JSON.stringify({ type: 'meta', meta: merged });
-    writeFileAtomic(p, lines.join('\n') + '\n');
-    if (this.isIndexed(id)) this.upsertIndex(merged);
+    this.upsertIndex(merged);
     return merged;
   }
 
   appendUpdate(id: string, update: SessionUpdate, ts: number = Date.now()): void {
     this.enqueue(id, JSON.stringify({ type: 'update', ts, update }) + '\n');
+    if (isSubstantiveUpdate(update.kind)) this.markHasContent(id);
   }
 
-  appendUserText(id: string, text: string, ts: number = Date.now()): void {
-    this.enqueue(id, JSON.stringify({ type: 'user', ts, text }) + '\n');
+  appendUserText(
+    id: string,
+    text: string,
+    ts: number = Date.now(),
+    images?: Array<{ mimeType: string; data: string; name?: string }>
+  ): void {
+    const rec: { type: 'user'; ts: number; text: string; images?: typeof images } = {
+      type: 'user',
+      ts,
+      text
+    };
+    if (images && images.length > 0) rec.images = images;
+    this.enqueue(id, JSON.stringify(rec) + '\n');
+    this.markHasContent(id);
   }
 
   private enqueue(id: string, line: string): void {
@@ -263,7 +269,7 @@ export class SessionStore {
   }
 
   private isIndexed(id: string): boolean {
-    return this.list().some((m) => m.id === id);
+    return this.findIndexRow(id) !== undefined;
   }
 
   /** Load a transcript back into ordered records for UI rehydration. */
@@ -273,62 +279,36 @@ export class SessionStore {
     if (!fs.existsSync(p)) return { records: [] };
     const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
     const records: { type: string; [k: string]: unknown }[] = [];
-    let meta: SessionMeta | undefined;
+    let jsonlMeta: SessionMeta | undefined;
     for (const line of lines) {
       try {
         const rec = JSON.parse(line);
-        if (rec.type === 'meta') meta = rec.meta;
+        if (rec.type === 'meta') jsonlMeta = rec.meta;
         else records.push(rec);
       } catch {
         /* skip corrupt line */
       }
     }
+    const indexMeta = this.findIndexRow(id);
+    const meta = indexMeta ? { ...jsonlMeta, ...indexMeta, id } : jsonlMeta;
     return { meta, records };
   }
 
   list(): SessionMeta[] {
-    // Flush everything so hasContent sees latest writes.
-    this.flushSync();
-    if (!fs.existsSync(this.indexPath)) return [];
-    try {
-      const all = JSON.parse(fs.readFileSync(this.indexPath, 'utf8')) as SessionMeta[];
-      // Defensively hide sessions whose transcript has no real content.
-      return all.filter((m) => this.hasContent(m.id));
-    } catch {
-      return [];
-    }
+    return this.readIndexRaw().filter((m) => m.hasContent === true);
   }
 
   /**
    * True if the transcript has real conversation — a user message or substantive
-   * agent output — not just connection noise (e.g. available_commands_update that
-   * the agent emits on connect before any prompt).
+   * agent output — not just connection noise (e.g. available_commands_update).
+   * Prefers the index sidecar; scans a 64 KB head only for unstamped legacy rows.
    */
   hasContent(id: string): boolean {
+    const row = this.findIndexRow(id);
+    if (row?.hasContent === true) return true;
+    if (row?.hasContent === false) return false;
     this.flushSync(id);
-    const p = this.transcriptPath(id);
-    if (!fs.existsSync(p)) return false;
-    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
-    for (const line of lines) {
-      try {
-        const rec = JSON.parse(line) as { type?: string; update?: { kind?: string } };
-        if (rec.type === 'user') return true;
-        if (rec.type === 'update') {
-          const k = rec.update?.kind;
-          if (
-            k === 'agent_message_chunk' ||
-            k === 'agent_thought_chunk' ||
-            k === 'tool_call' ||
-            k === 'plan'
-          ) {
-            return true;
-          }
-        }
-      } catch {
-        /* skip */
-      }
-    }
-    return false;
+    return headHasContent(this.transcriptPath(id));
   }
 
   /** Stat helper for dual-store perf panel. */
@@ -350,19 +330,70 @@ export class SessionStore {
     return p;
   }
 
-  private upsertIndex(meta: SessionMeta): void {
-    // Avoid recursive flushSync from list() while writing — read raw index.
+  private findIndexRow(id: string): SessionMeta | undefined {
+    return this.readIndexRaw().find((m) => m.id === id);
+  }
+
+  private markHasContent(id: string): void {
+    const row = this.findIndexRow(id);
+    if (!row || row.hasContent === true) return;
+    this.upsertIndex({ ...row, hasContent: true });
+  }
+
+  private readIndexRaw(): SessionMeta[] {
+    if (!fs.existsSync(this.indexPath)) {
+      this.indexCache = [];
+      this.indexStat = null;
+      return this.indexCache;
+    }
+    let st: { mtimeMs: number; size: number };
+    try {
+      const s = fs.statSync(this.indexPath);
+      st = { mtimeMs: Math.floor(s.mtimeMs), size: s.size };
+    } catch {
+      return this.indexCache ?? [];
+    }
+    if (
+      this.indexCache &&
+      this.indexStat &&
+      this.indexStat.mtimeMs === st.mtimeMs &&
+      this.indexStat.size === st.size
+    ) {
+      return this.indexCache;
+    }
     let all: SessionMeta[] = [];
-    if (fs.existsSync(this.indexPath)) {
+    try {
+      all = JSON.parse(fs.readFileSync(this.indexPath, 'utf8')) as SessionMeta[];
+    } catch {
+      all = [];
+    }
+    if (all.some((m) => m.hasContent === undefined)) {
+      all = migrateHasContent(all, (id) => this.transcriptPath(id));
+      writeFileAtomic(this.indexPath, JSON.stringify(all.slice(0, 500), null, 2));
       try {
-        all = JSON.parse(fs.readFileSync(this.indexPath, 'utf8')) as SessionMeta[];
+        const s = fs.statSync(this.indexPath);
+        st = { mtimeMs: Math.floor(s.mtimeMs), size: s.size };
       } catch {
-        all = [];
+        /* keep prior st */
       }
     }
-    all = all.filter((m) => m.id !== meta.id);
+    this.indexCache = all;
+    this.indexStat = st;
+    return all;
+  }
+
+  private upsertIndex(meta: SessionMeta): void {
+    const all = this.readIndexRaw().filter((m) => m.id !== meta.id);
     all.unshift(meta);
     writeFileAtomic(this.indexPath, JSON.stringify(all.slice(0, 500), null, 2));
+    this.indexCache = all.slice(0, 500);
+    try {
+      const s = fs.statSync(this.indexPath);
+      this.indexStat = { mtimeMs: Math.floor(s.mtimeMs), size: s.size };
+    } catch {
+      this.indexCache = null;
+      this.indexStat = null;
+    }
   }
 
   dispose(): void {
@@ -390,4 +421,76 @@ export function mergeSessionMeta(
     }
   }
   return merged;
+}
+
+const HEAD_BYTES = 64 * 1024;
+
+function isSubstantiveUpdate(kind: string | undefined): boolean {
+  return (
+    kind === 'agent_message_chunk' ||
+    kind === 'agent_thought_chunk' ||
+    kind === 'tool_call' ||
+    kind === 'plan'
+  );
+}
+
+function recordHasContent(rec: { type?: string; update?: { kind?: string } }): boolean {
+  if (rec.type === 'user') return true;
+  if (rec.type === 'update') return isSubstantiveUpdate(rec.update?.kind);
+  return false;
+}
+
+/** First-line meta only — never the body. */
+function readJsonlMetaHead(p: string): SessionMeta | undefined {
+  try {
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(8192);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const nl = buf.indexOf(0x0a);
+      const line = buf.slice(0, nl >= 0 ? nl : n).toString('utf8');
+      const rec = JSON.parse(line) as { type?: string; meta?: SessionMeta };
+      if (rec.type === 'meta' && rec.meta) return rec.meta;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    /* missing / corrupt */
+  }
+  return undefined;
+}
+
+export function headHasContent(p: string): boolean {
+  if (!fs.existsSync(p)) return false;
+  try {
+    const st = fs.statSync(p);
+    const fd = fs.openSync(p, 'r');
+    try {
+      const buf = Buffer.alloc(Math.min(HEAD_BYTES, st.size));
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const text = buf.slice(0, n).toString('utf8');
+      const lines = text.split('\n');
+      if (st.size > n && lines.length > 0) lines.pop();
+      for (const line of lines) {
+        if (!line) continue;
+        try {
+          if (recordHasContent(JSON.parse(line))) return true;
+        } catch {
+          /* skip */
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function migrateHasContent(all: SessionMeta[], pathFor: (id: string) => string): SessionMeta[] {
+  return all.map((m) => {
+    if (m.hasContent === true || m.hasContent === false) return m;
+    return { ...m, hasContent: headHasContent(pathFor(m.id)) };
+  });
 }

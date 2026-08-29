@@ -40,6 +40,9 @@ import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
 import { SessionStore } from './persistence/store';
+import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
+import { daemonAppend, daemonCreate, daemonPatchMeta } from './daemonClient';
+import { readOsClipboardImage } from './clipboardImage';
 import {
   claudeJsonlPathFor,
   grokChatPathFor,
@@ -72,6 +75,9 @@ import {
   type PerfDebugMode
 } from './perf/sessionPerf';
 import * as fsSync from 'node:fs';
+
+/** Last `detectAll` result so a new panel can paint before `which`×N. */
+let cachedBackends: HydrateState['backends'] = [];
 
 /** Shared Output channel for the flight recorder (one per extension host). */
 let perfOutput: vscode.OutputChannel | undefined;
@@ -270,6 +276,15 @@ export class SessionManager {
         this.panel.post({ type: 'droppedFilesResolved', items });
         break;
       }
+      case 'readClipboardImage': {
+        const img = await readOsClipboardImage();
+        if (img) {
+          this.panel.post({ type: 'clipboardImage', mimeType: img.mimeType, data: img.data, name: img.name });
+        } else {
+          this.panel.post({ type: 'clipboardText', text: msg.fallbackText ?? '' });
+        }
+        break;
+      }
       case 'newSession':
         // Fresh slate — clear the per-backend restore memory so the
         // new chat doesn't accidentally inherit any prior thread.
@@ -310,8 +325,10 @@ export class SessionManager {
           });
           break;
         }
-        await this.ensureSession();
+        // Busy first so the working pill stays up while idle-reconnect
+        // spawns the CLI (session.start can take several seconds).
         this.panel.post({ type: 'busy', busy: true });
+        await this.ensureSession();
         // Arm the stall watchdog for this turn (D1). The silence clock starts
         // now, at submission, so a turn that produces NO output at all (the
         // claude `error_during_execution`/0-token stall) is still caught.
@@ -325,10 +342,19 @@ export class SessionManager {
         });
         this.pushPerfHud();
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
-        if (originalText) {
+        const images = msg.blocks
+          .filter((b): b is Extract<ContentBlock, { type: 'image' }> => b.type === 'image')
+          .map((b) => ({ mimeType: b.mimeType, data: b.data }));
+        if (originalText || images.length > 0) {
           // First real prompt: promote to history + derive a title from it.
-          this.commitAndTitle(originalText);
-          this.store.appendUserText(this.meta!.id, originalText);
+          this.commitAndTitle(originalText || '(image)');
+          this.store.appendUserText(
+            this.meta!.id,
+            originalText,
+            Date.now(),
+            images.length > 0 ? images : undefined
+          );
+          void daemonAppend(this.meta!.id, { type: 'user', text: originalText });
         }
         // Stash for the classifier (paired with the upcoming
         // assistant text on the next `result`). Bumps turnIndex AFTER
@@ -850,20 +876,16 @@ export class SessionManager {
 
   private async hydrate(): Promise<void> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
-    const backends = await detectAll(overrides);
     const allowBypass = this.config.get<boolean>('allowDangerouslySkipPermissions', false);
     const defaultBackend = this.defaultBackend();
-    // Memory inventory snapshot for the Header chip. Cheap scan
-    // (handful of stat()+readFile()s); rerun on every hydrate so a
-    // panel reload or session swap picks up CLAUDE.md edits.
     const wsRoots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
     const memSources = scanMemorySources(wsRoots);
     const memTotals = summariseSources(memSources);
-    const state: HydrateState = {
+    const sessions = this.store.list().slice(0, 100);
+    const base = {
       session: this.meta ?? null,
-      backends,
       allowBypass,
-      sessions: this.store.list().slice(0, 100),
+      sessions,
       defaultBackend,
       memoryEntries: memTotals.totalEntries,
       memoryFiles: memTotals.totalFiles,
@@ -873,16 +895,20 @@ export class SessionManager {
       voice: this.voiceHydrateConfig(),
       stallAutoCancelSeconds: this.effectiveStallAutoCancelSeconds()
     };
-    this.perf.setMode(state.perfDebug ?? 'off');
+    this.perf.setMode(base.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
-    this.panel.post({ type: 'hydrate', state });
+    // Paint the panel before `which`×N (detectAll). Warm cache makes the
+    // second open instant; first open still shows chrome while binaries resolve.
+    this.panel.post({
+      type: 'hydrate',
+      state: { ...base, backends: cachedBackends } as HydrateState
+    });
+    const backends = await detectAll(overrides);
+    cachedBackends = backends;
+    this.panel.post({ type: 'hydrate', state: { ...base, backends } as HydrateState });
 
-    // Eager-start the default backend session (like Claude Code connects on open) so
-    // the agent's slash commands surface immediately — but only if it's installed and
-    // we don't already have a live session.
     const autoStart = this.config.get<boolean>('autoStartSession', true);
     const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
-    // Don't auto-start a blank session if we're about to resume a previous one.
     if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId && !this.pendingExternal) {
       await this.openSession(defaultBackend);
     }
@@ -1596,6 +1622,8 @@ export class SessionManager {
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
     this.store.createSession(this.meta);
+    this.mirrorCreate(this.meta);
+    this.rememberLast(this.meta.id);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     await this.session.start({
@@ -2315,6 +2343,8 @@ export class SessionManager {
 
     this.store.createSession(this.meta);
     this.store.commitSession(this.meta);
+    this.mirrorCreate(this.meta);
+    this.rememberLast(this.meta.id);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
 
@@ -2450,7 +2480,34 @@ export class SessionManager {
     this.store.updateMeta(this.meta);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
-    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
+    this.rememberLast(this.meta.id);
+    void daemonPatchMeta(this.meta.id, {
+      title: this.meta.title,
+      hasContent: true,
+      backend: this.meta.backend,
+      project_path: this.meta.cwd
+    });
+  }
+
+  private workspaceFolderPaths(): string[] {
+    return vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+  }
+
+  private rememberLast(id: string): void {
+    void this.context.workspaceState.update(LAST_SESSION_KEY, id);
+  }
+
+  private mirrorCreate(meta: SessionMeta): void {
+    void daemonCreate({
+      id: meta.id,
+      backend: meta.backend,
+      cwd: meta.cwd,
+      title: meta.title,
+      model: meta.model,
+      mode: meta.mode,
+      effort: meta.effort,
+      kind: meta.sessionKind
+    });
   }
 
   private teardownSession(): void {
@@ -2562,6 +2619,7 @@ export class SessionManager {
   ): void {
     const t0 = performance.now();
     this.store.appendUpdate(sessionId, update);
+    void daemonAppend(sessionId, update);
     // lastDiskMs is enqueue cost until flush; use wall for the hot path sample.
     const diskMs = Math.max(this.store.lastDiskMs, performance.now() - t0);
     this.perf.onUpdate(update, { diskMs });
@@ -2961,6 +3019,14 @@ export class SessionManager {
       });
       return;
     }
+    if (!sessionMatchesWorkspace(loaded.meta.cwd, this.workspaceFolderPaths())) {
+      this.panel.post({
+        type: 'notice',
+        text: `Not restoring session from another workspace (${loaded.meta.cwd || 'unknown cwd'}).`,
+        detail: 'codeBuild.lastSessionId is workspace-scoped. Open the original folder to continue that chat.'
+      });
+      return;
+    }
 
     const connect = opts?.connect ?? true;
     const skipReplay = opts?.skipReplay === true;
@@ -3003,7 +3069,7 @@ export class SessionManager {
     this.titled = true; // existing session already has its title
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
-    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
+    this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
       // Replay the stored transcript so the UI shows the full conversation history
@@ -3026,13 +3092,16 @@ export class SessionManager {
       });
       if (primer && !nativeResume) {
         this.pendingPrimer = primer;
-        if (connect) {
+        // skipReplay is a send-triggered reconnect: the You-bubble is
+        // already on screen. A "restored context" notice would become
+        // last-item, hide the working pill, and look like a full resume.
+        if (connect && !skipReplay) {
           this.panel.post({
             type: 'notice',
             text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
             detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
           });
-        } else {
+        } else if (!connect) {
           this.fallbackPrimer = primer;
         }
       } else if (primer) {
@@ -3057,13 +3126,19 @@ export class SessionManager {
     this.panel.post({ type: 'dismissNotice', key: 'idle-restore' });
 
     const spawnStart = Date.now();
-    const cancelNudge = this.postStartupNotice({
-      be,
-      text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
-      cwd: loaded.meta.cwd,
-      resumeId: earlyResumeId,
-      spawnStart
-    });
+    // Open Previous still shows "Resuming uuid…". skipReplay is the
+    // first prompt after an idle restore — the user already sent a
+    // message; chat notices here stole the last-item slot, hid the
+    // working pill, and scrolled the You-bubble off screen.
+    const cancelNudge = skipReplay
+      ? () => {}
+      : this.postStartupNotice({
+          be,
+          text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
+          cwd: loaded.meta.cwd,
+          resumeId: earlyResumeId,
+          spawnStart
+        });
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
@@ -3080,6 +3155,7 @@ export class SessionManager {
           firstEventAt = Date.now();
           const ms = firstEventAt - spawnStart;
           cancelNudge();
+          if (skipReplay) return;
           this.panel.post({
             type: 'notice',
             text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`

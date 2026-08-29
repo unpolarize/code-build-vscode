@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.18.0 — 2026-08-29
+
+### Workspace-scoped last session + fast list + daemon writes
+
+- **Issue #6:** `codeBuild.lastSessionId` moves from `globalState` to `workspaceState`. Restore is refused unless `meta.cwd` is this window's folder (or a subdir).
+- **New chat no longer scans JSONL.** `index.json` is the list SoT with a persisted `hasContent` flag and an mtime+size memory cache. `list()` does not read transcripts. `updateMeta` patches the index only (no 96 MB rewrite). Legacy rows migrate once via a 64 KB head scan. Hydrate paints before `which`×N.
+- **Phase 1 dual-write:** create/append/patchMeta also go to the CS daemon when it is up. Local `~/.codebuild` remains the fallback.
+- Includes 0.17.3 (idle reconnect UX) and 0.17.4 (image paste) which were installed but never committed.
+
+## 0.17.4 — 2026-08-26
+
+### Image paste no longer dumps leftover clipboard text
+
+- Cmd/Ctrl-V in the composer **prefers an image** over `text/plain`. macOS often keeps the previous copy's text next to a new screenshot; the old handler only looked for `kind === 'file' && image/*`, missed the bitmap, and inserted the stale paragraph instead of a thumb.
+- If the webview paste event has no image items (common in VS Code webviews), the host reads the **OS clipboard** (macOS PNG via osascript) and attaches that. Text is inserted only when there is no image.
+- Paperclip button to attach PNG/JPEG/GIF/WebP from a file picker.
+- Transcript replay copies images onto a matching You-bubble when JSONL has text only.
+
+## 0.17.3 — 2026-08-26
+
+### Send after idle restore no longer looks stuck
+
+- First prompt after a VS Code remount used to post **Resuming `uuid`…** (then `grok ready · first event in Xs`) as chat notices. Those became the last item, hid the **working…** pill, and scrolled the new **You** bubble off screen — so send looked like a resume with no progress until thinking started. Idle reconnect is now quiet; Open Previous still shows Resuming.
+- The working pill ignores notice / primer cards after the You-bubble, so host chrome cannot hide it.
+- Active-question banner shows attached image thumbs (up to 4). User JSONL records persist images so they survive remount.
+
 ## 0.17.2 — 2026-08-26
 
 ### Rename from Code Sessions updates the chat tab

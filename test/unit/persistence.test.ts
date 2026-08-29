@@ -76,6 +76,54 @@ test('updateMeta rewrites the title in index and transcript header', () => {
   assert.equal(store.load('sess-1').meta?.title, 'Fix the parser bug');
 });
 
+test('list() does not scan a large transcript once hasContent is stamped', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+  store.flushSync('sess-1');
+  const p = store.transcriptPath('sess-1');
+  const blob = '{"type":"update","update":{"kind":"agent_message_chunk","content":{"type":"text","text":"' +
+    'x'.repeat(80) +
+    '"}}}\n';
+  fs.appendFileSync(p, blob.repeat(20_000)); // ~2 MB of decoy lines
+  const t0 = performance.now();
+  const listed = store.list();
+  const ms = performance.now() - t0;
+  assert.equal(listed[0].id, 'sess-1');
+  assert.ok(ms < 50, `list() took ${ms.toFixed(1)}ms — must not read the 2 MB JSONL`);
+});
+
+test('updateMeta does not rewrite the JSONL body', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+  store.flushSync('sess-1');
+  const p = store.transcriptPath('sess-1');
+  const before = fs.readFileSync(p, 'utf8');
+  store.updateMeta('sess-1', { title: 'only in index' });
+  const after = fs.readFileSync(p, 'utf8');
+  assert.equal(after, before, 'JSONL must stay append-only on meta patches');
+  assert.equal(store.list()[0].title, 'only in index');
+  assert.equal(store.load('sess-1').meta?.title, 'only in index');
+});
+
+test('legacy index rows without hasContent migrate via 64KB head scan', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.appendUserText('sess-1', 'legacy prompt');
+  store.flushSync('sess-1');
+  const indexPath = path.join(root, 'index.json');
+  fs.writeFileSync(indexPath, JSON.stringify([{ ...meta }], null, 2));
+  const store2 = new SessionStore(root);
+  assert.equal(store2.list()[0]?.id, 'sess-1');
+  const stamped = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Array<{ hasContent?: boolean }>;
+  assert.equal(stamped[0].hasContent, true);
+});
+
 test('updateMeta patch RMW: title-then-bsid leaves both intact', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);
@@ -382,6 +430,16 @@ test('appendUserText/appendUpdate persist epoch-ms ts on each record', () => {
   assert.equal((records[0] as { ts?: number }).ts, tUser);
   assert.equal(records[1].type, 'update');
   assert.equal((records[1] as { ts?: number }).ts, tUpd);
+});
+
+test('appendUserText persists image attachments with the user record', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  const images = [{ mimeType: 'image/png', data: 'ZmFrZQ==', name: 'shot.png' }];
+  store.appendUserText('sess-1', 'look', 1_700_000_333_000, images);
+  const { records } = store.load('sess-1');
+  assert.equal(records[0].type, 'user');
+  assert.deepEqual((records[0] as { images?: unknown }).images, images);
 });
 
 test('legacy transcripts without ts still load', () => {

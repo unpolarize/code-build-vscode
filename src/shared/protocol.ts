@@ -93,6 +93,9 @@ export interface SessionMeta {
   /** Stop-governor trips (warn or hard stop) recorded on this session,
    * oldest first. Persisted so CSV can join stop outcomes to sessions. */
   stopEvents?: StopEventRecord[];
+  /** Index-sidecar flag: transcript has a user turn or substantive agent
+   * output. `list()` uses this instead of scanning JSONL. */
+  hasContent?: boolean;
 }
 
 /** One stop-governor trip: which budget fired, what the counters were. */
@@ -216,6 +219,10 @@ export type WebviewToHost =
    * `file://` strings; the host maps them to workspace-relative paths and
    * base64-encodes images, replying with `droppedFilesResolved`. */
   | { type: 'resolveDroppedUris'; uris: string[] }
+  /** Webview paste saw no image items (common in VS Code webviews) but
+   * the user hit Cmd/Ctrl-V. Host reads the OS clipboard; replies with
+   * `clipboardImage` or `clipboardText`. */
+  | { type: 'readClipboardImage'; fallbackText?: string }
   | { type: 'listSessions' }
   /** Resume a session by id. When `source` is set to 'claude' or 'grok',
    * the host loads the upstream transcript (cwd is required to locate it)
@@ -347,11 +354,19 @@ export type HostToWebview =
       type: 'droppedFilesResolved';
       items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
     }
+  | { type: 'clipboardImage'; mimeType: string; data: string; name?: string }
+  | { type: 'clipboardText'; text: string }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
   | {
       type: 'historyLoaded';
       meta: SessionMeta;
-      records: Array<{ type: string; text?: string; update?: SessionUpdate; ts?: number }>;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
+      }>;
     }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`

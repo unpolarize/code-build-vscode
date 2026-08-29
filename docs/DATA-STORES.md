@@ -1,5 +1,10 @@
 # Code Build — Architecture & Data Stores
 
+> **Scope note (2026-08-29).** Suite-level design, targets, perf tracking and issues are in the
+> **private** `unpolarize/architecture` repo (`../architecture/tools/`, symlinked at
+> `docs/suite-architecture`). Per `tools/target.md`, the `~/.codebuild` store described in §3 is
+> slated to move into the sessions daemon / `~/.sessions`; treat §3 as the *current* format only.
+
 A developer (and curious-user) reference for **how the Code Build extension works**
 and **exactly where/how it stores data**. Everything below was written against the
 source in this repo; file:line citations point at the authoritative code.

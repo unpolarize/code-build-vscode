@@ -51,7 +51,19 @@ Pre-1.0 (`0.x.x`) currently treats MINOR as breaking-allowed — until 1.0 you m
 
 - **Webview** (`webview-ui/`): React + Vite. Renders the chat surface. Communicates with the host via typed `postMessage` (see [`src/shared/protocol.ts`](src/shared/protocol.ts) for the `WebviewToHost` / `HostToWebview` unions).
 - **Host** (`src/`): VS Code extension. `SessionManager` owns one panel + one `AgentSession`; the transport (`StreamJsonTransport` for claude stream-json, `AcpTransport` for grok/ACP, `CodexTransport` for codex exec-json) normalises every backend into ACP-shaped `SessionUpdate` events.
-- **Session store** (`~/.codebuild/`): local NDJSON transcripts plus an index for the history picker. Externally-imported sessions (claude `~/.claude/projects/`, grok `~/.grok/sessions/`) are replayed via the `externalReplay` loaders.
+- **Session store** (`~/.codebuild/`): local NDJSON transcripts plus an index for the history picker. Externally-imported sessions (claude `~/.claude/projects/`, grok `~/.grok/sessions/`) are replayed via the `externalReplay` loaders. **Slated to move** into the sessions daemon / `~/.sessions` (see suite architecture below); do not add new readers of `~/.codebuild`.
+
+## Suite architecture (private repo — read before cross-component work)
+
+The suite-level design (CS · CSV · CB · KP), the target architecture, the performance tracking
+table, the testing strategy and the cross-project issues table live in the **private**
+`unpolarize/architecture` repo, cloned next to this one at `../architecture` (symlink:
+[`docs/suite-architecture`](docs/suite-architecture)). It is private by design — link to it by
+path, never copy its content into this public repo.
+
+- Before any change touching the store, protocol, daemon, or CSV/KP contracts: read `tools/target.md` and follow `WORKFLOW.md` there.
+- Bugs: claim your row in `tools/issues.md` before starting; perf work: claim the row in `tools/performance.md` and record before → after numbers.
+- This file covers only CB-internal conventions; `docs/DATA-STORES.md` documents the *current* on-disk format.
 
 ## Publishing checklist (user-driven)
 

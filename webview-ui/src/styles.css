@@ -116,6 +116,25 @@ body {
 .active-question-dismiss:hover {
   opacity: 1;
 }
+.active-question-thumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.active-question-thumb {
+  width: 28px;
+  height: 28px;
+  border-radius: 3px;
+  object-fit: cover;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.3));
+  background: var(--vscode-editor-background);
+}
+.active-question-thumb-more {
+  font-size: 0.75em;
+  opacity: 0.7;
+  padding: 0 2px;
+}
 
 /* Header memory chip — small clickable indicator of total memory
  * entries available to the agent. Hover for the per-provider

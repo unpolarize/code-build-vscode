@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import type { ChatItem } from '../store';
+import { isAwaitingFirstToken, type ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
@@ -65,11 +65,9 @@ export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFol
   }
 
   // Show the working indicator only when we're busy AND the agent hasn't
-  // started streaming a response yet (last item is the user's message or a
-  // tool call still in flight). Once assistant text starts arriving the
-  // streaming text itself is the feedback, so we hide the pill.
-  const awaitingFirstToken =
-    busy === true && (!last || last.kind === 'user' || last.kind === 'tool');
+  // started streaming a response yet. Notices / primer cards after the
+  // You-bubble are skipped so idle-reconnect chrome cannot hide the pill.
+  const awaitingFirstToken = isAwaitingFirstToken(items, busy === true);
 
   const streamingId =
     busy && last && (last.kind === 'assistant' || last.kind === 'thought') ? last.id : null;

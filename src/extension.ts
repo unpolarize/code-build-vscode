@@ -6,6 +6,7 @@ import { SessionStore } from './host/persistence/store';
 import { listAllSessions } from './host/persistence/externalSources';
 import { MemoryTreeProvider, MEMORY_VIEW_ID, registerMemoryCommands } from './host/memoryView';
 import type { SessionMeta, SessionSource } from './shared/protocol';
+import { sessionMatchesWorkspace } from './host/lastSession';
 
 export function activate(context: vscode.ExtensionContext): void {
   const managers = new Set<SessionManager>();
@@ -178,8 +179,11 @@ export function activate(context: vscode.ExtensionContext): void {
       const mgr = attach(new ChatPanel(panel, context.extensionUri));
       const stored = state as { lastSessionId?: string } | undefined;
       if (stored && typeof stored.lastSessionId === 'string' && stored.lastSessionId) {
-        // Transcript only — do not spawn on window reload. First prompt reconnects.
-        mgr.queueResume(stored.lastSessionId, { connect: false });
+        const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+        const loaded = new SessionStore().load(stored.lastSessionId);
+        if (loaded.meta && sessionMatchesWorkspace(loaded.meta.cwd, folders)) {
+          mgr.queueResume(stored.lastSessionId, { connect: false });
+        }
       }
     }
   });

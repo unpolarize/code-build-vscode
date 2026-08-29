@@ -46,11 +46,27 @@ export function ActiveQuestionBanner({ question, busy, visible }: Props) {
       <span className="active-question-eyebrow">
         {busy ? '⏳ active' : '↩︎ previous'}
       </span>
+      {question.images && question.images.length > 0 && (
+        <span className="active-question-thumbs" aria-label={`${question.images.length} attached image${question.images.length === 1 ? '' : 's'}`}>
+          {question.images.slice(0, 4).map((img, idx) => (
+            <img
+              key={idx}
+              className="active-question-thumb"
+              src={`data:${img.mimeType};base64,${img.data}`}
+              alt={img.name ?? `attachment ${idx + 1}`}
+              title={img.name ?? `attachment ${idx + 1}`}
+            />
+          ))}
+          {question.images.length > 4 && (
+            <span className="active-question-thumb-more">+{question.images.length - 4}</span>
+          )}
+        </span>
+      )}
       <span
         className="active-question-text"
-        title={`${question.text}\n\nSent ${formatHover(question.createdAt, question.updatedAt)}`}
+        title={`${question.text}${question.images?.length ? `\n${question.images.length} image${question.images.length === 1 ? '' : 's'}` : ''}\n\nSent ${formatHover(question.createdAt, question.updatedAt)}`}
       >
-        {preview}
+        {preview || (question.images?.length ? `${question.images.length} image${question.images.length === 1 ? '' : 's'}` : '')}
       </span>
       <span
         className="active-question-time"
