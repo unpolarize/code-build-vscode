@@ -4,6 +4,7 @@ import { ChatSurface, isWebviewToHost, renderWebviewHtml, webviewOptions } from 
 import { SessionManager } from './sessionManager';
 import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
 import { SessionStore } from './persistence/store';
+import { startSpan } from './hostTrace';
 
 /**
  * Sidebar chat surface. Uses the SAME built React bundle as the editor-tab panel;
@@ -28,7 +29,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ChatSurface
     });
     // Bind a fresh SessionManager the first time the sidebar resolves.
     if (!this.manager) {
-      this.manager = new SessionManager(this, this.context);
+      const span = startSpan('cb.sidebar.resolve');
+      span.mark('html');
+      this.manager = new SessionManager(this, this.context, span);
       // Sidebar is not a serialized webview panel — without this, every
       // VS Code start auto-spawns a blank agent. Restore the last chat
       // as transcript-only; the first prompt reconnects.

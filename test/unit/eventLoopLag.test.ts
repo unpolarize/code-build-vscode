@@ -4,7 +4,10 @@ import { formatLagLine } from '../../src/host/eventLoopLag';
 
 describe('event-loop lag log line', () => {
   it('tags STALL when p99 is above 200 ms', () => {
-    assert.equal(formatLagLine(12.34, 201), '[lag] p50=12.3ms p99=201.0ms STALL');
+    assert.equal(
+      formatLagLine(12.34, 201, 'cb.newConversation.hydrate.detectAll'),
+      '[lag] p50=12.3ms p99=201.0ms STALL task=cb.newConversation.hydrate.detectAll'
+    );
   });
 
   it('omits STALL when p99 is within budget', () => {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.19.0 — 2026-08-29
+
+### Host-trace: keystroke → panel → hydrate
+
+- Always-on spans on **Output → Code Build**: `START cb.newConversation` / `+Nms` marks / `DONE …ms SLOW`. Marks: `panel`, `webview.ready`, `hydrate.memory`, `hydrate.list`, `hydrate.paint`, `hydrate.detectAll`, `hydrate.openSession`.
+- Durable NDJSON at `~/.sessions/.daemon/host-trace.ndjson` (rotated at 2 MB). Event-loop `STALL` lines include `task=` of the in-flight mark.
+- `npm run ship` builds, packages, and `code --install-extension --force` so a landed slice can be tried without a manual vsce step. Do not reload the working chat thread; use a second window.
+
 ## 0.18.1 — 2026-08-29
 
 ### Text paste stays in the webview; host lag is visible

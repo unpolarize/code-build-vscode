@@ -27,14 +27,14 @@ Pre-1.0 (`0.x.x`) currently treats MINOR as breaking-allowed — until 1.0 you m
    ```
 
 4. Stage `package.json`, `CHANGELOG.md`, and the code changes in the same commit.
-5. Optionally package the .vsix locally for sanity install:
+5. **Ship (required after a landed feature):** build, package, and install so the user can try it without extra `npm run build` / vsce steps:
 
    ```bash
-   npx vsce package --allow-missing-repository --no-dependencies
-   code --install-extension code-build-vscode-X.Y.Z.vsix --force
+   npm run ship
    ```
 
-   The user reloads their VS Code window to pick up the new build.
+   That is `build` + `vsce package` + `code --install-extension code-build-vscode-$version.vsix --force`.
+   **Do not reload the working Code Build chat.** Verify in a **second VS Code window**. Host-trace: Output → **Code Build**; file `~/.sessions/.daemon/host-trace.ndjson` (see `../architecture/tools/observability.md`).
 
 **Do not publish to the Marketplace from an agent session.** Publishing is a user-initiated step; the agent's job is to bump the version, update the changelog, and produce a clean .vsix.
 

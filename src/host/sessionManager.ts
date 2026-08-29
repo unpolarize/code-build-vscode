@@ -75,6 +75,7 @@ import {
   type PerfDebugMode
 } from './perf/sessionPerf';
 import * as fsSync from 'node:fs';
+import { startSpan, type Span } from './hostTrace';
 
 /** Last `detectAll` result so a new panel can paint before `which`×N. */
 let cachedBackends: HydrateState['backends'] = [];
@@ -211,7 +212,8 @@ export class SessionManager {
 
   constructor(
     private readonly panel: ChatSurface,
-    private readonly context: vscode.ExtensionContext
+    private readonly context: vscode.ExtensionContext,
+    private openSpan?: Span
   ) {
     this.panel.onMessage((msg) => void this.handle(msg));
   }
@@ -251,6 +253,8 @@ export class SessionManager {
     switch (msg.type) {
       case 'ready':
         this.webviewReady = true;
+        if (!this.openSpan) this.openSpan = startSpan('cb.hydrate');
+        this.openSpan.mark('webview.ready');
         await this.hydrate();
         // If a resume was queued before the webview mounted, run it now so the
         // historyLoaded message isn't dropped (the React app only listens after mount).
@@ -260,11 +264,15 @@ export class SessionManager {
           this.pendingResumeId = undefined;
           this.pendingResumeConnect = undefined;
           await this.loadExistingSession(id, { connect });
+          this.openSpan?.mark('resume.load');
         } else if (this.pendingExternal) {
           const ext = this.pendingExternal;
           this.pendingExternal = undefined;
           await this.openExternalSession(ext);
+          this.openSpan?.mark('external.load');
         }
+        this.openSpan?.end();
+        this.openSpan = undefined;
         break;
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
@@ -881,7 +889,9 @@ export class SessionManager {
     const wsRoots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
     const memSources = scanMemorySources(wsRoots);
     const memTotals = summariseSources(memSources);
+    this.openSpan?.mark('hydrate.memory');
     const sessions = this.store.list().slice(0, 100);
+    this.openSpan?.mark('hydrate.list');
     const base = {
       session: this.meta ?? null,
       allowBypass,
@@ -903,14 +913,17 @@ export class SessionManager {
       type: 'hydrate',
       state: { ...base, backends: cachedBackends } as HydrateState
     });
+    this.openSpan?.mark('hydrate.paint');
     const backends = await detectAll(overrides);
     cachedBackends = backends;
+    this.openSpan?.mark('hydrate.detectAll');
     this.panel.post({ type: 'hydrate', state: { ...base, backends } as HydrateState });
 
     const autoStart = this.config.get<boolean>('autoStartSession', true);
     const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
     if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId && !this.pendingExternal) {
       await this.openSession(defaultBackend);
+      this.openSpan?.mark('hydrate.openSession');
     }
   }
 
