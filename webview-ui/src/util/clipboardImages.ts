@@ -86,16 +86,17 @@ export function extractImagesFromHtml(html: string): ImageAttachment[] {
 
 export type PasteDecision =
   | { kind: 'images'; files: File[]; inline: ImageAttachment[] }
-  | { kind: 'probe'; fallbackText: string };
+  | { kind: 'probe'; fallbackText: string }
+  | { kind: 'text'; text: string };
 
 /**
  * Decide what a composer paste should do.
  *
- * If the event carries an image (file item, Files list, or HTML data-URI),
- * take the image and drop leftover text/plain — macOS often keeps the
- * previous copy's text flavor next to a newly copied screenshot.
- * Otherwise ask the host to read the OS clipboard (VS Code webviews
- * frequently strip image items from the paste event).
+ * Images in the event win (and leftover text/plain is dropped — macOS keeps
+ * the previous copy's text next to a new screenshot). Plain text inserts in
+ * the webview with no host hop. Host OS-clipboard probe only when the event
+ * looks like an image (or has no clipboard data). VS Code webviews often
+ * strip image items but keep image/* types.
  */
 export function decidePaste(data: DataTransfer | null | undefined): PasteDecision {
   if (!data) return { kind: 'probe', fallbackText: '' };
@@ -103,7 +104,11 @@ export function decidePaste(data: DataTransfer | null | undefined): PasteDecisio
   const inline = extractImagesFromHtml(safeGet(data, 'text/html'));
   const text = safeGet(data, 'text/plain');
   if (files.length > 0 || inline.length > 0) return { kind: 'images', files, inline };
-  return { kind: 'probe', fallbackText: text };
+  // VS Code webviews often strip image items but keep image/* or Files types.
+  // Probe then — leftover text/plain next to a screenshot is not a text paste.
+  if (clipboardLooksLikeImage(data)) return { kind: 'probe', fallbackText: text };
+  if (text) return { kind: 'text', text };
+  return { kind: 'text', text: '' };
 }
 
 export function dataUrlToAttachment(dataUrl: string, name?: string): ImageAttachment | null {

@@ -346,11 +346,12 @@ export function Composer({
     }
   }
 
-  /** Cmd/Ctrl-V: prefer a clipboard image over leftover text/plain (macOS
-   * keeps the previous copy's text next to a new screenshot). VS Code
-   * webviews often omit image items — fall through to the host OS clipboard. */
+  /** Cmd/Ctrl-V: images in the event attach as tiles; plain text uses the
+   * default insert (no host round-trip). Host probe only when the event has
+   * neither text nor files. */
   function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
     const decision = decidePaste(e.clipboardData);
+    if (decision.kind === 'text') return;
     e.preventDefault();
     if (decision.kind === 'images') {
       pendingClipboardProbe.current = false;

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.1 — 2026-08-29
+
+### Text paste stays in the webview; host lag is visible
+
+- **Paste:** `text/plain` inserts in the composer with no host hop (no osascript). The host is probed only when the event looks like an image (or has no clipboard data) — leftover screenshot+text still prefers the image.
+- **Lag:** extension host samples `monitorEventLoopDelay` every 30 s onto the **Code Build** output channel; p99 > 200 ms is tagged `STALL`.
+
 ## 0.18.0 — 2026-08-29
 
 ### Workspace-scoped last session + fast list + daemon writes

@@ -7,8 +7,15 @@ import { listAllSessions } from './host/persistence/externalSources';
 import { MemoryTreeProvider, MEMORY_VIEW_ID, registerMemoryCommands } from './host/memoryView';
 import type { SessionMeta, SessionSource } from './shared/protocol';
 import { sessionMatchesWorkspace } from './host/lastSession';
+import { startEventLoopLagMonitor } from './host/eventLoopLag';
 
 export function activate(context: vscode.ExtensionContext): void {
+  const lagLog = vscode.window.createOutputChannel('Code Build');
+  context.subscriptions.push(
+    lagLog,
+    startEventLoopLagMonitor((line) => lagLog.appendLine(line))
+  );
+
   const managers = new Set<SessionManager>();
   /** Most recently created manager — used by global perf commands. */
   let latestMgr: SessionManager | undefined;

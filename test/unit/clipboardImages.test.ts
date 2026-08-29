@@ -67,10 +67,21 @@ describe('clipboard image paste', () => {
     assert.equal(d.kind, 'images');
   });
 
-  it('probes the host when the event is text-only (webview stripped the image)', () => {
+  it('inserts text-only paste in the webview (no host probe)', () => {
     const d = decidePaste(dt({ text: 'hello world' }));
+    assert.equal(d.kind, 'text');
+    if (d.kind === 'text') assert.equal(d.text, 'hello world');
+  });
+
+  it('probes when types look like an image even if text/plain leftover', () => {
+    const d = decidePaste(dt({ types: ['image/png', 'text/plain'], text: 'stale assistant paragraph' }));
     assert.equal(d.kind, 'probe');
-    if (d.kind === 'probe') assert.equal(d.fallbackText, 'hello world');
+    if (d.kind === 'probe') assert.equal(d.fallbackText, 'stale assistant paragraph');
+  });
+
+  it('probes when clipboardData is missing', () => {
+    const d = decidePaste(null);
+    assert.equal(d.kind, 'probe');
   });
 
   it('clipboardLooksLikeImage is true for Files / image types', () => {
