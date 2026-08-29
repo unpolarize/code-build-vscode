@@ -53,6 +53,25 @@ export function grokChatPathFor(cwd: string, sessionId: string): string {
   return path.join(GROK_SESSIONS_ROOT, encodeURIComponent(cwd), sessionId, 'chat_history.jsonl');
 }
 
+/** If the cwd-encoded path is missing, walk cwd folders under ~/.grok/sessions. */
+export function locateGrokChatHistory(sessionId: string, root = GROK_SESSIONS_ROOT): string | null {
+  if (!sessionId || !fs.existsSync(root)) return null;
+  const direct = path.join(root, sessionId, 'chat_history.jsonl');
+  if (fs.existsSync(direct)) return direct;
+  let cwdDirs: fs.Dirent[];
+  try {
+    cwdDirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const cwdDir of cwdDirs) {
+    if (!cwdDir.isDirectory()) continue;
+    const chatPath = path.join(root, cwdDir.name, sessionId, 'chat_history.jsonl');
+    if (fs.existsSync(chatPath)) return chatPath;
+  }
+  return null;
+}
+
 interface ContentText { type: 'text'; text: string }
 interface ContentToolUse { type: 'tool_use'; id: string; name: string; input: unknown }
 interface ContentToolResult { type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean }
@@ -281,7 +300,12 @@ interface GrokAssistantToolCall {
  * sessions), so `totals` + `byModel` are empty — there's nothing to display
  * in the header beyond message/tool counts. */
 export function loadGrokHistory(chatPath: string): ReplayResult | null {
-  if (!fs.existsSync(chatPath)) return null;
+  if (!fs.existsSync(chatPath)) {
+    const id = path.basename(path.dirname(chatPath));
+    const found = locateGrokChatHistory(id);
+    if (!found) return null;
+    chatPath = found;
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(chatPath, 'utf8');

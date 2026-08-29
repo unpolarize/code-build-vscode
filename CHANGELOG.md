@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.2 — 2026-08-29
+
+### Grok history path fallback
+
+- If `~/.grok/sessions/<urlencoded-cwd>/<id>/chat_history.jsonl` is missing, walk one level of cwd folders so Open/resume still replays the transcript.
+
 ## 0.19.1 — 2026-08-29
 
 ### Host-trace shared with CS / KP
