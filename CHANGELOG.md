@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.1 — 2026-08-29
+
+### Host-trace shared with CS / KP
+
+- Same NDJSON contract (`src: cb|csv|cs|kp`) and `flushTrace()` for CLI exits. File sink stays async (no fsync).
+
 ## 0.19.0 — 2026-08-29
 
 ### Host-trace: keystroke → panel → hydrate
