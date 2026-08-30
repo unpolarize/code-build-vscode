@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.0 — 2026-08-29
+
+### Full history on restore, parsed outside the extension host
+
+0.19.4 only painted the last ~200 records. Reload now streams the **whole** JSONL.
+
+- Child process `dist/transcriptWorker.js` reads the file with a stream (not `readFileSync` on the ext-host thread).
+- Webview paints immediately with **Loading conversation… N / M MB · K events** and appends `historyBatch` chunks (80 records); the worker waits for `more` so the host/webview can stay responsive.
+- `loadMeta` still used for cwd check. `loadTail` is no longer the restore path.
+- Tests: `transcriptReplay.test.ts`, webview `historyBatch` append.
+
 ## 0.19.4 — 2026-08-29
 
 ### Restore no longer reads a 220 MB JSONL

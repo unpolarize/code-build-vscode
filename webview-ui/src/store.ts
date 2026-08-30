@@ -176,6 +176,14 @@ export interface ChatState {
   visActive: boolean;
   /** Effective stall auto-cancel (seconds). 0 = warn-only. */
   stallAutoCancelSeconds: number;
+  /** Off-thread full-transcript restore (issue #24). */
+  historyLoad: {
+    phase: 'loading' | 'done' | 'error';
+    bytesRead: number;
+    bytesTotal: number;
+    records: number;
+    error?: string;
+  } | null;
 }
 
 export const initialState: ChatState = {
@@ -213,7 +221,8 @@ export const initialState: ChatState = {
     hostSttAvailable: false
   },
   visActive: false,
-  stallAutoCancelSeconds: 0
+  stallAutoCancelSeconds: 0,
+  historyLoad: null
 };
 
 let seq = 0;
@@ -263,7 +272,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
           hostSttAvailable: msg.state.voice?.hostSttAvailable ?? false
         },
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
-        stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0
+        stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
+        historyLoad: state.historyLoad
       };
     case 'stallTimeout':
       return { ...state, stallAutoCancelSeconds: msg.seconds };
@@ -400,6 +410,39 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
     // sessionUpdates handled above (batch)
+    case 'historyProgress': {
+      const load = {
+        phase: msg.phase,
+        bytesRead: msg.bytesRead,
+        bytesTotal: msg.bytesTotal,
+        records: msg.records,
+        error: msg.error
+      };
+      if (msg.phase === 'loading' && msg.bytesRead === 0) {
+        return {
+          ...state,
+          items: [],
+          usage: null,
+          usageBreakdown: [],
+          permissionQueue: [],
+          busy: false,
+          historyLoad: load
+        };
+      }
+      return { ...state, historyLoad: load };
+    }
+    case 'historyBatch': {
+      const incoming = replayRecords(state, msg.meta, msg.records, 'append');
+      return {
+        ...incoming,
+        historyLoad: {
+          phase: 'loading',
+          bytesRead: msg.bytesRead,
+          bytesTotal: msg.bytesTotal,
+          records: msg.recordsSoFar
+        }
+      };
+    }
     case 'historyLoaded': {
       const incoming = replayRecords(state, msg.meta, msg.records);
       // A prompt echoed locally can race a resume/historyLoaded that was
@@ -418,11 +461,14 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         }
         return it;
       });
-      if (extra.length === 0) return { ...incoming, items };
+      if (extra.length === 0) {
+        return { ...incoming, items, historyLoad: { phase: 'done', bytesRead: 0, bytesTotal: 0, records: msg.records.length } };
+      }
       return {
         ...incoming,
         items: [...items, ...extra],
-        busy: state.busy || incoming.busy
+        busy: state.busy || incoming.busy,
+        historyLoad: { phase: 'done', bytesRead: 0, bytesTotal: 0, records: msg.records.length }
       };
     }
     case 'clipboardImage':
@@ -721,16 +767,24 @@ export function replayTimestamp(rec: ReplayRecord, meta: SessionMeta): number {
  * `taskList` host messages are never persisted), so we reconstruct those
  * cards here before applyUpdate suppresses the raw tool row.
  */
-function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecord[]): ChatState {
-  let next: ChatState = {
-    ...state,
-    session: meta,
-    items: [],
-    usage: null,
-    usageBreakdown: [],
-    permissionQueue: [],
-    busy: false
-  };
+function replayRecords(
+  state: ChatState,
+  meta: SessionMeta,
+  records: ReplayRecord[],
+  mode: 'replace' | 'append' = 'replace'
+): ChatState {
+  let next: ChatState =
+    mode === 'append'
+      ? { ...state, session: meta }
+      : {
+          ...state,
+          session: meta,
+          items: [],
+          usage: null,
+          usageBreakdown: [],
+          permissionQueue: [],
+          busy: false
+        };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);
     next = withClock(at, () => {

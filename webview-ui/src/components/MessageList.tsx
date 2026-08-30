@@ -10,6 +10,8 @@ import { isNearBottom } from '../util/composerLayout';
 
 interface Props {
   items: ChatItem[];
+  /** Off-thread restore in progress — hide the empty-state pitch. */
+  loading?: boolean;
   /** True from the moment the user hits Send until the agent's turn ends.
    * Drives the "working…" indicator that fills the spawn→first-token gap. */
   busy?: boolean;
@@ -21,7 +23,7 @@ interface Props {
   onFollowChange?: (follow: boolean) => void;
 }
 
-export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFollowChange }: Props) {
+export function MessageList({ items, busy, loading, onAskUserAnswer, follow = true, onFollowChange }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const ignoreScroll = useRef(false);
   const unlockTimer = useRef<number | null>(null);
@@ -74,7 +76,7 @@ export function MessageList({ items, busy, onAskUserAnswer, follow = true, onFol
 
   return (
     <div className="messages" ref={listRef} onScroll={onScroll} data-cb-scroller="">
-      {items.length === 0 && !busy && (
+      {items.length === 0 && !busy && !loading && (
         <div className="empty">
           <h3>Code Build</h3>
           <p>One chat, many agents — Claude, Grok, Codex, and any ACP CLI.</p>

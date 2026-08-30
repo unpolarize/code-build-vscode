@@ -173,6 +173,29 @@ body {
   text-align: center;
   opacity: 0.6;
 }
+.history-load {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 0;
+  font-size: 0.8em;
+  opacity: 0.85;
+}
+.history-load-error {
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+.history-load-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--vscode-editorWidget-background, rgba(127, 127, 127, 0.25));
+  overflow: hidden;
+}
+.history-load-bar {
+  height: 100%;
+  background: var(--vscode-progressBar-background, #007acc);
+  transition: width 120ms linear;
+}
 .msg {
   display: flex;
   flex-direction: column;

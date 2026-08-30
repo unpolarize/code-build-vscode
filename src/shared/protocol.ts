@@ -259,7 +259,9 @@ export type WebviewToHost =
   | { type: 'voiceModeChanged'; mode: VoiceMode }
   /** Start host-side STT (macOS Speech / future backends). */
   | { type: 'sttStart'; lang?: string }
-  | { type: 'sttStop' };
+  | { type: 'sttStop' }
+  /** Webview finished applying a historyBatch (backpressure). */
+  | { type: 'historyBatchAck' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -367,6 +369,30 @@ export type HostToWebview =
         ts?: number;
         images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
+    }
+  /** Off-thread restore: bytes so far. `loading` paints chrome immediately. */
+  | {
+      type: 'historyProgress';
+      phase: 'loading' | 'done' | 'error';
+      bytesRead: number;
+      bytesTotal: number;
+      records: number;
+      error?: string;
+    }
+  /** One chunk of a full-transcript restore (child process). Append, do not replace. */
+  | {
+      type: 'historyBatch';
+      meta: SessionMeta;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
+      }>;
+      bytesRead: number;
+      bytesTotal: number;
+      recordsSoFar: number;
     }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`

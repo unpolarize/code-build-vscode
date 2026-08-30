@@ -519,9 +519,11 @@ export function App() {
           }}
         />
       )}
+      <HistoryLoadBar load={state.historyLoad} />
       <MessageList
         items={state.items}
         busy={state.busy}
+        loading={state.historyLoad?.phase === 'loading'}
         follow={follow}
         onFollowChange={setFollow}
         onAskUserAnswer={(toolCallId, answers) => {
@@ -584,6 +586,26 @@ export function App() {
           onToggleMaximize={toggleComposerMax}
         />
       </div>
+    </div>
+  );
+}
+
+function HistoryLoadBar({ load }: { load: ChatState['historyLoad'] }) {
+  if (!load || load.phase === 'done') return null;
+  const pct = load.bytesTotal > 0 ? Math.min(100, (100 * load.bytesRead) / load.bytesTotal) : 0;
+  const mb = (n: number) => (n / (1024 * 1024)).toFixed(n >= 10 * 1024 * 1024 ? 0 : 1);
+  const label =
+    load.phase === 'error'
+      ? `Could not load history: ${load.error || 'unknown error'}`
+      : `Loading conversation… ${mb(load.bytesRead)} / ${mb(load.bytesTotal)} MB · ${load.records.toLocaleString()} events`;
+  return (
+    <div className={`history-load${load.phase === 'error' ? ' history-load-error' : ''}`} role="status">
+      {load.phase === 'loading' && (
+        <div className="history-load-track">
+          <div className="history-load-bar" style={{ width: `${pct}%` }} />
+        </div>
+      )}
+      <span>{label}</span>
     </div>
   );
 }

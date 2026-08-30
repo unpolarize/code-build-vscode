@@ -383,6 +383,48 @@ describe('historyLoaded replay', () => {
     assert.equal(users.length, 1);
     assert.deepEqual((users[0] as { images?: unknown }).images, [img]);
   });
+
+  it('historyProgress loading at 0 bytes clears items; historyBatch appends', () => {
+    let s = reduce(initialState, {
+      type: 'historyProgress',
+      phase: 'loading',
+      bytesRead: 0,
+      bytesTotal: 1000,
+      records: 0
+    } as HostToWebview);
+    assert.equal(s.historyLoad?.phase, 'loading');
+    assert.equal(s.items.length, 0);
+    s = reduce(s, {
+      type: 'historyBatch',
+      meta,
+      records: [userRec('one')],
+      bytesRead: 100,
+      bytesTotal: 1000,
+      recordsSoFar: 1
+    } as HostToWebview);
+    s = reduce(s, {
+      type: 'historyBatch',
+      meta,
+      records: [userRec('two')],
+      bytesRead: 200,
+      bytesTotal: 1000,
+      recordsSoFar: 2
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 2);
+    assert.equal(users[0].text, 'one');
+    assert.equal(users[1].text, 'two');
+    assert.equal(s.historyLoad?.records, 2);
+    s = reduce(s, {
+      type: 'historyProgress',
+      phase: 'done',
+      bytesRead: 1000,
+      bytesTotal: 1000,
+      records: 2
+    } as HostToWebview);
+    assert.equal(s.historyLoad?.phase, 'done');
+    assert.equal(s.items.length, 2);
+  });
 });
 
 describe('isAwaitingFirstToken', () => {

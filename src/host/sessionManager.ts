@@ -65,7 +65,12 @@ import {
   exportHasTurns,
   type ExportRecord
 } from './persistence/jsonlExporter';
-import { spawn } from 'node:child_process';
+import { spawn, fork, type ChildProcess } from 'node:child_process';
+import {
+  replayTranscriptFile,
+  type ReplayEvent,
+  type ReplayRecord
+} from './persistence/transcriptReplay';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
@@ -96,6 +101,8 @@ function getPerfOutput(): vscode.OutputChannel {
 export class SessionManager {
   private session?: AgentSession;
   private meta?: SessionMeta;
+  /** Child that streams JSONL off the extension host (issue #24). */
+  private replayChild?: ChildProcess;
   private unsubscribe?: () => void;
   private titled = false;
   private pendingResumeId?: string;
@@ -262,8 +269,9 @@ export class SessionManager {
         if (this.pendingResumeId) {
           const id = this.pendingResumeId;
           const connect = this.pendingResumeConnect ?? true;
+          // Returns after chrome + child fork; does not wait for 200 MB parse.
           await this.loadExistingSession(id, { connect });
-          this.openSpan?.mark('resume.load');
+          this.openSpan?.mark('resume.start');
         } else if (this.pendingExternal) {
           await this.openExternalSession(this.pendingExternal);
           this.openSpan?.mark('external.load');
@@ -2525,6 +2533,7 @@ export class SessionManager {
   }
 
   private teardownSession(): void {
+    this.killReplayChild();
     this.flushIpcImmediate();
     this.store.flushSync();
     // A reserve primer belongs to the resume attempt that armed it; never
@@ -3011,6 +3020,176 @@ export class SessionManager {
     this.currentAssistantBuf = '';
   }
 
+  private killReplayChild(): void {
+    const child = this.replayChild;
+    this.replayChild = undefined;
+    if (!child || child.killed) return;
+    try {
+      child.kill();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /**
+   * Parse JSONL in a child process (or yielding in-process fallback).
+   * Host only forwards batches — never readFileSync of the body.
+   */
+  private startTranscriptReplay(
+    filePath: string,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): void {
+    this.killReplayChild();
+    const worker = this.context.asAbsolutePath('dist/transcriptWorker.js');
+    if (!fsSync.existsSync(worker)) {
+      void this.replayInProcess(filePath, meta, be, connect, skipReplay);
+      return;
+    }
+    const child = fork(worker, [filePath], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    });
+    this.replayChild = child;
+    child.on('message', (raw: ReplayEvent) => {
+      if (this.replayChild !== child) return;
+      this.onReplayEvent(raw, meta, be, connect, skipReplay, () => {
+        if (this.replayChild === child && child.connected) child.send({ type: 'more' });
+      });
+    });
+    child.on('error', (err) => {
+      if (this.replayChild !== child) return;
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'error',
+        bytesRead: 0,
+        bytesTotal: 0,
+        records: 0,
+        error: err.message
+      });
+      this.killReplayChild();
+    });
+    child.on('exit', (code) => {
+      if (this.replayChild !== child) return;
+      this.replayChild = undefined;
+      if (code && code !== 0) {
+        this.panel.post({
+          type: 'historyProgress',
+          phase: 'error',
+          bytesRead: 0,
+          bytesTotal: 0,
+          records: 0,
+          error: `transcript worker exited ${code}`
+        });
+      }
+    });
+  }
+
+  private async replayInProcess(
+    filePath: string,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): Promise<void> {
+    await replayTranscriptFile(filePath, async (ev) => {
+      await new Promise<void>((r) => setImmediate(r));
+      this.onReplayEvent(ev, meta, be, connect, skipReplay, () => {
+        /* in-process: emit already awaited a tick */
+      });
+    });
+  }
+
+  private onReplayEvent(
+    ev: ReplayEvent,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean,
+    requestMore: () => void
+  ): void {
+    if (ev.type === 'progress') {
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'loading',
+        bytesRead: ev.bytesRead,
+        bytesTotal: ev.bytesTotal,
+        records: ev.recordCount
+      });
+      return;
+    }
+    if (ev.type === 'batch') {
+      this.panel.post({
+        type: 'historyBatch',
+        meta,
+        records: ev.records as never,
+        bytesRead: ev.bytesRead,
+        bytesTotal: ev.bytesTotal,
+        recordsSoFar: ev.recordCount
+      });
+      // Yield so the webview can paint; worker waits for `more`.
+      setImmediate(requestMore);
+      return;
+    }
+    if (ev.type === 'error') {
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'error',
+        bytesRead: 0,
+        bytesTotal: 0,
+        records: 0,
+        error: ev.message
+      });
+      this.killReplayChild();
+      return;
+    }
+    if (ev.type === 'done') {
+      this.killReplayChild();
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'done',
+        bytesRead: ev.bytesTotal,
+        bytesTotal: ev.bytesTotal,
+        records: ev.recordCount
+      });
+      this.openSpan?.mark('resume.replay');
+      this.applyReplayPrimer(ev.lastRecords, be, connect, skipReplay);
+    }
+  }
+
+  private applyReplayPrimer(
+    lastRecords: ReplayRecord[],
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): void {
+    const nativeResume =
+      BACKENDS[be].supportsResume &&
+      !!(this.meta?.backendSessionId ??
+        (this.meta?.source === 'claude' || this.meta?.source === 'grok' ? this.meta.id : undefined));
+    if (lastRecords.length === 0) return;
+    const primer = serializeSelfResumePrimer({
+      records: lastRecords as never,
+      lastNTurns: 10,
+      backendLabel: backendLabel(be)
+    });
+    if (primer && !nativeResume) {
+      this.pendingPrimer = primer;
+      if (connect && !skipReplay) {
+        this.panel.post({
+          type: 'notice',
+          text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
+          detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
+        });
+      } else if (!connect) {
+        this.fallbackPrimer = primer;
+      }
+    } else if (primer) {
+      this.fallbackPrimer = primer;
+    }
+  }
+
   /**
    * Load a previous persisted session.
    * - `connect: true` (default) — spawn the agent (Open Previous / first prompt).
@@ -3024,8 +3203,8 @@ export class SessionManager {
     id: string,
     opts?: { connect?: boolean; skipReplay?: boolean }
   ): Promise<void> {
-    const loaded = this.store.loadTail(id);
-    if (!loaded.meta) {
+    const meta = this.store.loadMeta(id);
+    if (!meta) {
       this.panel.post({
         type: 'sessionUpdate',
         sessionId: id,
@@ -3033,10 +3212,10 @@ export class SessionManager {
       });
       return;
     }
-    if (!sessionMatchesWorkspace(loaded.meta.cwd, this.workspaceFolderPaths())) {
+    if (!sessionMatchesWorkspace(meta.cwd, this.workspaceFolderPaths())) {
       this.panel.post({
         type: 'notice',
-        text: `Not restoring session from another workspace (${loaded.meta.cwd || 'unknown cwd'}).`,
+        text: `Not restoring session from another workspace (${meta.cwd || 'unknown cwd'}).`,
         detail: 'codeBuild.lastSessionId is workspace-scoped. Open the original folder to continue that chat.'
       });
       return;
@@ -3045,92 +3224,45 @@ export class SessionManager {
     const connect = opts?.connect ?? true;
     const skipReplay = opts?.skipReplay === true;
 
+    this.teardownSession();
     if (!skipReplay) {
-      this.teardownSession();
-      // Reset per-session classifier state so a fresh chat starts the
-      // turn counter at 0.
       this.userTurnsSent = 0;
       this.lastUserText = '';
       this.currentAssistantBuf = '';
-    } else {
-      this.teardownSession();
     }
 
-    const be = loaded.meta.backend;
+    const be = meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
-    // Same resume-id resolution we'll pass to session.start() below —
-    // hoisted so the startup notice's hover tooltip shows the actual
-    // --resume <id> we're about to use (or "(none)" when we have
-    // nothing to resume with).
-    // Prefer the native agent session id we captured at system_init.
-    // For external imports the local id *is* the upstream id (claude jsonl
-    // name / grok session folder UUID).
     const earlyResumeId =
-      loaded.meta.backendSessionId ??
-      (loaded.meta.source === 'claude' || loaded.meta.source === 'grok'
-        ? loaded.meta.id
-        : undefined);
-    this.meta = loaded.meta;
-    // Re-hydrate the per-backend native-session memory so a panel reopened on
-    // this conversation knows which backends already have a native thread — and
-    // resumes them natively instead of re-summarizing on switch.
+      meta.backendSessionId ??
+      (meta.source === 'claude' || meta.source === 'grok' ? meta.id : undefined);
+    this.meta = meta;
     if (this.meta.backendSessions) {
-      for (const [b, id] of Object.entries(this.meta.backendSessions)) {
-        if (id) this.previousSessionByBackend.set(b as BackendId, id);
+      for (const [b, sid] of Object.entries(this.meta.backendSessions)) {
+        if (sid) this.previousSessionByBackend.set(b as BackendId, sid);
       }
     }
-    this.titled = true; // existing session already has its title
+    this.titled = true;
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
-      this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
-      if (loaded.truncated) {
-        const mb = (loaded.fileBytes / (1024 * 1024)).toFixed(0);
-        this.panel.post({
-          type: 'notice',
-          key: 'history-tail',
-          text: `Showing latest messages — full transcript is ${mb} MB on disk.`,
-          detail: 'Older turns are not replayed into the panel (a 200 MB JSONL blocked reload for 15–40 s). They remain in ~/.codebuild/sessions.'
-        });
+      let bytesTotal = 0;
+      try {
+        bytesTotal = fsSync.statSync(this.store.transcriptPath(id)).size;
+      } catch {
+        bytesTotal = 0;
       }
-    }
-
-    // Self-resume primer for backends without native --resume (grok ACP
-    // today). The new agent process has zero memory of the conversation
-    // even though the user sees the history in the UI. Inject the last
-    // N turns verbatim as a one-shot primer on the first prompt so the
-    // agent picks up where it left off. claude with a valid resume id
-    // skips this — its own `--resume` already feeds the jsonl back to
-    // the model. See [[serializeSelfResumePrimer]].
-    const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
-    if (loaded.records.length > 0) {
-      const primer = serializeSelfResumePrimer({
-        records: loaded.records as any,
-        lastNTurns: 10,
-        backendLabel: backendLabel(be)
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'loading',
+        bytesRead: 0,
+        bytesTotal,
+        records: 0
       });
-      if (primer && !nativeResume) {
-        this.pendingPrimer = primer;
-        // skipReplay is a send-triggered reconnect: the You-bubble is
-        // already on screen. A "restored context" notice would become
-        // last-item, hide the working pill, and look like a full resume.
-        if (connect && !skipReplay) {
-          this.panel.post({
-            type: 'notice',
-            text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
-            detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
-          });
-        } else if (!connect) {
-          this.fallbackPrimer = primer;
-        }
-      } else if (primer) {
-        // Native resume attempt (grok session/load or claude --resume).
-        // Held in reserve for handleResumeFallback — see fallbackPrimer.
-        this.fallbackPrimer = primer;
-      }
+      this.startTranscriptReplay(this.store.transcriptPath(id), meta, be, connect, skipReplay);
     }
 
     if (!connect) {
@@ -3157,7 +3289,7 @@ export class SessionManager {
       : this.postStartupNotice({
           be,
           text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
-          cwd: loaded.meta.cwd,
+          cwd: meta.cwd,
           resumeId: earlyResumeId,
           spawnStart
         });
@@ -3166,9 +3298,9 @@ export class SessionManager {
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.perf.setSessionMeta({
       sessionId: id,
-      backend: loaded.meta.backend,
-      model: loaded.meta.model,
-      modePerm: loaded.meta.mode
+      backend: meta.backend,
+      model: meta.model,
+      modePerm: meta.mode
     });
     this.unsubscribe = this.session.onEvent((update) => {
       this.routeAgentUpdate(id, update, {
