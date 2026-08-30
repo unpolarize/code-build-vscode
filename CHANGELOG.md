@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.2 — 2026-08-29
+
+### Restore empty Claude shells from the real transcript
+
+A remounted Claude session (`source: claude`) can have a local JSONL of only `meta` + `system_init` while the conversation lives in `~/.claude/projects/…/<id>.jsonl` (or another local row with the same native id). Restore now falls back to that content. Also: a no-user tail window is no longer trimmed to **zero** records.
+
 ## 0.21.1 — 2026-08-29
 
 ### Tail pages start on a complete user turn

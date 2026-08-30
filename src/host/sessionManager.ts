@@ -39,7 +39,7 @@ import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
-import { SessionStore } from './persistence/store';
+import { SessionStore, hasVisibleReplayRecords } from './persistence/store';
 import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
 import { daemonAppend, daemonCreate, daemonPatchMeta } from './daemonClient';
 import { readOsClipboardImage } from './clipboardImage';
@@ -47,7 +47,8 @@ import {
   claudeJsonlPathFor,
   grokChatPathFor,
   loadClaudeHistory,
-  loadGrokHistory
+  loadGrokHistory,
+  locateGrokChatHistory
 } from './persistence/externalReplay';
 import { listAllSessions } from './persistence/externalSources';
 import {
@@ -3198,6 +3199,53 @@ export class SessionManager {
     }
   }
 
+  /**
+   * Local JSONL may be an empty shell (meta + system_init) when the session
+   * was opened from Claude/Grok. Prefer a contentful local row with the same
+   * native id, then the upstream CLI transcript.
+   */
+  private resolveRestoreRecords(
+    id: string,
+    meta: SessionMeta
+  ): { records: Array<{ type: string; [k: string]: unknown }>; olderFromByte: number } {
+    const local = this.store.loadTail(id);
+    if (hasVisibleReplayRecords(local.records)) {
+      return { records: local.records, olderFromByte: local.olderFromByte };
+    }
+    const nativeId = meta.backendSessionId || id;
+    const siblings = this.store
+      .list()
+      .filter((m) => m.id !== id && (m.id === nativeId || m.backendSessionId === nativeId));
+    siblings.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    for (const sib of siblings) {
+      const tail = this.store.loadTail(sib.id);
+      if (!hasVisibleReplayRecords(tail.records)) continue;
+      this.meta = { ...meta, ...sib, title: meta.title || sib.title };
+      this.panel.setTitle?.(this.meta.title);
+      this.rememberLast(sib.id);
+      return { records: tail.records, olderFromByte: tail.olderFromByte };
+    }
+    const cwd = meta.cwd || this.cwd;
+    if (meta.source === 'claude' || meta.backend === 'claude') {
+      const replay = loadClaudeHistory(claudeJsonlPathFor(cwd, nativeId));
+      if (replay && replay.records.length > 0) {
+        return { records: replay.records as never, olderFromByte: 0 };
+      }
+    }
+    if (meta.source === 'grok' || meta.backend === 'grok') {
+      const grokPath = grokChatPathFor(cwd, nativeId);
+      const replay =
+        loadGrokHistory(grokPath) ??
+        (locateGrokChatHistory(nativeId)
+          ? loadGrokHistory(locateGrokChatHistory(nativeId) as string)
+          : null);
+      if (replay && replay.records.length > 0) {
+        return { records: replay.records as never, olderFromByte: 0 };
+      }
+    }
+    return { records: local.records, olderFromByte: local.olderFromByte };
+  }
+
   /** Scroll-up: one JSONL window before the records already in the webview. */
   private loadOlderHistory(): void {
     const id = this.meta?.id;
@@ -3285,15 +3333,15 @@ export class SessionManager {
     this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
-      const tail = this.store.loadTail(id);
-      this.historyOlderFrom = tail.olderFromByte;
+      const painted = this.resolveRestoreRecords(id, meta);
+      this.historyOlderFrom = painted.olderFromByte;
       this.panel.post({
         type: 'historyLoaded',
-        meta,
-        records: tail.records as never,
-        hasOlder: tail.olderFromByte > 0
+        meta: this.meta ?? meta,
+        records: painted.records as never,
+        hasOlder: painted.olderFromByte > 0
       });
-      this.applyReplayPrimer(tail.records, be, connect, skipReplay);
+      this.applyReplayPrimer(painted.records, be, connect, skipReplay);
     }
 
     if (!connect) {

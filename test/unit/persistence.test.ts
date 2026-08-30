@@ -7,6 +7,7 @@ import {
   SessionStore,
   writeFileAtomic,
   keepLastCompleteTurns,
+  hasVisibleReplayRecords,
   type OffsetRec
 } from '../../src/host/persistence/store';
 import {
@@ -553,4 +554,28 @@ test('loadTail starts on a user turn even when the byte window cuts a prior repl
   assert.equal((tail.records[0] as { text?: string }).text, 'latest-prompt');
   const kinds = tail.records.map((r) => r.type);
   assert.ok(kinds.includes('update'));
+});
+
+test('hasVisibleReplayRecords ignores system_init-only shells', () => {
+  assert.equal(hasVisibleReplayRecords([{ type: 'update', update: { kind: 'system_init' } }]), false);
+  assert.equal(hasVisibleReplayRecords([{ type: 'user', text: 'hi' }]), true);
+  assert.equal(
+    hasVisibleReplayRecords([{ type: 'update', update: { kind: 'agent_message_chunk' } }]),
+    true
+  );
+});
+
+test('loadTail of a long chunk-only file does not return empty', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  for (let i = 0; i < 80; i++) {
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `chunk-${i}-${'z'.repeat(40)}` }
+    });
+  }
+  const tail = store.loadTail('sess-1', { maxRecords: 20, maxTurns: 8, maxBytes: 10_000_000 });
+  assert.ok(tail.records.length > 0, 'must not wipe a no-user window to []');
+  assert.ok(tail.records.length <= 20);
 });

@@ -35,6 +35,25 @@ export function countUserTurns(records: OffsetRec[]): number {
   return n;
 }
 
+const INVISIBLE_UPDATE = new Set([
+  'system',
+  'system_init',
+  'available_commands_update',
+  'current_mode_update'
+]);
+
+/** True if replay would produce a chat bubble (not just session chrome). */
+export function hasVisibleReplayRecords(
+  records: Array<{ type: string; update?: { kind?: string } }>
+): boolean {
+  for (const r of records) {
+    if (r.type === 'user') return true;
+    const k = r.update?.kind;
+    if (k && !INVISIBLE_UPDATE.has(k)) return true;
+  }
+  return false;
+}
+
 /**
  * Durable whole-file write: same-directory `.tmp` + fsync + rename.
  * A crash between tmp write and rename leaves the prior target intact.
@@ -402,11 +421,12 @@ export class SessionStore {
       kept = keepLastCompleteTurns(page.records, maxTurns);
     }
     if (kept.length === 0) kept = page.records;
-    while (kept.length > maxRecords) {
-      const next = keepLastCompleteTurns(kept, Math.max(1, countUserTurns(kept) - 1));
-      if (next.length === kept.length) break;
+    while (kept.length > maxRecords && countUserTurns(kept) > 1) {
+      const next = keepLastCompleteTurns(kept, countUserTurns(kept) - 1);
+      if (next.length === 0 || next.length === kept.length) break;
       kept = next;
     }
+    if (kept.length > maxRecords) kept = kept.slice(-maxRecords);
     const droppedLeading =
       kept.length > 0 &&
       page.records.length > 0 &&
