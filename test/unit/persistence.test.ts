@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { SessionStore, writeFileAtomic } from '../../src/host/persistence/store';
+import {
+  SessionStore,
+  writeFileAtomic,
+  keepLastCompleteTurns,
+  type OffsetRec
+} from '../../src/host/persistence/store';
 import {
   exportToClaudeJsonl,
   exportToMarkdown,
@@ -505,4 +510,47 @@ test('loadTail of a large file skips the prefix and keeps the last user line', (
   assert.ok(!olderTexts.includes('visible-tail'));
   assert.ok(older.olderFromByte >= 0);
   assert.ok(older.olderFromByte < tail.olderFromByte || older.olderFromByte === 0);
+});
+
+test('keepLastCompleteTurns drops leading assistant chunks (no mid-turn start)', () => {
+  const rec = (type: string, text: string): OffsetRec => ({
+    rec: type === 'user' ? { type, text } : { type, update: { kind: 'agent_message_chunk', text } },
+    start: 0
+  });
+  const rows = [
+    rec('update', 'orphan-end-of-prev'),
+    rec('update', 'still-prev'),
+    rec('user', 'hello'),
+    rec('update', 'full-reply')
+  ];
+  const kept = keepLastCompleteTurns(rows, 8);
+  assert.equal(kept[0].rec.type, 'user');
+  assert.equal((kept[0].rec as { text?: string }).text, 'hello');
+  assert.equal(kept.length, 2);
+  assert.equal(keepLastCompleteTurns(rows.slice(0, 2), 8).length, 0);
+});
+
+test('loadTail starts on a user turn even when the byte window cuts a prior reply', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  store.appendUserText('sess-1', 'old-prompt');
+  const blob = 'y'.repeat(400);
+  for (let i = 0; i < 40; i++) {
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: blob }
+    });
+  }
+  store.appendUserText('sess-1', 'latest-prompt');
+  store.appendUpdate('sess-1', {
+    kind: 'agent_message_chunk',
+    content: { type: 'text', text: 'complete-reply' }
+  });
+  const tail = store.loadTail('sess-1', { maxBytes: 4 * 1024, maxTurns: 2 });
+  assert.ok(tail.records.length >= 2);
+  assert.equal(tail.records[0].type, 'user');
+  assert.equal((tail.records[0] as { text?: string }).text, 'latest-prompt');
+  const kinds = tail.records.map((r) => r.type);
+  assert.ok(kinds.includes('update'));
 });

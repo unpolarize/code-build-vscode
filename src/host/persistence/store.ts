@@ -8,7 +8,32 @@ import type { SessionMeta } from '../../shared/protocol';
 /** Bytes from EOF to replay into a restored chat. perf #8 / issue #23. */
 export const REPLAY_TAIL_BYTES = 512 * 1024;
 export const REPLAY_TAIL_BYTES_CAP = 2 * 1024 * 1024;
+/** Grow further so the last user-turn is complete (not a mid-reply fragment). */
+export const REPLAY_TURN_BYTES_CAP = 8 * 1024 * 1024;
 export const REPLAY_TAIL_MAX_RECORDS = 200;
+/** Last complete user turns on first paint / each older page. */
+export const REPLAY_TAIL_MAX_TURNS = 8;
+
+export type OffsetRec = { rec: { type: string; [k: string]: unknown }; start: number };
+
+/** Keep records from the Nth-last `user` line so a page never starts mid-turn. */
+export function keepLastCompleteTurns(records: OffsetRec[], maxTurns: number): OffsetRec[] {
+  if (records.length === 0) return records;
+  const userIdx: number[] = [];
+  for (let i = 0; i < records.length; i++) {
+    if (records[i].rec.type === 'user') userIdx.push(i);
+  }
+  if (userIdx.length === 0) return [];
+  const take = Math.max(1, maxTurns);
+  const start = userIdx[Math.max(0, userIdx.length - take)];
+  return records.slice(start);
+}
+
+export function countUserTurns(records: OffsetRec[]): number {
+  let n = 0;
+  for (const r of records) if (r.rec.type === 'user') n += 1;
+  return n;
+}
 
 /**
  * Durable whole-file write: same-directory `.tmp` + fsync + rename.
@@ -300,7 +325,7 @@ export class SessionStore {
    */
   loadTail(
     id: string,
-    opts?: { maxBytes?: number; maxRecords?: number }
+    opts?: { maxBytes?: number; maxRecords?: number; maxTurns?: number }
   ): {
     meta?: SessionMeta;
     records: { type: string; [k: string]: unknown }[];
@@ -312,6 +337,7 @@ export class SessionStore {
     const p = this.transcriptPath(id);
     const maxBytes = opts?.maxBytes ?? REPLAY_TAIL_BYTES;
     const maxRecords = opts?.maxRecords ?? REPLAY_TAIL_MAX_RECORDS;
+    const maxTurns = opts?.maxTurns ?? REPLAY_TAIL_MAX_TURNS;
     if (!fs.existsSync(p)) {
       return { records: [], truncated: false, fileBytes: 0, olderFromByte: 0 };
     }
@@ -319,7 +345,7 @@ export class SessionStore {
     if (fileBytes === 0) {
       return { records: [], truncated: false, fileBytes: 0, olderFromByte: 0 };
     }
-    return this.pageWindow(id, p, fileBytes, fileBytes, maxBytes, maxRecords);
+    return this.pageWindow(id, p, fileBytes, fileBytes, maxBytes, maxRecords, maxTurns);
   }
 
   /**
@@ -329,7 +355,7 @@ export class SessionStore {
   loadBefore(
     id: string,
     beforeByte: number,
-    opts?: { maxBytes?: number; maxRecords?: number }
+    opts?: { maxBytes?: number; maxRecords?: number; maxTurns?: number }
   ): {
     meta?: SessionMeta;
     records: { type: string; [k: string]: unknown }[];
@@ -345,7 +371,8 @@ export class SessionStore {
     const fileBytes = fs.statSync(p).size;
     const maxBytes = opts?.maxBytes ?? REPLAY_TAIL_BYTES;
     const maxRecords = opts?.maxRecords ?? REPLAY_TAIL_MAX_RECORDS;
-    return this.pageWindow(id, p, fileBytes, beforeByte, maxBytes, maxRecords);
+    const maxTurns = opts?.maxTurns ?? REPLAY_TAIL_MAX_TURNS;
+    return this.pageWindow(id, p, fileBytes, beforeByte, maxBytes, maxRecords, maxTurns);
   }
 
   private pageWindow(
@@ -354,7 +381,8 @@ export class SessionStore {
     fileBytes: number,
     endByte: number,
     maxBytes: number,
-    maxRecords: number
+    maxRecords: number,
+    maxTurns: number
   ): {
     meta?: SessionMeta;
     records: { type: string; [k: string]: unknown }[];
@@ -366,15 +394,25 @@ export class SessionStore {
     let window = Math.min(maxBytes, end);
     let from = Math.max(0, end - window);
     let page = readJsonlWindow(p, from, end);
-    while (page.records.length === 0 && from > 0 && window < REPLAY_TAIL_BYTES_CAP) {
-      window = Math.min(REPLAY_TAIL_BYTES_CAP, window * 4, end);
+    let kept = keepLastCompleteTurns(page.records, maxTurns);
+    while (kept.length === 0 && from > 0 && window < REPLAY_TURN_BYTES_CAP) {
+      window = Math.min(REPLAY_TURN_BYTES_CAP, window * 4, end);
       from = Math.max(0, end - window);
       page = readJsonlWindow(p, from, end);
+      kept = keepLastCompleteTurns(page.records, maxTurns);
     }
-    const sliced = page.records.length > maxRecords;
-    const kept = sliced ? page.records.slice(-maxRecords) : page.records;
+    if (kept.length === 0) kept = page.records;
+    while (kept.length > maxRecords) {
+      const next = keepLastCompleteTurns(kept, Math.max(1, countUserTurns(kept) - 1));
+      if (next.length === kept.length) break;
+      kept = next;
+    }
+    const droppedLeading =
+      kept.length > 0 &&
+      page.records.length > 0 &&
+      kept[0].start > page.records[0].start;
     const olderFromByte =
-      kept.length > 0 && (from > 0 || sliced) ? kept[0].start : 0;
+      kept.length > 0 && (from > 0 || droppedLeading) ? kept[0].start : 0;
     const records = kept.map((r) => r.rec);
     const indexMeta = this.findIndexRow(id);
     const meta = indexMeta ? { ...page.jsonlMeta, ...indexMeta, id } : page.jsonlMeta;

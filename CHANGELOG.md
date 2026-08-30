@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.1 — 2026-08-29
+
+### Tail pages start on a complete user turn
+
+Last-N JSONL records could begin in the middle of an assistant stream, so the newest bubble was a fragment. Pages now snap to `user` records (grow the byte window up to 8 MB to finish the last turn). Scroll-up still loads the previous complete turns.
+
 ## 0.21.0 — 2026-08-29
 
 ### Tail first, older on scroll-up
