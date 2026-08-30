@@ -183,6 +183,16 @@ export interface ChatState {
   /** Tool call ids with a restorable host write-checkpoint — edit ToolCards
    * matching an id show the "Restore code to here" action. */
   checkpointIds: string[];
+  /** ACP protocol-version pin from the last initialize handshake (null
+   * until an ACP backend connects; stream-json/codex leave this unset). */
+  protocolPin: {
+    hostVersion: number;
+    agentVersion: number | null;
+    experimental: boolean;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
 }
 
 export const initialState: ChatState = {
@@ -221,7 +231,8 @@ export const initialState: ChatState = {
   },
   visActive: false,
   stallAutoCancelSeconds: 0,
-  checkpointIds: []
+  checkpointIds: [],
+  protocolPin: null
 };
 
 let seq = 0;
@@ -584,6 +595,18 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       return state.session && u.mode
         ? { ...state, session: { ...state.session, mode: u.mode } }
         : state;
+    case 'protocol_version_update':
+      return {
+        ...state,
+        protocolPin: {
+          hostVersion: u.hostVersion,
+          agentVersion: u.agentVersion,
+          experimental: u.experimental,
+          label: u.label,
+          warn: u.warn,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {})
+        }
+      };
     default:
       return state;
   }
@@ -726,7 +749,10 @@ function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecor
     busy: false,
     // Stale restore actions must not survive a session switch; the host
     // re-posts checkpointAvailable right after historyLoaded.
-    checkpointIds: []
+    checkpointIds: [],
+    // Protocol pin re-applies from a persisted protocol_version_update if
+    // the transcript has one; otherwise stays null until next initialize.
+    protocolPin: null
   };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);

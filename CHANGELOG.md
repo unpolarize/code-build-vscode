@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.18.2 — 2026-08-30
+
+### ACP protocol-version pin chip
+
+- **Header chip** shows the negotiated ACP `protocolVersion` after `initialize` (e.g. `ACP v1`, `ACP v2*`). Amber warn when host (stable v1) and agent disagree on major version or the agent flags experimental/draft — never blocks session start.
+- Pure `shared/protocolVersionPin.ts` evaluates fixtures for v1 and experimental-v2 initialize shapes; `AcpTransport` emits `protocol_version_update` (persisted + replayable). Distinct from capability-matrix and harness/model pins. (kp: ideas/cb-acp-protocol-version-pin-chip-surface-v1-vs-e, agent: grok)
+
 ## 0.18.1 — 2026-08-26
 
 ### Permission-mode truth on ACP backends (slice 1 of the mode pin chip)

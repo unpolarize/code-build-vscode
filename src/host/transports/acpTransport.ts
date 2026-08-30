@@ -32,6 +32,10 @@ import {
   isAskUserQuestionMethod,
   parseAskUserQuestionParams
 } from './askUserQuestion';
+import {
+  evaluateProtocolVersionPin,
+  HOST_ACP_PROTOCOL_VERSION
+} from '../../shared/protocolVersionPin';
 
 export type { AcpMcpServer };
 export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
@@ -230,9 +234,23 @@ export class AcpTransport extends BaseAgentSession {
     this.readyPromise = (async () => {
       try {
         const init = await this.rpc!.request<InitializeResult>('initialize', {
-          protocolVersion: 1,
+          protocolVersion: HOST_ACP_PROTOCOL_VERSION,
           clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
           clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
+        });
+        // Protocol-version pin chip — read-only; warn never blocks start.
+        const pin = evaluateProtocolVersionPin({
+          hostVersion: HOST_ACP_PROTOCOL_VERSION,
+          agentInitialize: init
+        });
+        this.emit({
+          kind: 'protocol_version_update',
+          hostVersion: pin.hostVersion,
+          agentVersion: pin.agentVersion,
+          experimental: pin.experimental,
+          label: pin.label,
+          warn: pin.warn,
+          ...(pin.warnReason ? { warnReason: pin.warnReason } : {})
         });
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum

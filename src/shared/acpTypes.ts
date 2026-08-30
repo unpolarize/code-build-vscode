@@ -115,6 +115,17 @@ export type SessionUpdate =
    * spawned with NO context and said "I don't have prior conversation
    * context to continue from". */
   | { kind: 'system_init'; backendSessionId: string }
+  /** Negotiated ACP protocol version from the initialize handshake.
+   * Read-only header chip; warn never blocks session start. */
+  | {
+      kind: 'protocol_version_update';
+      hostVersion: number;
+      agentVersion: number | null;
+      experimental: boolean;
+      label: string;
+      warn: boolean;
+      warnReason?: string;
+    }
   /** Native resume failed and the transport fell back to a fresh
    * session (e.g. Grok ACP session/load rejected because the on-disk
    * session was deleted or the grok version regressed). The host uses

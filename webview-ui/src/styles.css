@@ -131,6 +131,26 @@ body {
   cursor: help;
   margin-right: 6px;
 }
+/* ACP protocol-version pin — negotiated from initialize; amber on mismatch. */
+.protocol-pin-chip {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.8;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.protocol-pin-chip-warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: var(--vscode-editorWarning-foreground, #d97706);
+  opacity: 1;
+}
 .cmd-hint {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;

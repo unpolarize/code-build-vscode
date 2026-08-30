@@ -128,6 +128,25 @@ export function Header({
         </span>
       )}
 
+      {state.protocolPin && (
+        <span
+          className={
+            state.protocolPin.warn ? 'protocol-pin-chip protocol-pin-chip-warn' : 'protocol-pin-chip'
+          }
+          title={
+            state.protocolPin.warnReason
+              ? `${state.protocolPin.label} — ${state.protocolPin.warnReason}`
+              : `Negotiated ACP protocol version (host v${state.protocolPin.hostVersion}` +
+                (state.protocolPin.agentVersion != null
+                  ? `, agent v${state.protocolPin.agentVersion}`
+                  : ', agent unknown') +
+                '). Read-only; does not block the session.'
+          }
+        >
+          {state.protocolPin.label}
+        </span>
+      )}
+
       {onSetStallTimeout && (
         <select
           className="stall-picker"
