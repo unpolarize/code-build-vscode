@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.3 — 2026-08-29
+
+### Restored chat posts history before backend detect
+
+On webview `ready`, `historyLoaded` runs **before** `hydrate()`/`detectAll`. A remount no longer waits on `which` × N with an empty transcript. `pendingResumeId` stays set through hydrate so autoStart does not spawn a fresh session.
+
 ## 0.19.2 — 2026-08-29
 
 ### Grok history path fallback

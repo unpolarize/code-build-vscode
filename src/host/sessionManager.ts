@@ -255,22 +255,23 @@ export class SessionManager {
         this.webviewReady = true;
         if (!this.openSpan) this.openSpan = startSpan('cb.hydrate');
         this.openSpan.mark('webview.ready');
-        await this.hydrate();
-        // If a resume was queued before the webview mounted, run it now so the
-        // historyLoaded message isn't dropped (the React app only listens after mount).
+        // Transcript first. hydrate() does not clear items, and detectAll
+        // (`which` × N) used to sit in front of historyLoaded so a restored
+        // chat stayed empty until backends resolved. Keep pendingResumeId
+        // set through hydrate() so autoStart does not spawn a fresh session.
         if (this.pendingResumeId) {
           const id = this.pendingResumeId;
           const connect = this.pendingResumeConnect ?? true;
-          this.pendingResumeId = undefined;
-          this.pendingResumeConnect = undefined;
           await this.loadExistingSession(id, { connect });
           this.openSpan?.mark('resume.load');
         } else if (this.pendingExternal) {
-          const ext = this.pendingExternal;
-          this.pendingExternal = undefined;
-          await this.openExternalSession(ext);
+          await this.openExternalSession(this.pendingExternal);
           this.openSpan?.mark('external.load');
         }
+        await this.hydrate();
+        this.pendingResumeId = undefined;
+        this.pendingResumeConnect = undefined;
+        this.pendingExternal = undefined;
         this.openSpan?.end();
         this.openSpan = undefined;
         break;
