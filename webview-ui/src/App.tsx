@@ -56,6 +56,7 @@ export function App() {
   const [dragActive, setDragActive] = useState(false);
   const [composerSeed, setComposerSeed] = useState<string | undefined>(undefined);
   const [follow, setFollow] = useState(true);
+  const [olderLoading, setOlderLoading] = useState(false);
   const initialLayout = loadComposerLayout();
   const [composerHeight, setComposerHeight] = useState(initialLayout.height);
   const [composerMax, setComposerMax] = useState(initialLayout.maximized);
@@ -245,6 +246,10 @@ export function App() {
       window.dispatchEvent(new CustomEvent('cb-app-drop-files', { detail: files }));
     }
   }
+
+  useEffect(() => {
+    setOlderLoading(false);
+  }, [state.olderSeq, state.hasOlder]);
 
   useEffect(() => {
     const handler = (e: MessageEvent) => {
@@ -526,6 +531,14 @@ export function App() {
         loading={state.historyLoad?.phase === 'loading'}
         follow={follow}
         onFollowChange={setFollow}
+        hasOlder={state.hasOlder}
+        olderSeq={state.olderSeq}
+        olderLoading={olderLoading}
+        onNeedOlder={() => {
+          if (!state.hasOlder || olderLoading) return;
+          setOlderLoading(true);
+          post({ type: 'loadOlderHistory' });
+        }}
         onAskUserAnswer={(toolCallId, answers) => {
           dispatch({ kind: 'askUserAnswered', toolCallId, answers });
           post({ type: 'askUserAnswer', toolCallId, answers });

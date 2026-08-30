@@ -498,4 +498,11 @@ test('loadTail of a large file skips the prefix and keeps the last user line', (
   assert.ok(!texts.includes(`pad-0 ${pad}`));
   assert.ok(tail.records.length <= 40);
   assert.equal(tail.meta?.id, 'sess-1');
+  assert.ok(tail.olderFromByte > 0);
+  const older = store.loadBefore('sess-1', tail.olderFromByte, { maxBytes: 16 * 1024, maxRecords: 40 });
+  assert.ok(older.records.length > 0);
+  const olderTexts = older.records.map((r) => (r as { text?: string }).text);
+  assert.ok(!olderTexts.includes('visible-tail'));
+  assert.ok(older.olderFromByte >= 0);
+  assert.ok(older.olderFromByte < tail.olderFromByte || older.olderFromByte === 0);
 });

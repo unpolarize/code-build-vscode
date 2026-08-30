@@ -296,9 +296,7 @@ export class SessionStore {
 
   /**
    * Last N complete JSONL records, reading at most `maxBytes` from EOF.
-   * Window grows once if the first slice is a truncated giant line.
-   * Used on panel restore so a 200 MB session does not `readFileSync` +
-   * `postMessage` the whole file (15–40 s blank chat).
+   * `olderFromByte` is the file offset of the first returned record (0 = none older).
    */
   loadTail(
     id: string,
@@ -308,30 +306,85 @@ export class SessionStore {
     records: { type: string; [k: string]: unknown }[];
     truncated: boolean;
     fileBytes: number;
+    olderFromByte: number;
   } {
     this.flushSync(id);
     const p = this.transcriptPath(id);
     const maxBytes = opts?.maxBytes ?? REPLAY_TAIL_BYTES;
     const maxRecords = opts?.maxRecords ?? REPLAY_TAIL_MAX_RECORDS;
-    if (!fs.existsSync(p)) return { records: [], truncated: false, fileBytes: 0 };
+    if (!fs.existsSync(p)) {
+      return { records: [], truncated: false, fileBytes: 0, olderFromByte: 0 };
+    }
     const fileBytes = fs.statSync(p).size;
-    if (fileBytes === 0) return { records: [], truncated: false, fileBytes: 0 };
-    if (fileBytes <= maxBytes) {
-      const full = this.load(id);
-      return { ...full, truncated: false, fileBytes };
+    if (fileBytes === 0) {
+      return { records: [], truncated: false, fileBytes: 0, olderFromByte: 0 };
     }
-    let window = maxBytes;
-    let parsed: ReturnType<typeof parseJsonlText> = { records: [] };
-    while (window <= REPLAY_TAIL_BYTES_CAP) {
-      parsed = parseJsonlText(readFileTail(p, fileBytes, window));
-      if (parsed.records.length > 0 || window >= fileBytes || window >= REPLAY_TAIL_BYTES_CAP) break;
-      window = Math.min(REPLAY_TAIL_BYTES_CAP, window * 4);
+    return this.pageWindow(id, p, fileBytes, fileBytes, maxBytes, maxRecords);
+  }
+
+  /**
+   * Records immediately before `beforeByte` (exclusive). Same byte-window
+   * + last-N rule as loadTail, so scroll-up paging does not skip a gap.
+   */
+  loadBefore(
+    id: string,
+    beforeByte: number,
+    opts?: { maxBytes?: number; maxRecords?: number }
+  ): {
+    meta?: SessionMeta;
+    records: { type: string; [k: string]: unknown }[];
+    truncated: boolean;
+    fileBytes: number;
+    olderFromByte: number;
+  } {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    if (!fs.existsSync(p) || beforeByte <= 0) {
+      return { records: [], truncated: false, fileBytes: 0, olderFromByte: 0 };
     }
-    const records =
-      parsed.records.length > maxRecords ? parsed.records.slice(-maxRecords) : parsed.records;
+    const fileBytes = fs.statSync(p).size;
+    const maxBytes = opts?.maxBytes ?? REPLAY_TAIL_BYTES;
+    const maxRecords = opts?.maxRecords ?? REPLAY_TAIL_MAX_RECORDS;
+    return this.pageWindow(id, p, fileBytes, beforeByte, maxBytes, maxRecords);
+  }
+
+  private pageWindow(
+    id: string,
+    p: string,
+    fileBytes: number,
+    endByte: number,
+    maxBytes: number,
+    maxRecords: number
+  ): {
+    meta?: SessionMeta;
+    records: { type: string; [k: string]: unknown }[];
+    truncated: boolean;
+    fileBytes: number;
+    olderFromByte: number;
+  } {
+    const end = Math.min(fileBytes, Math.max(0, endByte));
+    let window = Math.min(maxBytes, end);
+    let from = Math.max(0, end - window);
+    let page = readJsonlWindow(p, from, end);
+    while (page.records.length === 0 && from > 0 && window < REPLAY_TAIL_BYTES_CAP) {
+      window = Math.min(REPLAY_TAIL_BYTES_CAP, window * 4, end);
+      from = Math.max(0, end - window);
+      page = readJsonlWindow(p, from, end);
+    }
+    const sliced = page.records.length > maxRecords;
+    const kept = sliced ? page.records.slice(-maxRecords) : page.records;
+    const olderFromByte =
+      kept.length > 0 && (from > 0 || sliced) ? kept[0].start : 0;
+    const records = kept.map((r) => r.rec);
     const indexMeta = this.findIndexRow(id);
-    const meta = indexMeta ? { ...parsed.jsonlMeta, ...indexMeta, id } : parsed.jsonlMeta;
-    return { meta, records, truncated: true, fileBytes };
+    const meta = indexMeta ? { ...page.jsonlMeta, ...indexMeta, id } : page.jsonlMeta;
+    return {
+      meta,
+      records,
+      truncated: olderFromByte > 0,
+      fileBytes,
+      olderFromByte
+    };
   }
 
   list(): SessionMeta[] {
@@ -499,10 +552,21 @@ function parseJsonlText(text: string): {
   return { records, jsonlMeta };
 }
 
-/** Read `byteCount` from EOF. If not from byte 0, drop the first (partial) line. */
-function readFileTail(p: string, fileBytes: number, byteCount: number): string {
-  const start = Math.max(0, fileBytes - byteCount);
-  const len = fileBytes - start;
+type JsonlBodyRec = { type: string; [k: string]: unknown };
+
+/** Read [fromByte, toByte). Skip a partial first line when fromByte > 0. */
+function readJsonlWindow(
+  p: string,
+  fromByte: number,
+  toByte: number
+): {
+  records: { rec: JsonlBodyRec; start: number }[];
+  jsonlMeta?: SessionMeta;
+} {
+  const start = Math.max(0, fromByte);
+  const end = Math.max(start, toByte);
+  const len = end - start;
+  if (len === 0) return { records: [] };
   const buf = Buffer.alloc(len);
   const fd = fs.openSync(p, 'r');
   try {
@@ -511,11 +575,31 @@ function readFileTail(p: string, fileBytes: number, byteCount: number): string {
     fs.closeSync(fd);
   }
   let text = buf.toString('utf8');
+  let skip = 0;
   if (start > 0) {
     const nl = text.indexOf('\n');
-    text = nl >= 0 ? text.slice(nl + 1) : '';
+    if (nl < 0) return { records: [] };
+    skip = nl + 1;
+    text = text.slice(skip);
   }
-  return text;
+  let offset = start + skip;
+  const records: { rec: JsonlBodyRec; start: number }[] = [];
+  let jsonlMeta: SessionMeta | undefined;
+  const lines = text.split('\n');
+  for (const line of lines) {
+    const adv = Buffer.byteLength(line, 'utf8') + 1;
+    if (line) {
+      try {
+        const rec = JSON.parse(line) as { type?: string; meta?: SessionMeta };
+        if (rec.type === 'meta') jsonlMeta = rec.meta;
+        else if (rec.type) records.push({ rec: rec as JsonlBodyRec, start: offset });
+      } catch {
+        /* incomplete / corrupt */
+      }
+    }
+    offset += adv;
+  }
+  return { records, jsonlMeta };
 }
 
 /** First-line meta only — never the body. */

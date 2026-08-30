@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.21.0 — 2026-08-29
+
+### Tail first, older on scroll-up
+
+Restore paints the **latest** events immediately (`loadTail`). Scrolling to the top loads the previous JSONL window (`loadBefore` → `historyOlder` prepend, scroll position kept). A 220 MB session no longer streams from byte 0.
+
 ## 0.20.0 — 2026-08-29
 
 ### Full history on restore, parsed outside the extension host

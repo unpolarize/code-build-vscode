@@ -184,6 +184,10 @@ export interface ChatState {
     records: number;
     error?: string;
   } | null;
+  /** Older JSONL remains before the painted tail. */
+  hasOlder: boolean;
+  /** Bumps when older messages are prepended (scroll-anchor). */
+  olderSeq: number;
 }
 
 export const initialState: ChatState = {
@@ -222,7 +226,9 @@ export const initialState: ChatState = {
   },
   visActive: false,
   stallAutoCancelSeconds: 0,
-  historyLoad: null
+  historyLoad: null,
+  hasOlder: false,
+  olderSeq: 0
 };
 
 let seq = 0;
@@ -273,7 +279,9 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         },
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
         stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
-        historyLoad: state.historyLoad
+        historyLoad: state.historyLoad,
+        hasOlder: state.hasOlder,
+        olderSeq: state.olderSeq
       };
     case 'stallTimeout':
       return { ...state, stallAutoCancelSeconds: msg.seconds };
@@ -462,13 +470,34 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         return it;
       });
       if (extra.length === 0) {
-        return { ...incoming, items, historyLoad: { phase: 'done', bytesRead: 0, bytesTotal: 0, records: msg.records.length } };
+        return {
+          ...incoming,
+          items,
+          historyLoad: null,
+          hasOlder: msg.hasOlder === true,
+          olderSeq: 0
+        };
       }
       return {
         ...incoming,
         items: [...items, ...extra],
         busy: state.busy || incoming.busy,
-        historyLoad: { phase: 'done', bytesRead: 0, bytesTotal: 0, records: msg.records.length }
+        historyLoad: null,
+        hasOlder: msg.hasOlder === true,
+        olderSeq: 0
+      };
+    }
+    case 'historyOlder': {
+      const older =
+        msg.records.length === 0
+          ? { items: [] as ChatState['items'] }
+          : replayRecords({ ...state, items: [] }, msg.meta, msg.records, 'replace');
+      return {
+        ...state,
+        items: [...older.items, ...state.items],
+        hasOlder: msg.hasOlder,
+        olderSeq: state.olderSeq + 1,
+        historyLoad: null
       };
     }
     case 'clipboardImage':

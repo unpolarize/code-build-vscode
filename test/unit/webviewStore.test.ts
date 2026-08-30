@@ -425,6 +425,27 @@ describe('historyLoaded replay', () => {
     assert.equal(s.historyLoad?.phase, 'done');
     assert.equal(s.items.length, 2);
   });
+
+  it('historyLoaded hasOlder; historyOlder prepends without dropping the tail', () => {
+    let s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [userRec('tail')],
+      hasOlder: true
+    } as HostToWebview);
+    assert.equal(s.hasOlder, true);
+    assert.equal((s.items[0] as { text?: string }).text, 'tail');
+    s = reduce(s, {
+      type: 'historyOlder',
+      meta,
+      records: [userRec('older')],
+      hasOlder: false
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.map((u) => u.text).join(','), 'older,tail');
+    assert.equal(s.hasOlder, false);
+    assert.equal(s.olderSeq, 1);
+  });
 });
 
 describe('isAwaitingFirstToken', () => {

@@ -103,6 +103,9 @@ export class SessionManager {
   private meta?: SessionMeta;
   /** Child that streams JSONL off the extension host (issue #24). */
   private replayChild?: ChildProcess;
+  /** Byte offset of the oldest record currently in the webview. 0 = no older. */
+  private historyOlderFrom = 0;
+  private historyOlderBusy = false;
   private unsubscribe?: () => void;
   private titled = false;
   private pendingResumeId?: string;
@@ -282,6 +285,9 @@ export class SessionManager {
         this.pendingExternal = undefined;
         this.openSpan?.end();
         this.openSpan = undefined;
+        break;
+      case 'loadOlderHistory':
+        this.loadOlderHistory();
         break;
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
@@ -2534,6 +2540,8 @@ export class SessionManager {
 
   private teardownSession(): void {
     this.killReplayChild();
+    this.historyOlderFrom = 0;
+    this.historyOlderBusy = false;
     this.flushIpcImmediate();
     this.store.flushSync();
     // A reserve primer belongs to the resume attempt that armed it; never
@@ -3190,6 +3198,34 @@ export class SessionManager {
     }
   }
 
+  /** Scroll-up: one JSONL window before the records already in the webview. */
+  private loadOlderHistory(): void {
+    const id = this.meta?.id;
+    if (!id || this.historyOlderBusy) return;
+    if (this.historyOlderFrom <= 0) {
+      this.panel.post({
+        type: 'historyOlder',
+        meta: this.meta!,
+        records: [],
+        hasOlder: false
+      });
+      return;
+    }
+    this.historyOlderBusy = true;
+    try {
+      const page = this.store.loadBefore(id, this.historyOlderFrom);
+      this.historyOlderFrom = page.olderFromByte;
+      this.panel.post({
+        type: 'historyOlder',
+        meta: page.meta ?? this.meta!,
+        records: page.records as never,
+        hasOlder: page.olderFromByte > 0
+      });
+    } finally {
+      this.historyOlderBusy = false;
+    }
+  }
+
   /**
    * Load a previous persisted session.
    * - `connect: true` (default) — spawn the agent (Open Previous / first prompt).
@@ -3249,20 +3285,15 @@ export class SessionManager {
     this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
-      let bytesTotal = 0;
-      try {
-        bytesTotal = fsSync.statSync(this.store.transcriptPath(id)).size;
-      } catch {
-        bytesTotal = 0;
-      }
+      const tail = this.store.loadTail(id);
+      this.historyOlderFrom = tail.olderFromByte;
       this.panel.post({
-        type: 'historyProgress',
-        phase: 'loading',
-        bytesRead: 0,
-        bytesTotal,
-        records: 0
+        type: 'historyLoaded',
+        meta,
+        records: tail.records as never,
+        hasOlder: tail.olderFromByte > 0
       });
-      this.startTranscriptReplay(this.store.transcriptPath(id), meta, be, connect, skipReplay);
+      this.applyReplayPrimer(tail.records, be, connect, skipReplay);
     }
 
     if (!connect) {

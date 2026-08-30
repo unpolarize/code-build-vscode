@@ -261,7 +261,9 @@ export type WebviewToHost =
   | { type: 'sttStart'; lang?: string }
   | { type: 'sttStop' }
   /** Webview finished applying a historyBatch (backpressure). */
-  | { type: 'historyBatchAck' };
+  | { type: 'historyBatchAck' }
+  /** Scroll-up: request the JSONL window before the current tail. */
+  | { type: 'loadOlderHistory' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -369,6 +371,21 @@ export type HostToWebview =
         ts?: number;
         images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
+      /** More JSONL exists before this tail — scroll up to load it. */
+      hasOlder?: boolean;
+    }
+  /** Older JSONL window, prepended on scroll-up. */
+  | {
+      type: 'historyOlder';
+      meta: SessionMeta;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
+      }>;
+      hasOlder: boolean;
     }
   /** Off-thread restore: bytes so far. `loading` paints chrome immediately. */
   | {
