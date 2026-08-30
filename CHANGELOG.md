@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.4 — 2026-08-29
+
+### Restore no longer reads a 220 MB JSONL
+
+Reload of this chat stayed empty 15–40 s after CSV was already fast. The newest `~/.codebuild/sessions/*.jsonl` is **220 MB**. Deserialize called `SessionStore.load()` (full `readFileSync` + `JSON.parse` every line) just to check `cwd`, then `loadExistingSession` did it again and `postMessage`d the whole transcript into the webview.
+
+- Restore uses **`loadMeta`** (index.json / JSONL line 0).
+- Replay uses **`loadTail`** (last ≤2 MB / 200 records). A notice says when older turns were omitted.
+- Tests: `persistence.test.ts` loadMeta / loadTail.
+
 ## 0.19.3 — 2026-08-29
 
 ### Restored chat posts history before backend detect

@@ -3024,7 +3024,7 @@ export class SessionManager {
     id: string,
     opts?: { connect?: boolean; skipReplay?: boolean }
   ): Promise<void> {
-    const loaded = this.store.load(id);
+    const loaded = this.store.loadTail(id);
     if (!loaded.meta) {
       this.panel.post({
         type: 'sessionUpdate',
@@ -3086,8 +3086,16 @@ export class SessionManager {
     this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
-      // Replay the stored transcript so the UI shows the full conversation history
       this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
+      if (loaded.truncated) {
+        const mb = (loaded.fileBytes / (1024 * 1024)).toFixed(0);
+        this.panel.post({
+          type: 'notice',
+          key: 'history-tail',
+          text: `Showing latest messages — full transcript is ${mb} MB on disk.`,
+          detail: 'Older turns are not replayed into the panel (a 200 MB JSONL blocked reload for 15–40 s). They remain in ~/.codebuild/sessions.'
+        });
+      }
     }
 
     // Self-resume primer for backends without native --resume (grok ACP

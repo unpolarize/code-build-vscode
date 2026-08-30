@@ -38,8 +38,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ChatSurface
       const last = this.context.workspaceState.get<string>(LAST_SESSION_KEY);
       if (last) {
         const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
-        const loaded = new SessionStore().load(last);
-        if (loaded.meta && sessionMatchesWorkspace(loaded.meta.cwd, folders)) {
+        const meta = new SessionStore().loadMeta(last);
+        if (meta && sessionMatchesWorkspace(meta.cwd, folders)) {
           this.manager.queueResume(last, { connect: false });
         }
       }

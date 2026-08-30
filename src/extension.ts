@@ -206,8 +206,8 @@ export function activate(context: vscode.ExtensionContext): void {
       const stored = state as { lastSessionId?: string } | undefined;
       if (stored && typeof stored.lastSessionId === 'string' && stored.lastSessionId) {
         const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
-        const loaded = new SessionStore().load(stored.lastSessionId);
-        if (loaded.meta && sessionMatchesWorkspace(loaded.meta.cwd, folders)) {
+        const meta = new SessionStore().loadMeta(stored.lastSessionId);
+        if (meta && sessionMatchesWorkspace(meta.cwd, folders)) {
           mgr.queueResume(stored.lastSessionId, { connect: false });
         }
       }

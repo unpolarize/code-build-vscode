@@ -458,3 +458,44 @@ test('legacy transcripts without ts still load', () => {
   assert.equal(records[0].type, 'user');
   assert.equal((records[0] as { ts?: number }).ts, undefined);
 });
+
+test('loadMeta reads index.json, not the JSONL body', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.commitSession({ ...meta, title: 'from-index', hasContent: true });
+  fs.writeFileSync(store.transcriptPath('sess-1'), `${'not-json\n'.repeat(20_000)}garbage`);
+  const m = store.loadMeta('sess-1');
+  assert.equal(m?.id, 'sess-1');
+  assert.equal(m?.title, 'from-index');
+  assert.equal(m?.cwd, '/repo');
+});
+
+test('loadTail of a small file is complete and not truncated', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  store.appendUserText('sess-1', 'hello');
+  const tail = store.loadTail('sess-1');
+  assert.equal(tail.truncated, false);
+  assert.equal(tail.records.length, 1);
+  assert.equal((tail.records[0] as { text: string }).text, 'hello');
+  assert.equal(tail.meta?.id, 'sess-1');
+});
+
+test('loadTail of a large file skips the prefix and keeps the last user line', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  const pad = 'x'.repeat(120);
+  for (let i = 0; i < 4000; i++) store.appendUserText('sess-1', `pad-${i} ${pad}`);
+  store.appendUserText('sess-1', 'visible-tail');
+  const tail = store.loadTail('sess-1', { maxBytes: 16 * 1024, maxRecords: 40 });
+  assert.equal(tail.truncated, true);
+  assert.ok(tail.fileBytes > 16 * 1024);
+  const texts = tail.records.map((r) => (r as { text?: string }).text);
+  assert.ok(texts.includes('visible-tail'), `tail texts: ${texts.slice(-3)}`);
+  assert.ok(!texts.includes(`pad-0 ${pad}`));
+  assert.ok(tail.records.length <= 40);
+  assert.equal(tail.meta?.id, 'sess-1');
+});

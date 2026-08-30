@@ -5,6 +5,11 @@ import * as os from 'node:os';
 import type { SessionUpdate } from '../../shared/acpTypes';
 import type { SessionMeta } from '../../shared/protocol';
 
+/** Bytes from EOF to replay into a restored chat. perf #8 / issue #23. */
+export const REPLAY_TAIL_BYTES = 512 * 1024;
+export const REPLAY_TAIL_BYTES_CAP = 2 * 1024 * 1024;
+export const REPLAY_TAIL_MAX_RECORDS = 200;
+
 /**
  * Durable whole-file write: same-directory `.tmp` + fsync + rename.
  * A crash between tmp write and rename leaves the prior target intact.
@@ -272,26 +277,61 @@ export class SessionStore {
     return this.findIndexRow(id) !== undefined;
   }
 
+  /** Index.json (or JSONL line-0). Never reads the transcript body. */
+  loadMeta(id: string): SessionMeta | undefined {
+    this.flushSync(id);
+    return this.findIndexRow(id) ?? readJsonlMetaHead(this.transcriptPath(id));
+  }
+
   /** Load a transcript back into ordered records for UI rehydration. */
   load(id: string): { meta?: SessionMeta; records: { type: string; [k: string]: unknown }[] } {
     this.flushSync(id);
     const p = this.transcriptPath(id);
     if (!fs.existsSync(p)) return { records: [] };
-    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
-    const records: { type: string; [k: string]: unknown }[] = [];
-    let jsonlMeta: SessionMeta | undefined;
-    for (const line of lines) {
-      try {
-        const rec = JSON.parse(line);
-        if (rec.type === 'meta') jsonlMeta = rec.meta;
-        else records.push(rec);
-      } catch {
-        /* skip corrupt line */
-      }
-    }
+    const parsed = parseJsonlText(fs.readFileSync(p, 'utf8'));
     const indexMeta = this.findIndexRow(id);
-    const meta = indexMeta ? { ...jsonlMeta, ...indexMeta, id } : jsonlMeta;
-    return { meta, records };
+    const meta = indexMeta ? { ...parsed.jsonlMeta, ...indexMeta, id } : parsed.jsonlMeta;
+    return { meta, records: parsed.records };
+  }
+
+  /**
+   * Last N complete JSONL records, reading at most `maxBytes` from EOF.
+   * Window grows once if the first slice is a truncated giant line.
+   * Used on panel restore so a 200 MB session does not `readFileSync` +
+   * `postMessage` the whole file (15–40 s blank chat).
+   */
+  loadTail(
+    id: string,
+    opts?: { maxBytes?: number; maxRecords?: number }
+  ): {
+    meta?: SessionMeta;
+    records: { type: string; [k: string]: unknown }[];
+    truncated: boolean;
+    fileBytes: number;
+  } {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    const maxBytes = opts?.maxBytes ?? REPLAY_TAIL_BYTES;
+    const maxRecords = opts?.maxRecords ?? REPLAY_TAIL_MAX_RECORDS;
+    if (!fs.existsSync(p)) return { records: [], truncated: false, fileBytes: 0 };
+    const fileBytes = fs.statSync(p).size;
+    if (fileBytes === 0) return { records: [], truncated: false, fileBytes: 0 };
+    if (fileBytes <= maxBytes) {
+      const full = this.load(id);
+      return { ...full, truncated: false, fileBytes };
+    }
+    let window = maxBytes;
+    let parsed: ReturnType<typeof parseJsonlText> = { records: [] };
+    while (window <= REPLAY_TAIL_BYTES_CAP) {
+      parsed = parseJsonlText(readFileTail(p, fileBytes, window));
+      if (parsed.records.length > 0 || window >= fileBytes || window >= REPLAY_TAIL_BYTES_CAP) break;
+      window = Math.min(REPLAY_TAIL_BYTES_CAP, window * 4);
+    }
+    const records =
+      parsed.records.length > maxRecords ? parsed.records.slice(-maxRecords) : parsed.records;
+    const indexMeta = this.findIndexRow(id);
+    const meta = indexMeta ? { ...parsed.jsonlMeta, ...indexMeta, id } : parsed.jsonlMeta;
+    return { meta, records, truncated: true, fileBytes };
   }
 
   list(): SessionMeta[] {
@@ -438,6 +478,44 @@ function recordHasContent(rec: { type?: string; update?: { kind?: string } }): b
   if (rec.type === 'user') return true;
   if (rec.type === 'update') return isSubstantiveUpdate(rec.update?.kind);
   return false;
+}
+
+function parseJsonlText(text: string): {
+  records: { type: string; [k: string]: unknown }[];
+  jsonlMeta?: SessionMeta;
+} {
+  const records: { type: string; [k: string]: unknown }[] = [];
+  let jsonlMeta: SessionMeta | undefined;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    try {
+      const rec = JSON.parse(line) as { type?: string; meta?: SessionMeta };
+      if (rec.type === 'meta') jsonlMeta = rec.meta;
+      else if (rec.type) records.push(rec as { type: string; [k: string]: unknown });
+    } catch {
+      /* skip incomplete / corrupt line */
+    }
+  }
+  return { records, jsonlMeta };
+}
+
+/** Read `byteCount` from EOF. If not from byte 0, drop the first (partial) line. */
+function readFileTail(p: string, fileBytes: number, byteCount: number): string {
+  const start = Math.max(0, fileBytes - byteCount);
+  const len = fileBytes - start;
+  const buf = Buffer.alloc(len);
+  const fd = fs.openSync(p, 'r');
+  try {
+    fs.readSync(fd, buf, 0, len, start);
+  } finally {
+    fs.closeSync(fd);
+  }
+  let text = buf.toString('utf8');
+  if (start > 0) {
+    const nl = text.indexOf('\n');
+    text = nl >= 0 ? text.slice(nl + 1) : '';
+  }
+  return text;
 }
 
 /** First-line meta only — never the body. */
