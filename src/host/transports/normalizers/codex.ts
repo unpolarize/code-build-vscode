@@ -62,6 +62,11 @@ export class CodexNormalizer {
           : [];
       }
       case 'turn.started':
+        // Codex is spawn-per-prompt and item ids restart at item_0 every
+        // turn. Without this reset a reused id makes turn 2's final answer
+        // hit the dedupe set (dropped) and open-tool tracking go stale.
+        this.emittedAssistant.clear();
+        this.openedTools.clear();
         return [];
       case 'turn.completed':
         return [
@@ -119,13 +124,15 @@ export class CodexNormalizer {
         return this.openCloseTool(item, completed, {
           title: [item.server, item.tool].filter(Boolean).join('.') || 'mcp',
           kind: 'other',
-          failed: item.status === 'failed' || !!item.error
+          failed: item.status === 'failed' || !!item.error,
+          failureText: typeof item.error === 'string' ? item.error : item.error?.message
         });
       case 'web_search':
         return this.openCloseTool(item, completed, {
           title: item.query ?? 'web search',
           kind: 'search',
-          failed: item.status === 'failed'
+          failed: item.status === 'failed' || !!item.error,
+          failureText: typeof item.error === 'string' ? item.error : item.error?.message
         });
       case 'todo_list': {
         // Mirror to the TodoWrite shape: sessionManager.interceptToolCall
@@ -163,7 +170,7 @@ export class CodexNormalizer {
   private openCloseTool(
     item: CodexItem,
     completed: boolean,
-    shape: { title: string; kind: string; failed: boolean }
+    shape: { title: string; kind: string; failed: boolean; failureText?: string }
   ): SessionUpdate[] {
     const id = item.id ?? shape.title;
     const open: SessionUpdate = {
@@ -177,9 +184,16 @@ export class CodexNormalizer {
     }
     const close: SessionUpdate = {
       kind: 'tool_call_update',
-      toolCall: { toolCallId: id, status: shape.failed ? 'failed' : 'completed' }
+      toolCall: {
+        toolCallId: id,
+        status: shape.failed ? 'failed' : 'completed',
+        // Surface the failure reason on the card; a bare failed row says nothing.
+        content: shape.failed && shape.failureText ? [{ type: 'text', text: shape.failureText }] : []
+      }
     };
-    if (this.openedTools.has(id)) return [close];
+    const opened = this.openedTools.has(id);
+    this.openedTools.add(id); // duplicate completed for the same id must not re-open a card
+    if (opened) return [close];
     return [open, close];
   }
 }

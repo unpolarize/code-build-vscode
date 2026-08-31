@@ -308,3 +308,47 @@ test('fixture replay: real 0.142.4 exec --json stream — final answer lands aft
   ]);
   assert.equal(answer, 'PONG');
 });
+
+test('turn.started resets per-turn item-id state (codex restarts ids at item_0 each spawn)', () => {
+  const n = new CodexNormalizer();
+  n.parseLine({ type: 'item.completed', item: { id: 'item_0', type: 'agent_message', text: 'one' } } as never);
+  n.parseLine({ type: 'turn.completed' } as never);
+  n.parseLine({ type: 'turn.started' } as never);
+  // Reused id in the next turn must still emit (previously deduped → dropped answer)
+  const second = n.parseLine({
+    type: 'item.completed',
+    item: { id: 'item_0', type: 'agent_message', text: 'two' }
+  } as never);
+  assert.equal(second.length, 1);
+  // openedTools reset too: reused tool id re-opens a card next turn
+  n.parseLine({ type: 'item.started', item: { id: 'item_1', type: 'mcp_tool_call', server: 's', tool: 't' } } as never);
+  n.parseLine({ type: 'turn.started' } as never);
+  const reopened = n.parseLine({
+    type: 'item.started',
+    item: { id: 'item_1', type: 'mcp_tool_call', server: 's', tool: 't' }
+  } as never);
+  assert.equal(reopened.length, 1);
+});
+
+test('duplicate completed-only web_search does not open a second card', () => {
+  const n = new CodexNormalizer();
+  const ev = { type: 'item.completed', item: { id: 'w1', type: 'web_search', query: 'q' } };
+  assert.equal(n.parseLine(ev as never).length, 2); // open + close
+  const again = n.parseLine(ev as never);
+  assert.equal(again.length, 1); // close only — webview no-ops repeats
+  assert.ok(again[0].kind === 'tool_call_update');
+});
+
+test('failed mcp_tool_call carries the error message on the update card', () => {
+  const n = new CodexNormalizer();
+  n.parseLine({ type: 'item.started', item: { id: 'e1', type: 'mcp_tool_call', server: 's', tool: 't' } } as never);
+  const done = n.parseLine({
+    type: 'item.completed',
+    item: { id: 'e1', type: 'mcp_tool_call', server: 's', tool: 't', error: { message: 'tool exploded' } }
+  } as never);
+  assert.ok(done[0].kind === 'tool_call_update');
+  if (done[0].kind === 'tool_call_update') {
+    assert.equal(done[0].toolCall.status, 'failed');
+    assert.deepEqual(done[0].toolCall.content, [{ type: 'text', text: 'tool exploded' }]);
+  }
+});
