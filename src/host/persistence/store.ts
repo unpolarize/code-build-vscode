@@ -25,7 +25,12 @@ export function keepLastCompleteTurns(records: OffsetRec[], maxTurns: number): O
   }
   if (userIdx.length === 0) return [];
   const take = Math.max(1, maxTurns);
-  const start = userIdx[Math.max(0, userIdx.length - take)];
+  let start = userIdx[Math.max(0, userIdx.length - take)];
+  // Compact dividers snap to the page of the turn they precede: without this,
+  // a marker sitting just before the first kept user line falls off the
+  // painted tail page (olderFromByte then lands on the marker, so the older
+  // page ends before it and the divider renders exactly once).
+  while (start > 0 && records[start - 1].rec.type === 'compact') start -= 1;
   return records.slice(start);
 }
 

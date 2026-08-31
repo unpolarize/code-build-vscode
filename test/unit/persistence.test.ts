@@ -564,6 +564,57 @@ test('keepLastCompleteTurns drops leading assistant chunks (no mid-turn start)',
   assert.equal(keepLastCompleteTurns(rows.slice(0, 2), 8).length, 0);
 });
 
+test('keepLastCompleteTurns keeps a compact marker sitting before the snap-start user', () => {
+  const rows: OffsetRec[] = [
+    { rec: { type: 'user', text: 'pre-compact' }, start: 0 },
+    { rec: { type: 'update', update: { kind: 'agent_message_chunk' } }, start: 40 },
+    { rec: { type: 'compact', marker: { at: 1, summaryPreview: 's' } }, start: 80 },
+    { rec: { type: 'user', text: 'post-compact' }, start: 120 },
+    { rec: { type: 'update', update: { kind: 'agent_message_chunk' } }, start: 160 }
+  ];
+  const kept = keepLastCompleteTurns(rows, 1);
+  assert.deepEqual(
+    kept.map((r) => r.rec.type),
+    ['compact', 'user', 'update']
+  );
+  assert.equal(kept[0].start, 80);
+});
+
+test('compact divider at a page edge appears on exactly one of two adjacent pages', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  const pad = 'p'.repeat(200);
+  for (let i = 0; i < 6; i++) {
+    store.appendUserText('sess-1', `pre-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `${pad}-${i}` }
+    });
+  }
+  store.appendCompactMarker('sess-1', { at: 1_700_000_100_000, summaryPreview: 'summary' });
+  for (let i = 0; i < 2; i++) {
+    store.appendUserText('sess-1', `post-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `reply-${i}` }
+    });
+  }
+  // Snap lands on the first post-compact user turn — the divider must ride
+  // the newer page, not silently drop between pages.
+  const tail = store.loadTail('sess-1', { maxTurns: 2 });
+  assert.equal(tail.records[0].type, 'compact');
+  assert.equal((tail.records[1] as { text?: string }).text, 'post-0');
+  assert.equal(tail.truncated, true);
+  assert.ok(tail.olderFromByte > 0);
+  const older = store.loadBefore('sess-1', tail.olderFromByte, { maxTurns: 8 });
+  const olderTypes = older.records.map((r) => r.type);
+  assert.ok(!olderTypes.includes('compact'), `older page must not repeat the divider: ${olderTypes}`);
+  assert.ok(older.records.some((r) => (r as { text?: string }).text === 'pre-5'));
+  const union = [...older.records, ...tail.records];
+  assert.equal(union.filter((r) => r.type === 'compact').length, 1);
+});
+
 test('loadTail starts on a user turn even when the byte window cuts a prior reply', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);
