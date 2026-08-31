@@ -147,6 +147,21 @@ export function Header({
         </span>
       )}
 
+      {state.spendLimit && (
+        <span
+          className={
+            state.spendLimit.warn
+              ? 'spend-limit-chip spend-limit-chip-warn'
+              : state.spendLimit.available
+                ? 'spend-limit-chip'
+                : 'spend-limit-chip spend-limit-chip-na'
+          }
+          title={formatSpendLimitTooltip(state.spendLimit)}
+        >
+          {state.spendLimit.label}
+        </span>
+      )}
+
       {onSetStallTimeout && (
         <select
           className="stall-picker"
@@ -268,6 +283,28 @@ export function Header({
       </button>
     </div>
   );
+}
+
+function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): string {
+  if (!chip.available) {
+    return (
+      'Spend limit n/a — this backend did not expose rate_limits.spend_limit ' +
+      '(Claude 2.1.251 /usage parity). Never invents remaining %.'
+    );
+  }
+  const lines: string[] = [chip.label];
+  if (chip.usedPercentage != null) lines.push(`Used: ${chip.usedPercentage}% of spend limit`);
+  if (chip.remainingPercentage != null) lines.push(`Remaining: ${chip.remainingPercentage}%`);
+  if (chip.resetsAt != null && chip.resetsAt > 0) {
+    try {
+      lines.push(`Resets: ${new Date(chip.resetsAt * 1000).toLocaleString()}`);
+    } catch {
+      /* ignore bad epoch */
+    }
+  }
+  if (chip.warnReason) lines.push(chip.warnReason);
+  lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
 }
 
 /** Compose a multi-line tooltip describing the current chat's spend. Includes

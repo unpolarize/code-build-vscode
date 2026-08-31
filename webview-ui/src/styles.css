@@ -170,6 +170,31 @@ body {
   color: var(--vscode-editorWarning-foreground, #d97706);
   opacity: 1;
 }
+/* Spend-limit parity — Claude 2.1.251 /usage bar; n/a when vendor omits fields. */
+.spend-limit-chip {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.85;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.spend-limit-chip-warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: var(--vscode-editorWarning-foreground, #d97706);
+  opacity: 1;
+}
+.spend-limit-chip-na {
+  opacity: 0.55;
+  background: rgba(128, 128, 128, 0.1);
+  border-color: rgba(128, 128, 128, 0.25);
+}
 .cmd-hint {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;

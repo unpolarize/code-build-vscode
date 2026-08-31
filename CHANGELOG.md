@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.21.5 — 2026-08-31
+
+### Spend-limit parity chip (Claude 2.1.251 `/usage` class)
+
+- **Header chip** reads Claude statusline / gateway `rate_limits.spend_limit` (`used_percentage`, `resets_at`) and shows remaining % + reset tooltip (`spend 37% left`). Missing backends (Codex/Grok fixtures without the field) show **`spend n/a`** — never invents spend math or fakes 100% remaining. Amber warn at ≥75% used / over-limit.
+- Pure `shared/spendLimitChip.ts`; `spend_limit_update` SessionUpdate; Claude stream-json + ACP initialize emit; webview reducer + header chip. Distinct from parked prompt-cache hit meter and 5h/7d dual-window chips. (kp: ideas/cb-claude-spend-limit-bar-host-parity-chip-surfa, agent: grok)
+
 ## 0.21.3 — 2026-08-30
 
 ### Codex 0.142 item vocabulary in the normalizer (tracker #14 + parity leg)

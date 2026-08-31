@@ -193,6 +193,17 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** Spend-limit parity chip from status/rate_limits (null until a
+   * spend_limit_update arrives; missing vendors show available:false / n/a). */
+  spendLimit: {
+    available: boolean;
+    usedPercentage: number | null;
+    remainingPercentage: number | null;
+    resetsAt: number | null;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
   /** Off-thread full-transcript restore (issue #24). */
   historyLoad: {
     phase: 'loading' | 'done' | 'error';
@@ -248,6 +259,7 @@ export const initialState: ChatState = {
   stallAutoCancelSeconds: 0,
   checkpointIds: [],
   protocolPin: null,
+  spendLimit: null,
   historyLoad: null,
   nowLine: null,
   hasOlder: false,
@@ -716,6 +728,19 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
           ...(u.warnReason ? { warnReason: u.warnReason } : {})
         }
       };
+    case 'spend_limit_update':
+      return {
+        ...state,
+        spendLimit: {
+          available: u.available,
+          usedPercentage: u.usedPercentage,
+          remainingPercentage: u.remainingPercentage,
+          resetsAt: u.resetsAt,
+          label: u.label,
+          warn: u.warn,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {})
+        }
+      };
     default:
       return state;
   }
@@ -868,9 +893,10 @@ function replayRecords(
           // Stale restore actions must not survive a session switch; the host
           // re-posts checkpointAvailable right after historyLoaded.
           checkpointIds: [],
-          // Protocol pin re-applies from a persisted protocol_version_update if
-          // the transcript has one; otherwise stays null until next initialize.
-          protocolPin: null
+          // Protocol pin / spend-limit re-apply from persisted updates if
+          // the transcript has them; otherwise stay null until next emit.
+          protocolPin: null,
+          spendLimit: null
         };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);

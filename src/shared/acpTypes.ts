@@ -126,6 +126,18 @@ export type SessionUpdate =
       warn: boolean;
       warnReason?: string;
     }
+  /** Spend-limit parity chip (Claude 2.1.251 `/usage` bar class).
+   * `available:false` → label `spend n/a` — never invent remaining %. */
+  | {
+      kind: 'spend_limit_update';
+      available: boolean;
+      usedPercentage: number | null;
+      remainingPercentage: number | null;
+      resetsAt: number | null;
+      label: string;
+      warn: boolean;
+      warnReason?: string;
+    }
   /** Native resume failed and the transport fell back to a fresh
    * session (e.g. Grok ACP session/load rejected because the on-disk
    * session was deleted or the grok version regressed). The host uses

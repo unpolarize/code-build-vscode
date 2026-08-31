@@ -36,8 +36,19 @@ import {
   evaluateProtocolVersionPin,
   HOST_ACP_PROTOCOL_VERSION
 } from '../../shared/protocolVersionPin';
+import { evaluateSpendLimitChip } from '../../shared/spendLimitChip';
 
 export type { AcpMcpServer };
+
+function updateHasRateLimits(update: Record<string, unknown>): boolean {
+  if (update.rate_limits != null || update.rateLimits != null) return true;
+  const meta = update._meta;
+  if (meta && typeof meta === 'object') {
+    const m = meta as Record<string, unknown>;
+    if (m.rate_limits != null || m.rateLimits != null) return true;
+  }
+  return false;
+}
 export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
 
 let mcpOutput: vscode.OutputChannel | undefined;
@@ -252,6 +263,10 @@ export class AcpTransport extends BaseAgentSession {
           warn: pin.warn,
           ...(pin.warnReason ? { warnReason: pin.warnReason } : {})
         });
+        // Spend-limit parity: Grok/Codex-via-ACP usually omit rate_limits →
+        // chip shows n/a (never fake 100%). If initialize carries Claude-shaped
+        // rate_limits.spend_limit (or camelCase), surface remaining %.
+        this.emitSpendLimit(init);
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
@@ -355,8 +370,31 @@ export class AcpTransport extends BaseAgentSession {
           if (u.kind === 'current_mode_update' && u.mode) this.mode = u.mode;
           this.emit(u);
         }
+        // Only re-evaluate when the update actually carries rate_limits —
+        // a bare agent_message_chunk must not wipe a prior spend chip to n/a.
+        if (updateHasRateLimits(p.update)) this.emitSpendLimit(p.update);
       }
     }
+  }
+
+  private lastSpendLimitLabel?: string;
+
+  private emitSpendLimit(status: unknown): void {
+    const chip = evaluateSpendLimitChip(
+      status && typeof status === 'object' ? (status as Record<string, unknown>) : null
+    );
+    if (chip.label === this.lastSpendLimitLabel) return;
+    this.lastSpendLimitLabel = chip.label;
+    this.emit({
+      kind: 'spend_limit_update',
+      available: chip.available,
+      usedPercentage: chip.usedPercentage,
+      remainingPercentage: chip.remainingPercentage,
+      resetsAt: chip.resetsAt,
+      label: chip.label,
+      warn: chip.warn,
+      ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
+    });
   }
 
   /** Session cwd used as the sandbox root for the fs/* bridge. */
