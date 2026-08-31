@@ -28,7 +28,7 @@ export function compactBlockReason(f: CompactIdleFlags): string | undefined {
   if (f.openToolCalls > 0) return 'a tool call is still running';
   if (f.awaitingPermission) return 'a permission prompt is waiting for your decision';
   if (f.pendingQuestions > 0) return 'the agent is waiting on your answer to a question';
-  if (f.primerPending) return 'a handoff primer is still being prepared';
+  if (f.primerPending) return 'a primer is still being prepared (a handoff or another compact is in progress)';
   if (f.queuedPrompt) return 'a queued message is still waiting to go out';
   return undefined;
 }

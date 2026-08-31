@@ -1064,79 +1064,112 @@ export class SessionManager {
       return;
     }
 
+    // Hold the guard across the (up to 90s) summarize await: primerPending
+    // makes the 'prompt' case QUEUE any message sent mid-compact instead of
+    // starting a turn the kill would land on; it also makes a second
+    // /compact refuse via compactBlockReason. finishPrimerDecision() in the
+    // finally releases the queued prompt WITH the compact primer prepended.
+    this.primerPending = true;
+
     const be = backendLabel(meta.backend);
     const useClaude = meta.backend === 'claude';
     this.panel.post({
       type: 'notice',
       text: `Compacting this conversation${focus ? ` (focus: ${focus})` : ''}…`,
       detail: useClaude
-        ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary.`
-        : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary.`
+        ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
+        : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
     });
 
-    // Summarize BEFORE any kill. On failure still compact with the clipped
-    // fallback + a visible notice — never abort, never a silent no-op.
-    let summary: string;
     try {
-      summary = useClaude
-        ? await this.summarizeViaClaude(records, meta.model, focus)
-        : clippedSummaryFallback(records, be);
-    } catch (e) {
-      summary = clippedSummaryFallback(records, be);
+      // Summarize BEFORE any kill. On failure still compact with the clipped
+      // fallback + a visible notice — never abort, never a silent no-op.
+      let summary: string;
+      try {
+        summary = useClaude
+          ? await this.summarizeViaClaude(records, meta.model, focus, 'compact')
+          : clippedSummaryFallback(records, be);
+      } catch (e) {
+        summary = clippedSummaryFallback(records, be);
+        this.panel.post({
+          type: 'notice',
+          text: 'LLM summarisation failed — compacting with a clipped summary instead.',
+          detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+        });
+      }
+
+      // Marker durable BEFORE the kill (appendCompactMarker only enqueues;
+      // kill-before-flush would lose the divider).
+      const marker = buildCompactMarker({
+        now: Date.now(),
+        preTokens: this.lastInputTokens,
+        summary,
+        focus
+      });
+      this.store.appendCompactMarker(meta.id, marker);
+      this.store.flushSync(meta.id);
+      this.panel.post({ type: 'compactMarker', marker });
+      // The pre-compact level is spent — a later divider must not reuse it.
+      this.lastInputTokens = undefined;
+
+      // One-shot primer for the first post-compact prompt. Latched before the
+      // respawn — teardownSession never clears pendingPrimer.
+      this.pendingPrimer = buildCompactPrimer({
+        records,
+        summary,
+        backendLabel: be,
+        focus,
+        transcriptPath: this.store.transcriptPath(meta.id)
+      });
+
+      // Lineage first, THEN clear. The store needs the explicit clear verb:
+      // mergeSessionMeta skips undefined patch values, so updateMeta alone
+      // would leave the stale native id resumable after a reload.
+      if (prepareCompactLineage(meta)) {
+        this.store.updateMeta(meta);
+        this.store.clearBackendSessionId(meta.id);
+        this.panel.post({ type: 'sessionMeta', session: meta });
+      }
+
+      // Kill + respawn at the same CB session id, never resuming the
+      // pre-compact native thread; the respawn arms pendingBackendIdReason so
+      // the new system_init is stamped 'compact' in backendSessionHistory.
+      try {
+        await this.loadExistingSession(meta.id, {
+          connect: true,
+          skipReplay: true,
+          compactRespawn: true
+        });
+      } catch (e) {
+        // The compact itself is durable (marker flushed, id cleared, primer
+        // latched) — only the respawn failed. Drop the broken transport and
+        // park in idle-restore so the next message retries the reconnect
+        // instead of minting a new chat.
+        this.unsubscribe?.();
+        this.unsubscribe = undefined;
+        this.session?.dispose();
+        this.session = undefined;
+        this.idleResume = true;
+        this.panel.post({
+          type: 'notice',
+          text: `Compacted, but restarting the ${be} backend failed — send a message to reconnect (the compact summary still goes out with it).`,
+          detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+        });
+        return;
+      }
       this.panel.post({
         type: 'notice',
-        text: 'LLM summarisation failed — compacting with a clipped summary instead.',
-        detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+        text: `Compacted${
+          typeof marker.preTokens === 'number'
+            ? ` from ${Math.round(marker.preTokens / 1000)}K input tokens`
+            : ''
+        } — the summary + last 5 turns go out with your next message. The context meter may read unknown until the next turn completes.`
       });
+    } finally {
+      // Always release the prompt queue — a message sent mid-compact goes
+      // out now, with the compact primer prepended by the prompt path.
+      this.finishPrimerDecision();
     }
-
-    // Marker durable BEFORE the kill (appendCompactMarker only enqueues;
-    // kill-before-flush would lose the divider).
-    const marker = buildCompactMarker({
-      now: Date.now(),
-      preTokens: this.lastInputTokens,
-      summary,
-      focus
-    });
-    this.store.appendCompactMarker(meta.id, marker);
-    this.store.flushSync(meta.id);
-    this.panel.post({ type: 'compactMarker', marker });
-
-    // One-shot primer for the first post-compact prompt. Latched before the
-    // respawn — teardownSession never clears pendingPrimer.
-    this.pendingPrimer = buildCompactPrimer({
-      records,
-      summary,
-      backendLabel: be,
-      focus,
-      transcriptPath: this.store.transcriptPath(meta.id)
-    });
-
-    // Lineage first, THEN clear. The store needs the explicit clear verb:
-    // mergeSessionMeta skips undefined patch values, so updateMeta alone
-    // would leave the stale native id resumable after a reload.
-    if (prepareCompactLineage(meta)) {
-      this.store.updateMeta(meta);
-      this.store.clearBackendSessionId(meta.id);
-      this.panel.post({ type: 'sessionMeta', session: meta });
-    }
-
-    // Kill + respawn at the same CB session id, never resuming the
-    // pre-compact native thread; the respawn arms pendingBackendIdReason so
-    // the new system_init is stamped 'compact' in backendSessionHistory.
-    await this.loadExistingSession(meta.id, {
-      connect: true,
-      skipReplay: true,
-      compactRespawn: true
-    });
-    this.panel.post({
-      type: 'notice',
-      text: `Compacted${
-        typeof marker.preTokens === 'number'
-          ? ` from ${Math.round(marker.preTokens / 1000)}K input tokens`
-          : ''
-      } — the summary + last 5 turns go out with your next message. The context meter may read unknown until the next turn completes.`
-    });
   }
 
   /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
@@ -1610,18 +1643,28 @@ export class SessionManager {
   private summarizeViaClaude(
     records: { type: string; text?: string; update?: any }[],
     model?: string,
-    focus?: string
+    focus?: string,
+    variant: 'handoff' | 'compact' = 'handoff'
   ): Promise<string> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const bin = overrides['claude'] || 'claude';
     const transcript = buildTranscriptForSummary(records);
+    const brief =
+      variant === 'compact'
+        ? `You are compacting an ongoing conversation between a user and an AI ` +
+          `coding assistant so the SAME assistant can continue it with a fresh, ` +
+          `smaller context. The continuation sees nothing but this summary. ` +
+          `Write a concise summary (200–400 words) covering: the user's goal, ` +
+          `key decisions, files touched + current state, errors already tried, ` +
+          `open todos, the immediate next step, and any constraints the user set.`
+        : `You are summarising a conversation between a user and an AI coding ` +
+          `assistant for handoff to a DIFFERENT AI assistant. The new assistant ` +
+          `has zero prior context. Write a concise summary (200–400 words) ` +
+          `covering: the user's goal, key findings/decisions, current task ` +
+          `state, files involved, and any outstanding questions.`;
     const prompt =
-      `You are summarising a conversation between a user and an AI coding ` +
-      `assistant for handoff to a DIFFERENT AI assistant. The new assistant ` +
-      `has zero prior context. Write a concise summary (200–400 words) ` +
-      `covering: the user's goal, key findings/decisions, current task ` +
-      `state, files involved, and any outstanding questions. Don't include ` +
-      `verbatim turns (those will be appended separately). Just the summary text.\n` +
+      brief +
+      ` Don't include verbatim turns (those will be appended separately). Just the summary text.\n` +
       (focus ? `The user asked you to focus especially on: ${focus}\n` : '') +
       `\n=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
 
@@ -3643,7 +3686,12 @@ export class SessionManager {
     const connect = opts?.connect ?? true;
     const skipReplay = opts?.skipReplay === true;
 
+    // teardownSession zeroes the older-history cursor; on a skipReplay
+    // reconnect the webview keeps its painted page, so losing the cursor
+    // would break "load older" until a full reopen.
+    const preservedOlderFrom = this.historyOlderFrom;
     this.teardownSession();
+    if (skipReplay) this.historyOlderFrom = preservedOlderFrom;
     // Arm AFTER teardown (teardown clears the field): the respawned
     // backend's first system_init must be labeled 'compact', not 'respawn'.
     if (opts?.compactRespawn) this.pendingBackendIdReason = 'compact';
