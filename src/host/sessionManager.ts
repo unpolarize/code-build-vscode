@@ -1925,6 +1925,9 @@ export class SessionManager {
         // escalates SIGINT→SIGKILL) AND force the UI out of "working…",
         // independent of whether the transport ever emits a result.
         this.session?.cancel();
+        // Auto-cancel may never see result/error — clear tracker state so a
+        // stale open-tool entry can't resurface on the next transition.
+        this.nowLine.clear();
         this.panel.post({ type: 'busy', busy: false });
         this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
         this.panel.post({

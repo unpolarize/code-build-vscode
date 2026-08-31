@@ -16,7 +16,11 @@ export function NowLine({ now }: Props) {
     if (!now) return;
     let timer: ReturnType<typeof setInterval> | undefined;
     const start = () => {
-      if (!timer) timer = setInterval(() => setTick((t) => t + 1), 1000);
+      if (!timer) {
+        // Repaint immediately on tab reveal so elapsed never shows stale.
+        setTick((t) => t + 1);
+        timer = setInterval(() => setTick((t) => t + 1), 1000);
+      }
     };
     const stop = () => {
       if (timer) {
@@ -36,10 +40,12 @@ export function NowLine({ now }: Props) {
   const elapsed = Math.max(0, Math.round((Date.now() - now.startedAtMs) / 1000));
   const line = formatNowLine(now);
   return (
-    <div className="now-line" aria-live="polite" title={`${now.verb} ${now.target}`}>
+    <div className="now-line" title={`${now.verb} ${now.target}`}>
       <span className="now-line-label">now:</span>
-      <span className="now-line-text">{line}</span>
-      <span className="now-line-elapsed">· {elapsed}s</span>
+      {/* aria-live excludes the 1 Hz elapsed span — otherwise screen
+          readers re-announce the whole line every second. */}
+      <span className="now-line-text" aria-live="polite">{line}</span>
+      <span className="now-line-elapsed" aria-hidden="true">· {elapsed}s</span>
     </div>
   );
 }
