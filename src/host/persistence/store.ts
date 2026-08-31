@@ -496,6 +496,32 @@ export class SessionStore {
   }
 
   /**
+   * The contentful local row that already owns a native (Claude / Grok)
+   * session id — matched on `backendSessionId`, `backendSessionHistory`, or a
+   * local id equal to the native id. "Open in Code Build" from CSV must reuse
+   * this row instead of writing a second, empty shell under the native id:
+   * that shell is what a reloaded tab used to restore as a blank chat.
+   * Prefers CB-native rows (id !== nativeId), newest first. `cwd` narrows to
+   * rows of that workspace. Only contentful rows (`list()`) are considered —
+   * a shell alone is not a match so the caller can replay upstream.
+   */
+  findLocalSessionForNative(nativeId: string, cwd?: string): SessionMeta | undefined {
+    if (!nativeId) return undefined;
+    const want = cwd ? path.resolve(cwd) : undefined;
+    const rows = this.list().filter((m) => {
+      const owns =
+        m.id === nativeId ||
+        m.backendSessionId === nativeId ||
+        (m.backendSessionHistory ?? []).some((h) => h.id === nativeId);
+      if (!owns) return false;
+      if (want && m.cwd && path.resolve(m.cwd) !== want) return false;
+      return true;
+    });
+    rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return rows.find((m) => m.id !== nativeId) ?? rows[0];
+  }
+
+  /**
    * True if the transcript has real conversation — a user message or substantive
    * agent output — not just connection noise (e.g. available_commands_update).
    * Prefers the index sidecar; scans a 64 KB head only for unstamped legacy rows.

@@ -2542,6 +2542,19 @@ export class SessionManager {
   }): Promise<void> {
     if (args.source !== 'claude' && args.source !== 'grok') return;
 
+    // CB already owns this native session (it was started here, compacted
+    // here, or a prior "Open in Code Build" grew content). Reuse that row:
+    // creating a shell under the native id (meta + system_init, hasContent
+    // false) — or rewriting the header of a contentful transcript with the
+    // same id — is what left reloaded tabs with an empty history (#29).
+    // Match current backendSessionId OR any prior id in backendSessionHistory
+    // (post-/compact CSV "Open" on the OLD native id must still land here).
+    const owned = this.store.findLocalSessionForNative(args.sessionId, args.cwd);
+    if (owned && sessionMatchesWorkspace(owned.cwd, this.workspaceFolderPaths())) {
+      await this.loadExistingSession(owned.id, { connect: true });
+      return;
+    }
+
     this.teardownSession();
     // Reset per-session classifier state so a fresh chat starts the
     // turn counter at 0.
@@ -3584,9 +3597,21 @@ export class SessionManager {
       return { records: local.records, olderFromByte: local.olderFromByte };
     }
     const nativeId = meta.backendSessionId || id;
-    const siblings = this.store
-      .list()
-      .filter((m) => m.id !== id && (m.id === nativeId || m.backendSessionId === nativeId));
+    // Prefer the store's native-id join (includes backendSessionHistory so a
+    // post-/compact shell keyed on the NEW id still finds the contentful row
+    // that recorded the OLD id). Fall back to a same-cwd sibling scan.
+    const owned = this.store.findLocalSessionForNative(nativeId, meta.cwd);
+    const siblings = (
+      owned && owned.id !== id
+        ? [owned]
+        : this.store.list().filter(
+            (m) =>
+              m.id !== id &&
+              (m.id === nativeId ||
+                m.backendSessionId === nativeId ||
+                (m.backendSessionHistory ?? []).some((h) => h.id === nativeId))
+          )
+    ).slice();
     siblings.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     for (const sib of siblings) {
       const tail = this.store.loadTail(sib.id);

@@ -680,3 +680,65 @@ test('loadTail of a long chunk-only file does not return empty', () => {
   assert.ok(tail.records.length > 0, 'must not wipe a no-user window to []');
   assert.ok(tail.records.length <= 20);
 });
+
+test('findLocalSessionForNative prefers a contentful CB row over a shell with the native id', () => {
+  const store = new SessionStore(tmpRoot());
+  const nativeId = '19c63aa7-d0bf-4b87-a3e8-cbe9c3a35528';
+  // Original CB conversation: local id differs from the Claude session id.
+  const real: SessionMeta = { ...meta, id: 'cb-real', backendSessionId: nativeId, createdAt: 1 };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-real', 'hello');
+  store.flushSync('cb-real');
+  // Shell written by "Open in Code Build": id === native id, meta + system_init only.
+  const shell: SessionMeta = { ...meta, id: nativeId, source: 'claude', createdAt: 2 };
+  store.createSession(shell);
+  store.commitSession(shell);
+  store.appendUpdate(nativeId, { kind: 'system_init', backendSessionId: nativeId } as never);
+  store.flushSync(nativeId);
+
+  assert.equal(store.findLocalSessionForNative(nativeId)?.id, 'cb-real');
+  assert.equal(store.findLocalSessionForNative('unknown-id'), undefined);
+  // A shell alone (no contentful row) is not a match — caller replays upstream.
+  const store2 = new SessionStore(tmpRoot());
+  store2.createSession(shell);
+  store2.commitSession(shell);
+  assert.equal(store2.findLocalSessionForNative(nativeId), undefined);
+});
+
+test('findLocalSessionForNative honours the cwd filter', () => {
+  const store = new SessionStore(tmpRoot());
+  const nativeId = 'n-1';
+  const real: SessionMeta = { ...meta, id: 'cb-real', backendSessionId: nativeId, cwd: '/repo' };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-real', 'hello');
+  store.flushSync('cb-real');
+  assert.equal(store.findLocalSessionForNative(nativeId, '/repo')?.id, 'cb-real');
+  assert.equal(store.findLocalSessionForNative(nativeId, '/elsewhere'), undefined);
+});
+
+test('findLocalSessionForNative matches pre-compact ids via backendSessionHistory', () => {
+  const store = new SessionStore(tmpRoot());
+  const oldNative = 'native-pre-compact';
+  const newNative = 'native-post-compact';
+  const real: SessionMeta = {
+    ...meta,
+    id: 'cb-compacted',
+    backendSessionId: newNative,
+    backendSessionHistory: [
+      { id: oldNative, ts: 1, reason: 'initial' },
+      { id: newNative, ts: 2, reason: 'compact' }
+    ],
+    createdAt: 10
+  };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-compacted', 'after compact');
+  store.flushSync('cb-compacted');
+
+  // CSV "Open in Code Build" on either the OLD or NEW native id must land
+  // on the same CB row — never mint a 387 B shell under the native id.
+  assert.equal(store.findLocalSessionForNative(oldNative)?.id, 'cb-compacted');
+  assert.equal(store.findLocalSessionForNative(newNative)?.id, 'cb-compacted');
+});
