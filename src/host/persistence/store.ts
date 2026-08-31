@@ -264,6 +264,23 @@ export class SessionStore {
     this.enqueue(id, JSON.stringify({ type: 'compact', marker }) + '\n');
   }
 
+  /** Explicitly drop the persisted native backend id (post-/compact
+   * respawn). Can't ride updateMeta: mergeSessionMeta skips undefined patch
+   * values by design, so "clear" needs its own verb that deletes the key
+   * from the index row — otherwise a reload between the compact and the new
+   * system_init would --resume the pre-compact native thread. */
+  clearBackendSessionId(id: string): SessionMeta | undefined {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    if (!fs.existsSync(p)) return undefined;
+    const current = this.findIndexRow(id) ?? readJsonlMetaHead(p);
+    if (!current) return undefined;
+    const cleared: SessionMeta = { ...current };
+    delete cleared.backendSessionId;
+    this.upsertIndex(cleared);
+    return cleared;
+  }
+
   private enqueue(id: string, line: string): void {
     const t0 = performance.now();
     let buf = this.pending.get(id);

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.21.6 — 2026-08-31
+
+### Built-in `/compact` — one-click context compaction (all backends)
+
+- New `/compact [focus]` builtin: summarizes the conversation (one-shot `claude -p`
+  on Claude sessions — steered by the optional focus text — clipped local summary
+  elsewhere; a summarize failure falls back to the clip with a visible notice, never
+  aborts), appends the durable compact divider (flushed before any kill), then
+  restarts the backend at the SAME Code Build session with a fresh context. The
+  summary + last 5 verbatim turns + a transcript breadcrumb go out as a one-shot
+  primer with your next message (auditable in the injected-context card).
+- Strict idle guard: refuses while a turn is running, a tool call is open, a
+  permission prompt or AskUserQuestion is pending, a handoff primer is being
+  prepared, or a message is queued. Sessions with no user turns are a friendly no-op.
+- Native-id lineage: the pre-compact backend session id is preserved in
+  `backendSessionHistory`, the live `backendSessionId` is explicitly cleared in the
+  persisted index (new `SessionStore.clearBackendSessionId` — a plain meta merge
+  cannot clear it), and the respawn never receives a pre-compact resume id; the new
+  backend id is stamped with transition reason `compact`.
+- The built-in shadows agent-advertised `/compact` (grok) in the slash palette
+  instead of listing an unreachable duplicate.
+- 11 new unit tests: idle guard, empty session, marker preview cap, hybrid primer
+  shape, lineage seed + compact transition, no-resume respawn rule, persisted
+  native-id clear, focus parsing.
+
 ## 0.21.5 — 2026-08-31
 
 ### Spend-limit parity chip (Claude 2.1.251 `/usage` class)

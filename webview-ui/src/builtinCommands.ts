@@ -14,6 +14,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'history', description: 'Browse previous conversations', builtin: true },
   { name: 'tab', description: 'Open this chat in a new editor tab', builtin: true },
   { name: 'window', description: 'Open this chat in a new window', builtin: true },
+  { name: 'compact', description: 'Summarize this conversation and restart the agent with a compact context (optional focus text)', builtin: true },
   { name: 'perf', description: 'Toggle Session Performance panel (HUD / waterfall / events)', builtin: true },
   { name: 'handoff', description: 'Write a HANDOFF.md pack and optionally continue on another backend (Grok/Codex/…)', builtin: true },
   { name: 'voice', description: 'Toggle hands-free voice mode (listen → send → speak reply)', builtin: true },
@@ -24,3 +25,9 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
 ];
 
 export const BUILTIN_NAMES = new Set(BUILTIN_COMMANDS.map((c) => c.name));
+
+/** Parse "/compact [focus…]" → the focus text, or undefined when none. */
+export function parseCompactFocus(text: string): string | undefined {
+  const rest = text.trim().replace(/^\/compact\b/, '').trim();
+  return rest || undefined;
+}

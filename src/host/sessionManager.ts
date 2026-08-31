@@ -13,6 +13,14 @@ import type {
   WebviewToHost
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
+import {
+  buildCompactMarker,
+  buildCompactPrimer,
+  compactBlockReason,
+  hasCompactableTurns,
+  prepareCompactLineage,
+  resolveRespawnResumeId
+} from './compact';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import { NowLineTracker } from '../shared/nowLine';
 import {
@@ -203,6 +211,10 @@ export class SessionManager {
    * a silent, tool-less turn. Rebuilt each prompt so the thresholds pick up
    * config changes. */
   private watchdog?: TurnWatchdog;
+  /** Last input-token level the backend reported (usage/result events) —
+   * feeds CompactMarker.preTokens so the /compact divider can say what it
+   * reclaimed. Reset on openSession (fresh conversation). */
+  private lastInputTokens?: number;
   /** Tool-call ids the agent has opened but not yet finished this turn. A
    * turn with an open tool is doing a (possibly long, silent) command, so
    * the watchdog warns but does NOT auto-cancel it. */
@@ -533,6 +545,9 @@ export class SessionManager {
       case 'requestPerfSnapshot':
         this.refreshDualStore();
         this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+        break;
+      case 'compact':
+        await this.compactSession(msg.focus);
         break;
       case 'handoff':
         await this.writeHandoffPack();
@@ -1011,6 +1026,119 @@ export class SessionManager {
     return records;
   }
 
+  /** /compact [focus] — host-side context compaction for ALL backends.
+   * Order pinned by the KP task (summarize BEFORE kill; marker durable
+   * BEFORE kill; lineage append BEFORE clearing the native id):
+   * idle-guard → summarize → append marker + flushSync → lineage/clear →
+   * teardown + same-meta.id respawn with NO resume id → primer on the
+   * next prompt. Scrollback is never wiped — the marker renders as a
+   * divider and the meter may read unknown until the next turn. */
+  private async compactSession(focus?: string): Promise<void> {
+    const meta = this.meta;
+    if (!meta) {
+      this.panel.post({ type: 'notice', text: 'No active session to compact.' });
+      return;
+    }
+    const blocked = compactBlockReason({
+      turnActive: this.watchdog?.active ?? false,
+      openToolCalls: this.openToolCalls.size,
+      awaitingPermission:
+        this.awaitingPermission || (this.session?.hasPendingPermissions() ?? false),
+      pendingQuestions: this.pendingAskUserQuestions.size,
+      primerPending: this.primerPending,
+      queuedPrompt: this.queuedPromptBlocks !== undefined
+    });
+    if (blocked) {
+      this.panel.post({
+        type: 'notice',
+        text: `Can't compact yet — ${blocked}. Let it finish (or hit Stop), then run /compact again.`
+      });
+      return;
+    }
+    const records = this.collectTranscriptRecords();
+    if (!hasCompactableTurns(records)) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Nothing to compact — this conversation has no user turns yet.'
+      });
+      return;
+    }
+
+    const be = backendLabel(meta.backend);
+    const useClaude = meta.backend === 'claude';
+    this.panel.post({
+      type: 'notice',
+      text: `Compacting this conversation${focus ? ` (focus: ${focus})` : ''}…`,
+      detail: useClaude
+        ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary.`
+        : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary.`
+    });
+
+    // Summarize BEFORE any kill. On failure still compact with the clipped
+    // fallback + a visible notice — never abort, never a silent no-op.
+    let summary: string;
+    try {
+      summary = useClaude
+        ? await this.summarizeViaClaude(records, meta.model, focus)
+        : clippedSummaryFallback(records, be);
+    } catch (e) {
+      summary = clippedSummaryFallback(records, be);
+      this.panel.post({
+        type: 'notice',
+        text: 'LLM summarisation failed — compacting with a clipped summary instead.',
+        detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+      });
+    }
+
+    // Marker durable BEFORE the kill (appendCompactMarker only enqueues;
+    // kill-before-flush would lose the divider).
+    const marker = buildCompactMarker({
+      now: Date.now(),
+      preTokens: this.lastInputTokens,
+      summary,
+      focus
+    });
+    this.store.appendCompactMarker(meta.id, marker);
+    this.store.flushSync(meta.id);
+    this.panel.post({ type: 'compactMarker', marker });
+
+    // One-shot primer for the first post-compact prompt. Latched before the
+    // respawn — teardownSession never clears pendingPrimer.
+    this.pendingPrimer = buildCompactPrimer({
+      records,
+      summary,
+      backendLabel: be,
+      focus,
+      transcriptPath: this.store.transcriptPath(meta.id)
+    });
+
+    // Lineage first, THEN clear. The store needs the explicit clear verb:
+    // mergeSessionMeta skips undefined patch values, so updateMeta alone
+    // would leave the stale native id resumable after a reload.
+    if (prepareCompactLineage(meta)) {
+      this.store.updateMeta(meta);
+      this.store.clearBackendSessionId(meta.id);
+      this.panel.post({ type: 'sessionMeta', session: meta });
+    }
+
+    // Kill + respawn at the same CB session id, never resuming the
+    // pre-compact native thread; the respawn arms pendingBackendIdReason so
+    // the new system_init is stamped 'compact' in backendSessionHistory.
+    await this.loadExistingSession(meta.id, {
+      connect: true,
+      skipReplay: true,
+      compactRespawn: true
+    });
+    this.panel.post({
+      type: 'notice',
+      text: `Compacted${
+        typeof marker.preTokens === 'number'
+          ? ` from ${Math.round(marker.preTokens / 1000)}K input tokens`
+          : ''
+      } — the summary + last 5 turns go out with your next message. The context meter may read unknown until the next turn completes.`
+    });
+  }
+
   /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
    * files touched, last check, risks, next step) into the workspace so the
    * user can continue this work on another agent without losing state.
@@ -1481,7 +1609,8 @@ export class SessionManager {
    * summary instead of silently shipping no primer at all. */
   private summarizeViaClaude(
     records: { type: string; text?: string; update?: any }[],
-    model?: string
+    model?: string,
+    focus?: string
   ): Promise<string> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const bin = overrides['claude'] || 'claude';
@@ -1492,8 +1621,9 @@ export class SessionManager {
       `has zero prior context. Write a concise summary (200–400 words) ` +
       `covering: the user's goal, key findings/decisions, current task ` +
       `state, files involved, and any outstanding questions. Don't include ` +
-      `verbatim turns (those will be appended separately). Just the summary text.\n\n` +
-      `=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
+      `verbatim turns (those will be appended separately). Just the summary text.\n` +
+      (focus ? `The user asked you to focus especially on: ${focus}\n` : '') +
+      `\n=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
 
     const args = ['-p', '--output-format', 'json'];
     if (model && model !== 'default') args.push('--model', model);
@@ -1604,6 +1734,7 @@ export class SessionManager {
     this.userTurnsSent = 0;
     this.lastUserText = '';
     this.currentAssistantBuf = '';
+    this.lastInputTokens = undefined;
     const openOpts = this.pendingOpenOpts;
     this.pendingOpenOpts = {};
     if (openOpts.sessionKind !== 'voice-ideation') {
@@ -2862,6 +2993,11 @@ export class SessionManager {
     this.captureBackendSessionId(update);
     this.handleResumeFallback(update);
     this.syncAgentMode(update);
+    if (update.kind === 'usage' && typeof update.usage.inputTokens === 'number') {
+      this.lastInputTokens = update.usage.inputTokens;
+    } else if (update.kind === 'result' && typeof update.usage?.inputTokens === 'number') {
+      this.lastInputTokens = update.usage.inputTokens;
+    }
 
     const immediate =
       update.kind === 'result' ||
@@ -3477,7 +3613,14 @@ export class SessionManager {
    */
   async loadExistingSession(
     id: string,
-    opts?: { connect?: boolean; skipReplay?: boolean }
+    opts?: {
+      connect?: boolean;
+      skipReplay?: boolean;
+      /** Post-/compact respawn: spawn fresh at the same CB session id —
+       * never resume the pre-compact native thread — and stamp the new
+       * system_init's id rotation with reason 'compact'. */
+      compactRespawn?: boolean;
+    }
   ): Promise<void> {
     const meta = this.store.loadMeta(id);
     if (!meta) {
@@ -3501,6 +3644,9 @@ export class SessionManager {
     const skipReplay = opts?.skipReplay === true;
 
     this.teardownSession();
+    // Arm AFTER teardown (teardown clears the field): the respawned
+    // backend's first system_init must be labeled 'compact', not 'respawn'.
+    if (opts?.compactRespawn) this.pendingBackendIdReason = 'compact';
     if (!skipReplay) {
       this.userTurnsSent = 0;
       this.lastUserText = '';
@@ -3510,9 +3656,7 @@ export class SessionManager {
     const be = meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
-    const earlyResumeId =
-      meta.backendSessionId ??
-      (meta.source === 'claude' || meta.source === 'grok' ? meta.id : undefined);
+    const earlyResumeId = resolveRespawnResumeId(meta, opts?.compactRespawn === true);
     this.meta = meta;
     if (this.meta.backendSessions) {
       for (const [b, sid] of Object.entries(this.meta.backendSessions)) {
