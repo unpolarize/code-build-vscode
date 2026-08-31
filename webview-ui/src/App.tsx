@@ -13,6 +13,7 @@ import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
 import { ActivityStrip } from './components/ActivityStrip';
+import { NowLine } from './components/NowLine';
 import { PerfPanel } from './components/PerfPanel';
 import { VoiceBar } from './components/VoiceBar';
 import { useVoiceController } from './voice/useVoiceController';
@@ -569,6 +570,7 @@ export function App() {
         visActive={state.visActive}
         onEndVis={() => post({ type: 'endVoiceIdeation' })}
       />
+      <NowLine now={state.nowLine} />
       <div
         className="composer-shell"
         style={{

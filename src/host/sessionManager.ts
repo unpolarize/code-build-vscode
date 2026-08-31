@@ -14,6 +14,7 @@ import type {
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
 import { cleanCommandText } from '../shared/cleanCommandText';
+import { NowLineTracker } from '../shared/nowLine';
 import {
   parseVisClosePayload,
   visClosePrompt,
@@ -206,6 +207,15 @@ export class SessionManager {
    * turn with an open tool is doing a (possibly long, silent) command, so
    * the watchdog warns but does NOT auto-cancel it. */
   private readonly openToolCalls = new Set<string>();
+  /** Progressive tool-activity narration (quiet-backend feel-speed).
+   * Posts `{verb, target, startedAtMs}` only on tool open/close
+   * transitions; the webview owns the 1 Hz elapsed tick. Gated by
+   * `codeBuild.progressiveActivity`, re-read per transition so live
+   * setting changes apply without reload (perfDebug pattern). */
+  private readonly nowLine = new NowLineTracker({
+    post: (now) => this.panel.post({ type: 'nowLine', now }),
+    isEnabled: () => this.progressiveActivityEnabled()
+  });
   /** True while a permission_request is outstanding (the agent is blocked on a
    * human decision). Combined with pending AskUserQuestions, this tells the
    * stall watchdog the turn is legitimately paused on the user, not stuck. */
@@ -441,6 +451,9 @@ export class SessionManager {
         this.session?.cancel();
         this.flushIpcImmediate();
         this.perf.onCancel();
+        // A soft ACP cancel may never emit result/error — take the
+        // now-line down explicitly (busy:false alone leaves it stuck).
+        this.nowLine.clear();
         this.panel.post({ type: 'busy', busy: false });
         this.pushPerfHud();
         break;
@@ -1877,6 +1890,7 @@ export class SessionManager {
   private armWatchdog(): void {
     this.watchdog?.clear();
     this.openToolCalls.clear();
+    this.nowLine.clear();
     this.awaitingPermission = false;
     this.armGovernor();
     const warnMs = Math.max(0, this.config.get<number>('stallWarnSeconds', 45)) * 1000;
@@ -1929,6 +1943,7 @@ export class SessionManager {
    * are deliberately NOT treated as progress — claude emits them while idle. */
   private watchTurnLiveness(update: SessionUpdate): void {
     this.feedGovernor(update);
+    this.nowLine.onUpdate(update, Date.now());
     if (!this.watchdog) return;
     switch (update.kind) {
       case 'tool_call':
@@ -2062,6 +2077,7 @@ export class SessionManager {
       this.governor?.endTurn(Date.now());
       this.watchdog?.clear();
       this.openToolCalls.clear();
+      this.nowLine.clear();
       this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
       this.panel.post({ type: 'busy', busy: false });
       this.panel.post({
@@ -2608,6 +2624,7 @@ export class SessionManager {
     this.watchdog?.clear();
     this.watchdog = undefined;
     this.openToolCalls.clear();
+    this.nowLine.clear();
     // Drop the stop governor so a replacement session's startup events can't
     // feed the old counters (or trip against the wrong SessionMeta).
     this.governor = undefined;
@@ -2620,6 +2637,16 @@ export class SessionManager {
     const v = this.config.get<string>('perfDebug', 'hud');
     if (v === 'full' || v === 'hud' || v === 'off') return v;
     return 'hud';
+  }
+
+  /** `codeBuild.progressiveActivity` gate, host-side (the webview cannot
+   * read codeBuild.*). auto = on for quiet backends, off for Claude which
+   * already streams verbose text. */
+  private progressiveActivityEnabled(): boolean {
+    const v = this.config.get<string>('progressiveActivity', 'auto');
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+    return (this.meta?.backend ?? 'claude') !== 'claude';
   }
 
   private ensurePerfHudTimer(): void {

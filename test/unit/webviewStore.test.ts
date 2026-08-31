@@ -572,3 +572,23 @@ describe('compact marker (divider plumbing)', () => {
     );
   });
 });
+
+describe('nowLine strip', () => {
+  const nowMsg = (now: { verb: string; target: string; startedAtMs: number } | null): HostToWebview =>
+    ({ type: 'nowLine', now }) as HostToWebview;
+
+  it('sets and clears from host posts', () => {
+    let s = reduce(initialState, nowMsg({ verb: 'run', target: 'npm test', startedAtMs: 5 }));
+    assert.deepEqual(s.nowLine, { verb: 'run', target: 'npm test', startedAtMs: 5 });
+    s = reduce(s, nowMsg(null));
+    assert.equal(s.nowLine, null);
+  });
+
+  it('busy:false clears a stuck line (cancel belt+braces)', () => {
+    let s = reduce(initialState, nowMsg({ verb: 'run', target: 'sleep 99', startedAtMs: 5 }));
+    s = reduce(s, { type: 'busy', busy: true } as HostToWebview);
+    assert.ok(s.nowLine, 'busy:true must not clear');
+    s = reduce(s, { type: 'busy', busy: false } as HostToWebview);
+    assert.equal(s.nowLine, null);
+  });
+});

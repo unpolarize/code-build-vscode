@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.21.3",
+  "version": "0.21.4",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -457,6 +457,16 @@
           ],
           "default": "hud",
           "description": "Session performance debug. 'off' = no HUD/sampling. 'hud' = header chip (TTFT · host tax · ev/s · paint) + activity strip while busy + /perf panel. 'full' = also appends a flight report to the 'Code Build: Flight Recorder' output channel after every turn. Use this to separate model latency from CB host/webview tax."
+        },
+        "codeBuild.progressiveActivity": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "default": "auto",
+          "description": "Progressive tool-activity narration: a one-line 'now: <verb> <target> · <elapsed>s' strip above the composer while a tool call runs. 'auto' = on for quiet backends (Codex, Grok) and off for Claude, which already streams verbose text. Changes apply on the next tool call without a reload."
         },
         "codeBuild.mcpServers": {
           "type": "array",

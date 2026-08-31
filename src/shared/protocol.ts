@@ -378,6 +378,12 @@ export type HostToWebview =
   | { type: 'stallTimeout'; seconds: number }
   | { type: 'perfHud'; hud: PerfHudMsg }
   | { type: 'activityStrip'; segments: ActivitySegmentMsg[]; turnDurationMs: number }
+  /** Progressive tool-activity narration for quiet backends: the currently
+   * running tool as `{verb, target, startedAtMs}` (null clears the strip).
+   * Posted ONLY on tool open/close transitions — the webview owns the
+   * 1 Hz elapsed display off `startedAtMs`. Gated host-side by
+   * `codeBuild.progressiveActivity` (auto = non-Claude backends only). */
+  | { type: 'nowLine'; now: { verb: string; target: string; startedAtMs: number } | null }
   | { type: 'perfSnapshot'; snapshot: PerfSnapshotMsg }
   | { type: 'perfPanelOpen'; open: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }

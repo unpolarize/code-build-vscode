@@ -201,6 +201,9 @@ export interface ChatState {
     records: number;
     error?: string;
   } | null;
+  /** Progressive tool-activity narration (host posts only on tool
+   * open/close transitions; NowLine owns the 1 Hz elapsed tick). */
+  nowLine: { verb: string; target: string; startedAtMs: number } | null;
   /** Older JSONL remains before the painted tail. */
   hasOlder: boolean;
   /** Bumps when older messages are prepended (scroll-anchor). */
@@ -246,6 +249,7 @@ export const initialState: ChatState = {
   checkpointIds: [],
   protocolPin: null,
   historyLoad: null,
+  nowLine: null,
   hasOlder: false,
   olderSeq: 0
 };
@@ -438,8 +442,12 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         visActive:
           msg.session.sessionKind === 'voice-ideation' ? true : state.visActive
       };
+    case 'nowLine':
+      return { ...state, nowLine: msg.now };
     case 'busy':
-      return { ...state, busy: msg.busy };
+      // busy:false is the belt+braces clear — cancel/teardown paths post it
+      // even when no explicit nowLine null ever arrives.
+      return msg.busy ? { ...state, busy: true } : { ...state, busy: false, nowLine: null };
     case 'sessionUpdate':
       return applyUpdate(state, msg.update);
     case 'fileSuggestions':
