@@ -580,6 +580,23 @@ test('keepLastCompleteTurns keeps a compact marker sitting before the snap-start
   assert.equal(kept[0].start, 80);
 });
 
+test('keepLastCompleteTurns hops post-respawn chrome between a compact marker and the user line', () => {
+  const rows: OffsetRec[] = [
+    { rec: { type: 'user', text: 'pre-compact' }, start: 0 },
+    { rec: { type: 'compact', marker: { at: 1, summaryPreview: 's' } }, start: 40 },
+    { rec: { type: 'update', update: { kind: 'system_init' } }, start: 80 },
+    { rec: { type: 'user', text: 'post-compact' }, start: 120 }
+  ];
+  const kept = keepLastCompleteTurns(rows, 1);
+  assert.deepEqual(
+    kept.map((r) => r.rec.type),
+    ['compact', 'update', 'user']
+  );
+  // Chrome alone (no compact behind it) must not move the snap start.
+  const noCompact = keepLastCompleteTurns(rows.slice(2), 1);
+  assert.deepEqual(noCompact.map((r) => r.rec.type), ['user']);
+});
+
 test('compact divider at a page edge appears on exactly one of two adjacent pages', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);

@@ -26,11 +26,27 @@ export function keepLastCompleteTurns(records: OffsetRec[], maxTurns: number): O
   if (userIdx.length === 0) return [];
   const take = Math.max(1, maxTurns);
   let start = userIdx[Math.max(0, userIdx.length - take)];
-  // Compact dividers snap to the page of the turn they precede: without this,
-  // a marker sitting just before the first kept user line falls off the
-  // painted tail page (olderFromByte then lands on the marker, so the older
-  // page ends before it and the divider renders exactly once).
-  while (start > 0 && records[start - 1].rec.type === 'compact') start -= 1;
+  // Compact dividers snap to the page of the turn they precede — otherwise a
+  // marker just before the first kept user line falls off the painted tail
+  // page. With the marker kept, olderFromByte lands on it, the older page
+  // ends before it, and the divider renders exactly once. Invisible session
+  // chrome (e.g. the post-respawn system_init) may sit between the marker and
+  // the user line; hop over it, but only move `start` when a compact exists.
+  let probe = start;
+  while (probe > 0) {
+    const prev = records[probe - 1].rec;
+    if (prev.type === 'compact') {
+      probe -= 1;
+      start = probe;
+      continue;
+    }
+    const kind = (prev as { update?: { kind?: string } }).update?.kind;
+    if (prev.type === 'update' && kind && INVISIBLE_UPDATE.has(kind)) {
+      probe -= 1;
+      continue;
+    }
+    break;
+  }
   return records.slice(start);
 }
 
