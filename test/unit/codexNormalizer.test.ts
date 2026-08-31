@@ -131,3 +131,180 @@ test('error message wrapped JSON is unwrapped to human message', () => {
   assert.ok(out[0].kind === 'error');
   if (out[0].kind === 'error') assert.equal(out[0].message, 'model not supported');
 });
+
+// ---- codex-cli ≥0.142 item vocabulary (tracker #14 + parity leg of
+// ideas/cb-progressive-tool-activity-stream) --------------------------------
+
+test('agent_message item.completed -> agent_message_chunk (0.142 rename of assistant_message)', () => {
+  const n = new CodexNormalizer();
+  const ev = { type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'hi' } };
+  const first = n.parseLine(ev as never);
+  assert.deepEqual(first, [{ kind: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }]);
+  // second completed for the same id -> deduped
+  assert.equal(n.parseLine(ev as never).length, 0);
+});
+
+test('agent_message shares the dedupe set with assistant_message', () => {
+  const n = new CodexNormalizer();
+  n.parseLine({ type: 'item.completed', item: { id: 'm1', type: 'agent_message', text: 'hi' } } as never);
+  const alias = n.parseLine({
+    type: 'item.completed',
+    item: { id: 'm1', type: 'assistant_message', text: 'hi' }
+  } as never);
+  assert.equal(alias.length, 0);
+});
+
+test('agent_message item.started / item.updated emit nothing (partial text would duplicate)', () => {
+  const n = new CodexNormalizer();
+  assert.equal(
+    n.parseLine({ type: 'item.started', item: { id: 'm1', type: 'agent_message' } } as never).length,
+    0
+  );
+  assert.equal(
+    n.parseLine({ type: 'item.updated', item: { id: 'm1', type: 'agent_message', text: 'par' } } as never)
+      .length,
+    0
+  );
+  const done = n.parseLine({
+    type: 'item.completed',
+    item: { id: 'm1', type: 'agent_message', text: 'partial then full' }
+  } as never);
+  assert.equal(done.length, 1);
+});
+
+test('mcp_tool_call started -> in_progress tool_call titled server.tool; completed -> update only', () => {
+  const n = new CodexNormalizer();
+  const start = n.parseLine({
+    type: 'item.started',
+    item: { id: 't1', type: 'mcp_tool_call', server: 'linear', tool: 'create_issue', status: 'in_progress' }
+  } as never);
+  assert.equal(start.length, 1);
+  assert.ok(start[0].kind === 'tool_call');
+  if (start[0].kind === 'tool_call') {
+    assert.equal(start[0].toolCall.title, 'linear.create_issue');
+    assert.equal(start[0].toolCall.kind, 'other');
+    assert.equal(start[0].toolCall.status, 'in_progress');
+  }
+  // item.updated for an already-open tool is silent
+  assert.equal(
+    n.parseLine({
+      type: 'item.updated',
+      item: { id: 't1', type: 'mcp_tool_call', server: 'linear', tool: 'create_issue' }
+    } as never).length,
+    0
+  );
+  const done = n.parseLine({
+    type: 'item.completed',
+    item: { id: 't1', type: 'mcp_tool_call', server: 'linear', tool: 'create_issue', status: 'completed' }
+  } as never);
+  assert.equal(done.length, 1);
+  assert.ok(done[0].kind === 'tool_call_update');
+  if (done[0].kind === 'tool_call_update') assert.equal(done[0].toolCall.status, 'completed');
+});
+
+test('mcp_tool_call with error -> failed update', () => {
+  const n = new CodexNormalizer();
+  n.parseLine({
+    type: 'item.started',
+    item: { id: 't2', type: 'mcp_tool_call', server: 's', tool: 't' }
+  } as never);
+  const done = n.parseLine({
+    type: 'item.completed',
+    item: { id: 't2', type: 'mcp_tool_call', server: 's', tool: 't', error: { message: 'boom' } }
+  } as never);
+  assert.ok(done[0].kind === 'tool_call_update');
+  if (done[0].kind === 'tool_call_update') assert.equal(done[0].toolCall.status, 'failed');
+});
+
+test('web_search completed-only -> tool_call THEN completed update (card must appear, not orphan update)', () => {
+  const n = new CodexNormalizer();
+  const out = n.parseLine({
+    type: 'item.completed',
+    item: { id: 'w1', type: 'web_search', query: 'acp spec tool kinds' }
+  } as never);
+  assert.equal(out.length, 2);
+  assert.ok(out[0].kind === 'tool_call');
+  if (out[0].kind === 'tool_call') {
+    assert.equal(out[0].toolCall.title, 'acp spec tool kinds');
+    assert.equal(out[0].toolCall.kind, 'search');
+  }
+  assert.ok(out[1].kind === 'tool_call_update');
+  if (out[1].kind === 'tool_call_update') {
+    assert.equal(out[1].toolCall.toolCallId, 'w1');
+    assert.equal(out[1].toolCall.status, 'completed');
+  }
+});
+
+test('todo_list -> todo_write tool_call mirror with {content,status} todos, full snapshot each event', () => {
+  const n = new CodexNormalizer();
+  const started = n.parseLine({
+    type: 'item.started',
+    item: { id: 'td1', type: 'todo_list', items: [{ text: 'a', completed: false }] }
+  } as never);
+  assert.equal(started.length, 1);
+  assert.ok(started[0].kind === 'tool_call');
+  if (started[0].kind === 'tool_call') {
+    assert.equal(started[0].toolCall.title, 'todo_write');
+    assert.deepEqual(started[0].toolCall.rawInput, { todos: [{ content: 'a', status: 'pending' }] });
+  }
+  const updated = n.parseLine({
+    type: 'item.updated',
+    item: {
+      id: 'td1',
+      type: 'todo_list',
+      items: [
+        { text: 'a', completed: true },
+        { text: 'b', completed: false }
+      ]
+    }
+  } as never);
+  assert.equal(updated.length, 1);
+  assert.ok(updated[0].kind === 'tool_call');
+  if (updated[0].kind === 'tool_call') {
+    assert.deepEqual(updated[0].toolCall.rawInput, {
+      todos: [
+        { content: 'a', status: 'completed' },
+        { content: 'b', status: 'pending' }
+      ]
+    });
+    assert.equal(updated[0].toolCall.status, 'in_progress');
+  }
+});
+
+test('unknown item types still fall through silently', () => {
+  const n = new CodexNormalizer();
+  assert.equal(
+    n.parseLine({ type: 'item.completed', item: { id: 'x', type: 'some_future_item' } } as never).length,
+    0
+  );
+});
+
+test('fixture replay: real 0.142.4 exec --json stream — final answer lands after the tool update', () => {
+  // Trimmed from a live `codex exec --json` probe (0.142.4, 2026-08-30) plus
+  // the documented command_execution shape; line order as emitted.
+  const stream = [
+    '{"type":"thread.started","thread_id":"01a05536-bc2b-7d91-aa08-bfafde768cd2"}',
+    '{"type":"turn.started"}',
+    '{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"ls"}}',
+    '{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"ls","aggregated_output":"a.ts","exit_code":0}}',
+    '{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"PONG"}}',
+    '{"type":"turn.completed","usage":{"input_tokens":11779,"cached_input_tokens":4480,"output_tokens":6}}'
+  ];
+  const n = new CodexNormalizer();
+  const kinds: string[] = [];
+  let answer = '';
+  for (const line of stream) {
+    for (const u of n.parseLine(JSON.parse(line))) {
+      kinds.push(u.kind);
+      if (u.kind === 'agent_message_chunk' && u.content.type === 'text') answer = u.content.text;
+    }
+  }
+  assert.deepEqual(kinds, [
+    'system_init',
+    'tool_call',
+    'tool_call_update',
+    'agent_message_chunk',
+    'result'
+  ]);
+  assert.equal(answer, 'PONG');
+});

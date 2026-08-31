@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.3 — 2026-08-30
+
+### Codex 0.142 item vocabulary in the normalizer (tracker #14 + parity leg)
+
+- **`agent_message` aliased to `assistant_message`** — codex-cli ≥0.142 renamed the final-answer item, so Codex answers were silently dropped (tool cards rendered, no assistant bubble). Shared emit-once dedupe keyed by `item.id ?? text`; still completed-only.
+- **`mcp_tool_call`** → ToolCard kind `other`, titled `server.tool`, in_progress on `item.started`, completed/failed on `item.completed` (error or `status: failed` → failed).
+- **`web_search`** → ToolCard kind `search` titled with the query; arrives completed-only, so the normalizer emits the opening `tool_call` immediately followed by the completed update (the webview no-ops orphan updates by design — unchanged).
+- **`todo_list`** → `todo_write` TodoWrite mirror (`rawInput.todos` as `{content, status}`) so the existing taskList interception replaces the checklist card in place instead of spamming.
+- CS-side codex adapter (code-sessions) still lacks these types — deferred to P3-normalizers. nowLine strip + progressiveActivity setting are the remaining legs of kp: ideas/cb-progressive-tool-activity-stream-for-quiet-ba. (kp: tasks/cb-codex-agent-message-item-type-in-the-normaliz)
+
 ## 0.21.2 — 2026-08-29
 
 ### Restore empty Claude shells from the real transcript
