@@ -1,5 +1,5 @@
-import { memo, useEffect, useRef, useState } from 'react';
-import type { ChatItem } from '../store';
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { isAwaitingFirstToken, type ChatItem } from '../store';
 import { ToolCard } from './ToolCard';
 import { Markdown } from './Markdown';
 import { AskUserQuestionCard } from './AskUserQuestionCard';
@@ -10,6 +10,8 @@ import { isNearBottom } from '../util/composerLayout';
 
 interface Props {
   items: ChatItem[];
+  /** Off-thread restore in progress — hide the empty-state pitch. */
+  loading?: boolean;
   /** True from the moment the user hits Send until the agent's turn ends.
    * Drives the "working…" indicator that fills the spawn→first-token gap. */
   busy?: boolean;
@@ -21,19 +23,29 @@ interface Props {
   onFollowChange?: (follow: boolean) => void;
   /** Tool call ids with a restorable host write-checkpoint. */
   checkpointIds?: string[];
+  hasOlder?: boolean;
+  olderSeq?: number;
+  olderLoading?: boolean;
+  onNeedOlder?: () => void;
 }
 
 export function MessageList({
   items,
   busy,
+  loading,
   onAskUserAnswer,
   follow = true,
   onFollowChange,
-  checkpointIds
+  checkpointIds,
+  hasOlder,
+  olderSeq = 0,
+  olderLoading,
+  onNeedOlder
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const ignoreScroll = useRef(false);
   const unlockTimer = useRef<number | null>(null);
+  const anchor = useRef({ height: 0, top: 0, seq: 0 });
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
@@ -66,26 +78,40 @@ export function MessageList({
     };
   }, [lastId, lastLen, busy, items.length, follow]);
 
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el || olderSeq === 0 || olderSeq === anchor.current.seq) return;
+    const delta = el.scrollHeight - anchor.current.height;
+    el.scrollTop = anchor.current.top + delta;
+    anchor.current.seq = olderSeq;
+  }, [olderSeq]);
+
   function onScroll() {
-    if (ignoreScroll.current || !listRef.current || !onFollowChange) return;
-    const near = isNearBottom(listRef.current);
-    if (near && !follow) onFollowChange(true);
-    if (!near && follow) onFollowChange(false);
+    const el = listRef.current;
+    if (!el) return;
+    if (!ignoreScroll.current && onFollowChange) {
+      const near = isNearBottom(el);
+      if (near && !follow) onFollowChange(true);
+      if (!near && follow) onFollowChange(false);
+    }
+    if (hasOlder && !olderLoading && el.scrollTop <= 96) {
+      anchor.current = { height: el.scrollHeight, top: el.scrollTop, seq: olderSeq };
+      onNeedOlder?.();
+    }
   }
 
   // Show the working indicator only when we're busy AND the agent hasn't
-  // started streaming a response yet (last item is the user's message or a
-  // tool call still in flight). Once assistant text starts arriving the
-  // streaming text itself is the feedback, so we hide the pill.
-  const awaitingFirstToken =
-    busy === true && (!last || last.kind === 'user' || last.kind === 'tool');
+  // started streaming a response yet. Notices / primer cards after the
+  // You-bubble are skipped so idle-reconnect chrome cannot hide the pill.
+  const awaitingFirstToken = isAwaitingFirstToken(items, busy === true);
 
   const streamingId =
     busy && last && (last.kind === 'assistant' || last.kind === 'thought') ? last.id : null;
 
   return (
     <div className="messages" ref={listRef} onScroll={onScroll} data-cb-scroller="">
-      {items.length === 0 && !busy && (
+      {olderLoading && <div className="history-older">Loading older messages…</div>}
+      {items.length === 0 && !busy && !loading && (
         <div className="empty">
           <h3>Code Build</h3>
           <p>One chat, many agents — Claude, Grok, Codex, and any ACP CLI.</p>

@@ -6,14 +6,36 @@ import { SessionStore } from './host/persistence/store';
 import { listAllSessions } from './host/persistence/externalSources';
 import { MemoryTreeProvider, MEMORY_VIEW_ID, registerMemoryCommands } from './host/memoryView';
 import type { SessionMeta, SessionSource } from './shared/protocol';
+import { sessionMatchesWorkspace } from './host/lastSession';
+import { startEventLoopLagMonitor } from './host/eventLoopLag';
+import {
+  addTraceSink,
+  initTrace,
+  startFileSink,
+  startSpan,
+  type Span
+} from './host/hostTrace';
 
 export function activate(context: vscode.ExtensionContext): void {
+  const ver = String(
+    vscode.extensions.getExtension('zhirafovod.code-build-vscode')?.packageJSON?.version ?? '0'
+  );
+  initTrace('cb', ver);
+  const lagLog = vscode.window.createOutputChannel('Code Build');
+  context.subscriptions.push(
+    lagLog,
+    startEventLoopLagMonitor((line) => lagLog.appendLine(line)),
+    { dispose: addTraceSink((human) => lagLog.appendLine(human)) },
+    { dispose: startFileSink() }
+  );
+  const act = startSpan('cb.activate');
+
   const managers = new Set<SessionManager>();
   /** Most recently created manager — used by global perf commands. */
   let latestMgr: SessionManager | undefined;
 
-  function attach(panel: ChatPanel): SessionManager {
-    const mgr = new SessionManager(panel, context);
+  function attach(panel: ChatPanel, openSpan?: Span): SessionManager {
+    const mgr = new SessionManager(panel, context, openSpan);
     managers.add(mgr);
     latestMgr = mgr;
     panel.panel.onDidDispose(() => {
@@ -29,8 +51,10 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   function openChat(column?: vscode.ViewColumn): void {
+    const span = startSpan('cb.newConversation');
     const panel = ChatPanel.create(context.extensionUri, column);
-    attach(panel);
+    span.mark('panel');
+    attach(panel, span);
   }
 
   context.subscriptions.push(
@@ -86,8 +110,10 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showWarningMessage('Code Build: openExternalSession needs {source, sessionId, cwd}.');
           return;
         }
+        const span = startSpan('cb.openExternal');
         const panel = ChatPanel.create(context.extensionUri, preferredEditorColumn());
-        const mgr = attach(panel);
+        span.mark('panel');
+        const mgr = attach(panel, span);
         mgr.queueExternal(args);
       }
     ),
@@ -175,11 +201,15 @@ export function activate(context: vscode.ExtensionContext): void {
   // prompt) and read here.
   vscode.window.registerWebviewPanelSerializer(CHAT_VIEW_TYPE, {
     async deserializeWebviewPanel(panel, state: unknown) {
-      const mgr = attach(new ChatPanel(panel, context.extensionUri));
+      const span = startSpan('cb.deserialize');
+      const mgr = attach(new ChatPanel(panel, context.extensionUri), span);
       const stored = state as { lastSessionId?: string } | undefined;
       if (stored && typeof stored.lastSessionId === 'string' && stored.lastSessionId) {
-        // Transcript only — do not spawn on window reload. First prompt reconnects.
-        mgr.queueResume(stored.lastSessionId, { connect: false });
+        const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+        const meta = new SessionStore().loadMeta(stored.lastSessionId);
+        if (meta && sessionMatchesWorkspace(meta.cwd, folders)) {
+          mgr.queueResume(stored.lastSessionId, { connect: false });
+        }
       }
     }
   });
@@ -235,8 +265,10 @@ export function activate(context: vscode.ExtensionContext): void {
     const ext = vscode.extensions.getExtension('zhirafovod.code-build-vscode');
     if (!ext) return;
 
+    const span = startSpan('cb.openPrevious');
     const panel = ChatPanel.create(ext.extensionUri, preferredEditorColumn());
-    const mgr = attach(panel);
+    span.mark('panel');
+    const mgr = attach(panel, span);
     const src = picked.meta.source ?? 'codebuild';
     if (src === 'codebuild') {
       // Defer load until the webview is mounted (avoids dropping historyLoaded).
@@ -250,6 +282,8 @@ export function activate(context: vscode.ExtensionContext): void {
       });
     }
   }
+
+  act.end();
 }
 
 async function openInCodeSessions(sessionId?: string): Promise<void> {

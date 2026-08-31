@@ -27,14 +27,14 @@ Pre-1.0 (`0.x.x`) currently treats MINOR as breaking-allowed — until 1.0 you m
    ```
 
 4. Stage `package.json`, `CHANGELOG.md`, and the code changes in the same commit.
-5. Optionally package the .vsix locally for sanity install:
+5. **Ship (required after a landed feature):** build, package, and install so the user can try it without extra `npm run build` / vsce steps:
 
    ```bash
-   npx vsce package --allow-missing-repository --no-dependencies
-   code --install-extension code-build-vscode-X.Y.Z.vsix --force
+   npm run ship
    ```
 
-   The user reloads their VS Code window to pick up the new build.
+   That is `build` + `vsce package` + `code --install-extension code-build-vscode-$version.vsix --force`.
+   **Do not reload the working Code Build chat.** Verify in a **second VS Code window**. Host-trace: Output → **Code Build**; file `~/.sessions/.daemon/host-trace.ndjson` (see `../architecture/tools/observability.md`).
 
 **Do not publish to the Marketplace from an agent session.** Publishing is a user-initiated step; the agent's job is to bump the version, update the changelog, and produce a clean .vsix.
 
@@ -51,7 +51,19 @@ Pre-1.0 (`0.x.x`) currently treats MINOR as breaking-allowed — until 1.0 you m
 
 - **Webview** (`webview-ui/`): React + Vite. Renders the chat surface. Communicates with the host via typed `postMessage` (see [`src/shared/protocol.ts`](src/shared/protocol.ts) for the `WebviewToHost` / `HostToWebview` unions).
 - **Host** (`src/`): VS Code extension. `SessionManager` owns one panel + one `AgentSession`; the transport (`StreamJsonTransport` for claude stream-json, `AcpTransport` for grok/ACP, `CodexTransport` for codex exec-json) normalises every backend into ACP-shaped `SessionUpdate` events.
-- **Session store** (`~/.codebuild/`): local NDJSON transcripts plus an index for the history picker. Externally-imported sessions (claude `~/.claude/projects/`, grok `~/.grok/sessions/`) are replayed via the `externalReplay` loaders.
+- **Session store** (`~/.codebuild/`): local NDJSON transcripts plus an index for the history picker. Externally-imported sessions (claude `~/.claude/projects/`, grok `~/.grok/sessions/`) are replayed via the `externalReplay` loaders. **Slated to move** into the sessions daemon / `~/.sessions` (see suite architecture below); do not add new readers of `~/.codebuild`.
+
+## Suite architecture (private repo — read before cross-component work)
+
+The suite-level design (CS · CSV · CB · KP), the target architecture, the performance tracking
+table, the testing strategy and the cross-project issues table live in the **private**
+`unpolarize/architecture` repo, cloned next to this one at `../architecture` (symlink:
+[`docs/suite-architecture`](docs/suite-architecture)). It is private by design — link to it by
+path, never copy its content into this public repo.
+
+- Before any change touching the store, protocol, daemon, or CSV/KP contracts: read `tools/target.md` and follow `WORKFLOW.md` there.
+- Bugs: claim your row in `tools/issues.md` before starting; perf work: claim the row in `tools/performance.md` and record before → after numbers.
+- This file covers only CB-internal conventions; `docs/DATA-STORES.md` documents the *current* on-disk format.
 
 ## Publishing checklist (user-driven)
 

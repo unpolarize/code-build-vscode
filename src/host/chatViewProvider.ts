@@ -2,6 +2,9 @@ import * as vscode from 'vscode';
 import type { HostToWebview, WebviewToHost } from '../shared/protocol';
 import { ChatSurface, isWebviewToHost, renderWebviewHtml, webviewOptions } from './webviewHtml';
 import { SessionManager } from './sessionManager';
+import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
+import { SessionStore } from './persistence/store';
+import { startSpan } from './hostTrace';
 
 /**
  * Sidebar chat surface. Uses the SAME built React bundle as the editor-tab panel;
@@ -26,12 +29,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider, ChatSurface
     });
     // Bind a fresh SessionManager the first time the sidebar resolves.
     if (!this.manager) {
-      this.manager = new SessionManager(this, this.context);
+      const span = startSpan('cb.sidebar.resolve');
+      span.mark('html');
+      this.manager = new SessionManager(this, this.context, span);
       // Sidebar is not a serialized webview panel — without this, every
       // VS Code start auto-spawns a blank agent. Restore the last chat
       // as transcript-only; the first prompt reconnects.
-      const last = this.context.globalState.get<string>('codeBuild.lastSessionId');
-      if (last) this.manager.queueResume(last, { connect: false });
+      const last = this.context.workspaceState.get<string>(LAST_SESSION_KEY);
+      if (last) {
+        const folders = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+        const meta = new SessionStore().loadMeta(last);
+        if (meta && sessionMatchesWorkspace(meta.cwd, folders)) {
+          this.manager.queueResume(last, { connect: false });
+        }
+      }
     }
   }
 

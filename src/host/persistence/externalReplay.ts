@@ -21,7 +21,7 @@ import type { ContentBlock, SessionUpdate, ToolCall, UsageInfo } from '../../sha
 /** One element of the `records[]` array `historyLoaded` consumes. Matches
  * the shape `SessionStore` writes to local JSONLs. */
 export type ReplayRecord =
-  | { type: 'user'; text: string }
+  | { type: 'user'; text: string; images?: Array<{ mimeType: string; data: string; name?: string }> }
   | { type: 'update'; update: SessionUpdate };
 
 const CLAUDE_PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
@@ -53,6 +53,25 @@ export function grokChatPathFor(cwd: string, sessionId: string): string {
   return path.join(GROK_SESSIONS_ROOT, encodeURIComponent(cwd), sessionId, 'chat_history.jsonl');
 }
 
+/** If the cwd-encoded path is missing, walk cwd folders under ~/.grok/sessions. */
+export function locateGrokChatHistory(sessionId: string, root = GROK_SESSIONS_ROOT): string | null {
+  if (!sessionId || !fs.existsSync(root)) return null;
+  const direct = path.join(root, sessionId, 'chat_history.jsonl');
+  if (fs.existsSync(direct)) return direct;
+  let cwdDirs: fs.Dirent[];
+  try {
+    cwdDirs = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const cwdDir of cwdDirs) {
+    if (!cwdDir.isDirectory()) continue;
+    const chatPath = path.join(root, cwdDir.name, sessionId, 'chat_history.jsonl');
+    if (fs.existsSync(chatPath)) return chatPath;
+  }
+  return null;
+}
+
 interface ContentText { type: 'text'; text: string }
 interface ContentToolUse { type: 'tool_use'; id: string; name: string; input: unknown }
 interface ContentToolResult { type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean }
@@ -71,6 +90,28 @@ function asText(content: unknown): string {
       .join('\n\n');
   }
   return '';
+}
+
+function asImages(content: unknown): Array<{ mimeType: string; data: string; name?: string }> {
+  if (!Array.isArray(content)) return [];
+  const out: Array<{ mimeType: string; data: string; name?: string }> = [];
+  for (const b of content) {
+    if (!b || typeof b !== 'object') continue;
+    const obj = b as {
+      type?: string;
+      mimeType?: string;
+      mime_type?: string;
+      data?: string;
+      name?: string;
+      source?: { type?: string; media_type?: string; data?: string };
+    };
+    if (obj.type !== 'image') continue;
+    const data = obj.data || obj.source?.data;
+    if (!data) continue;
+    const mimeType = obj.mimeType || obj.mime_type || obj.source?.media_type || 'image/png';
+    out.push({ mimeType, data, name: obj.name });
+  }
+  return out;
 }
 
 function toolResultText(content: unknown): string {
@@ -158,7 +199,10 @@ export function loadClaudeHistory(jsonlPath: string): ReplayResult | null {
         continue;
       }
       const text = asText(content);
-      if (text) records.push({ type: 'user', text });
+      const images = asImages(content);
+      if (text || images.length > 0) {
+        records.push(images.length > 0 ? { type: 'user', text, images } : { type: 'user', text });
+      }
       continue;
     }
 
@@ -256,7 +300,12 @@ interface GrokAssistantToolCall {
  * sessions), so `totals` + `byModel` are empty — there's nothing to display
  * in the header beyond message/tool counts. */
 export function loadGrokHistory(chatPath: string): ReplayResult | null {
-  if (!fs.existsSync(chatPath)) return null;
+  if (!fs.existsSync(chatPath)) {
+    const id = path.basename(path.dirname(chatPath));
+    const found = locateGrokChatHistory(id);
+    if (!found) return null;
+    chatPath = found;
+  }
   let raw: string;
   try {
     raw = fs.readFileSync(chatPath, 'utf8');
@@ -277,7 +326,10 @@ export function loadGrokHistory(chatPath: string): ReplayResult | null {
 
     if (obj.type === 'user') {
       const text = asText(obj.content);
-      if (text) records.push({ type: 'user', text });
+      const images = asImages(obj.content);
+      if (text || images.length > 0) {
+        records.push(images.length > 0 ? { type: 'user', text, images } : { type: 'user', text });
+      }
       continue;
     }
 

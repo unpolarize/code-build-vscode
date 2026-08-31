@@ -193,6 +193,18 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** Off-thread full-transcript restore (issue #24). */
+  historyLoad: {
+    phase: 'loading' | 'done' | 'error';
+    bytesRead: number;
+    bytesTotal: number;
+    records: number;
+    error?: string;
+  } | null;
+  /** Older JSONL remains before the painted tail. */
+  hasOlder: boolean;
+  /** Bumps when older messages are prepended (scroll-anchor). */
+  olderSeq: number;
 }
 
 export const initialState: ChatState = {
@@ -232,7 +244,10 @@ export const initialState: ChatState = {
   visActive: false,
   stallAutoCancelSeconds: 0,
   checkpointIds: [],
-  protocolPin: null
+  protocolPin: null,
+  historyLoad: null,
+  hasOlder: false,
+  olderSeq: 0
 };
 
 let seq = 0;
@@ -282,7 +297,10 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
           hostSttAvailable: msg.state.voice?.hostSttAvailable ?? false
         },
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
-        stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0
+        stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
+        historyLoad: state.historyLoad,
+        hasOlder: state.hasOlder,
+        olderSeq: state.olderSeq
       };
     case 'stallTimeout':
       return { ...state, stallAutoCancelSeconds: msg.seconds };
@@ -427,23 +445,91 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     case 'fileSuggestions':
       return { ...state, fileSuggestions: msg.suggestions };
     // sessionUpdates handled above (batch)
+    case 'historyProgress': {
+      const load = {
+        phase: msg.phase,
+        bytesRead: msg.bytesRead,
+        bytesTotal: msg.bytesTotal,
+        records: msg.records,
+        error: msg.error
+      };
+      if (msg.phase === 'loading' && msg.bytesRead === 0) {
+        return {
+          ...state,
+          items: [],
+          usage: null,
+          usageBreakdown: [],
+          permissionQueue: [],
+          busy: false,
+          historyLoad: load
+        };
+      }
+      return { ...state, historyLoad: load };
+    }
+    case 'historyBatch': {
+      const incoming = replayRecords(state, msg.meta, msg.records, 'append');
+      return {
+        ...incoming,
+        historyLoad: {
+          phase: 'loading',
+          bytesRead: msg.bytesRead,
+          bytesTotal: msg.bytesTotal,
+          records: msg.recordsSoFar
+        }
+      };
+    }
     case 'historyLoaded': {
       const incoming = replayRecords(state, msg.meta, msg.records);
       // A prompt echoed locally can race a resume/historyLoaded that was
       // snapshotted before appendUserText flushed. Keep those bubbles.
-      const replayed = new Set(
-        incoming.items.filter((it) => it.kind === 'user').map((it) => it.text),
-      );
-      const extra = state.items.filter(
-        (it) => it.kind === 'user' && it.text && !replayed.has(it.text),
-      );
-      if (extra.length === 0) return incoming;
+      const priorUsers = state.items.filter((it): it is Extract<ChatItem, { kind: 'user' }> => it.kind === 'user');
+      const replayed = new Set(incoming.items.filter((it) => it.kind === 'user').map((it) => it.text));
+      const extra = priorUsers.filter((it) => it.text && !replayed.has(it.text));
+      const imagesByText = new Map<string, ImageAttachment[]>();
+      for (const u of priorUsers) {
+        if (u.text && u.images && u.images.length > 0) imagesByText.set(u.text, u.images);
+      }
+      const items = incoming.items.map((it) => {
+        if (it.kind === 'user' && it.text && (!it.images || it.images.length === 0)) {
+          const imgs = imagesByText.get(it.text);
+          if (imgs) return { ...it, images: imgs };
+        }
+        return it;
+      });
+      if (extra.length === 0) {
+        return {
+          ...incoming,
+          items,
+          historyLoad: null,
+          hasOlder: msg.hasOlder === true,
+          olderSeq: 0
+        };
+      }
       return {
         ...incoming,
-        items: [...incoming.items, ...extra],
+        items: [...items, ...extra],
         busy: state.busy || incoming.busy,
+        historyLoad: null,
+        hasOlder: msg.hasOlder === true,
+        olderSeq: 0
       };
     }
+    case 'historyOlder': {
+      const older =
+        msg.records.length === 0
+          ? { items: [] as ChatState['items'] }
+          : replayRecords({ ...state, items: [] }, msg.meta, msg.records, 'replace');
+      return {
+        ...state,
+        items: [...older.items, ...state.items],
+        hasOlder: msg.hasOlder,
+        olderSeq: state.olderSeq + 1,
+        historyLoad: null
+      };
+    }
+    case 'clipboardImage':
+    case 'clipboardText':
+      return state;
     case 'ttsDone':
       // Webview voice controller listens via window message; state no-op.
       return state;
@@ -469,6 +555,21 @@ export function appendUser(
     items: [...state.items, { kind: 'user', id: nextId(), createdAt: now(), text, images, interjected }],
     busy: true
   };
+}
+
+/** True while a turn is in flight but the agent has not started streaming
+ * a thought/assistant bubble yet. Notices, primer audit cards, and other
+ * host chrome after the You-bubble must not hide the working pill —
+ * idle-reconnect used to post "Resuming uuid…" as last item, which made
+ * send look frozen until the first thought chunk. */
+export function isAwaitingFirstToken(items: ChatItem[], busy: boolean): boolean {
+  if (!busy) return false;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const k = items[i].kind;
+    if (k === 'notice' || k === 'context') continue;
+    return k === 'user' || k === 'tool';
+  }
+  return true;
 }
 
 /** Mark an AskUserQuestion card as answered after the user clicks an
@@ -717,6 +818,7 @@ type ReplayRecord = {
   update?: SessionUpdate;
   marker?: CompactMarker;
   ts?: number;
+  images?: ImageAttachment[];
 };
 
 /** Timestamp for a replayed record: stored `ts` wins; otherwise the session
@@ -738,29 +840,46 @@ export function replayTimestamp(rec: ReplayRecord, meta: SessionMeta): number {
  * `taskList` host messages are never persisted), so we reconstruct those
  * cards here before applyUpdate suppresses the raw tool row.
  */
-function replayRecords(state: ChatState, meta: SessionMeta, records: ReplayRecord[]): ChatState {
-  let next: ChatState = {
-    ...state,
-    session: meta,
-    items: [],
-    usage: null,
-    usageBreakdown: [],
-    permissionQueue: [],
-    busy: false,
-    // Stale restore actions must not survive a session switch; the host
-    // re-posts checkpointAvailable right after historyLoaded.
-    checkpointIds: [],
-    // Protocol pin re-applies from a persisted protocol_version_update if
-    // the transcript has one; otherwise stays null until next initialize.
-    protocolPin: null
-  };
+function replayRecords(
+  state: ChatState,
+  meta: SessionMeta,
+  records: ReplayRecord[],
+  mode: 'replace' | 'append' = 'replace'
+): ChatState {
+  let next: ChatState =
+    mode === 'append'
+      ? { ...state, session: meta }
+      : {
+          ...state,
+          session: meta,
+          items: [],
+          usage: null,
+          usageBreakdown: [],
+          permissionQueue: [],
+          busy: false,
+          // Stale restore actions must not survive a session switch; the host
+          // re-posts checkpointAvailable right after historyLoaded.
+          checkpointIds: [],
+          // Protocol pin re-applies from a persisted protocol_version_update if
+          // the transcript has one; otherwise stays null until next initialize.
+          protocolPin: null
+        };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);
     next = withClock(at, () => {
-      if (rec.type === 'user' && rec.text) {
+      if (rec.type === 'user' && (rec.text || (rec.images && rec.images.length > 0))) {
         return {
           ...next,
-          items: [...next.items, { kind: 'user', id: nextId(), createdAt: now(), text: rec.text }]
+          items: [
+            ...next.items,
+            {
+              kind: 'user',
+              id: nextId(),
+              createdAt: now(),
+              text: rec.text ?? '',
+              images: rec.images && rec.images.length > 0 ? rec.images : undefined
+            }
+          ]
         };
       }
       if (rec.type === 'compact' && rec.marker) {

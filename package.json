@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.18.2",
+  "version": "0.21.2",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -604,7 +604,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p webview-ui/tsconfig.json",
     "test:unit": "node --test --import tsx test/unit/*.test.ts",
     "package": "vsce package --no-dependencies --allow-missing-repository",
-    "install-extension": "code --install-extension code-build-vscode-0.15.0.vsix --force",
+    "install-extension": "code --install-extension code-build-vscode-$npm_package_version.vsix --force",
+    "ship": "npm run build && npm run package && npm run install-extension",
     "vscode:prepublish": "npm run build"
   },
   "dependencies": {

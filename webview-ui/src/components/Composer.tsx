@@ -6,6 +6,7 @@ import {
   formatTokenEstimate
 } from '../util/tokenEstimate';
 import { post } from '../vscodeApi';
+import { dataUrlToAttachment, decidePaste } from '../util/clipboardImages';
 
 /** A file resolved by the host from a drag-and-drop onto the chat. */
 interface DroppedItem {
@@ -71,6 +72,9 @@ export function Composer({
   const [images, setImages] = useState<ImageAttachment[]>([]);
   const [caret, setCaret] = useState(0);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pendingClipboardProbe = useRef(false);
+  const insertTextAtCaretRef = useRef<(chunk: string) => void>(() => {});
   // Debounced chip label so keystrokes don't thrash layout. Failure → hidden.
   const [estimateLabel, setEstimateLabel] = useState<string | null>(null);
 
@@ -214,6 +218,18 @@ export function Composer({
       if (m && m.type === 'droppedFilesResolved') {
         applyRef.current((m.items ?? []) as DroppedItem[]);
       }
+      if (m && m.type === 'clipboardImage' && m.data) {
+        pendingClipboardProbe.current = false;
+        setImages((current) => [
+          ...current,
+          { mimeType: m.mimeType || 'image/png', data: m.data, name: m.name || `pasted-${current.length + 1}` }
+        ]);
+      }
+      if (m && m.type === 'clipboardText' && typeof m.text === 'string' && m.text) {
+        if (!pendingClipboardProbe.current) return;
+        pendingClipboardProbe.current = false;
+        insertTextAtCaretRef.current(m.text);
+      }
     }
     // App-level drop forwards image files via a CustomEvent so we don't
     // duplicate the FileReader→base64 pipeline up there. App handles
@@ -301,40 +317,58 @@ export function Composer({
   // back via the `cb-app-drop-files` CustomEvent the listener above
   // also subscribes to.
 
-  /** Cmd/Ctrl-V handler: intercept image clipboard items, convert each to
-   * base64, and attach as a tile preview. Multiple images per paste are
-   * supported. Text paste behavior is left to the browser default. */
-  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    const imageItems: DataTransferItem[] = [];
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      if (it.kind === 'file' && it.type.startsWith('image/')) {
-        imageItems.push(it);
+  insertTextAtCaretRef.current = (chunk: string) => {
+    if (!chunk) return;
+    const el = ref.current;
+    const start = el?.selectionStart ?? caret;
+    const end = el?.selectionEnd ?? start;
+    const next = text.slice(0, start) + chunk + text.slice(end);
+    const pos = start + chunk.length;
+    setText(next);
+    setCaret(pos);
+    setTimeout(() => {
+      if (ref.current) {
+        ref.current.focus();
+        ref.current.setSelectionRange(pos, pos);
       }
-    }
-    if (imageItems.length === 0) return;
+    }, 0);
+  };
 
-    e.preventDefault(); // stop the browser from also pasting a binary blob string
-    for (const item of imageItems) {
-      const file = item.getAsFile();
-      if (!file) continue;
+  function addImageFiles(files: File[]) {
+    for (const file of files) {
       const reader = new FileReader();
       reader.onload = () => {
-        const result = reader.result;
-        if (typeof result !== 'string') return;
-        // result is "data:image/png;base64,<...>". Strip the prefix so we
-        // ship just the base64 payload (matches the ContentBlock 'image' shape).
-        const comma = result.indexOf(',');
-        const data = comma >= 0 ? result.slice(comma + 1) : result;
-        setImages((current) => [
-          ...current,
-          { mimeType: file.type || item.type, data, name: file.name || `pasted-${current.length + 1}` }
-        ]);
+        const att = typeof reader.result === 'string' ? dataUrlToAttachment(reader.result, file.name) : null;
+        if (!att) return;
+        setImages((current) => [...current, att]);
       };
       reader.readAsDataURL(file);
     }
+  }
+
+  /** Cmd/Ctrl-V: images in the event attach as tiles; plain text uses the
+   * default insert (no host round-trip). Host probe only when the event has
+   * neither text nor files. */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const decision = decidePaste(e.clipboardData);
+    if (decision.kind === 'text') return;
+    e.preventDefault();
+    if (decision.kind === 'images') {
+      pendingClipboardProbe.current = false;
+      if (decision.inline.length) {
+        setImages((current) => [...current, ...decision.inline]);
+      }
+      addImageFiles(decision.files);
+      return;
+    }
+    pendingClipboardProbe.current = true;
+    post({ type: 'readClipboardImage', fallbackText: decision.fallbackText });
+  }
+
+  function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = '';
+    addImageFiles(files);
   }
 
   function removeImage(idx: number) {
@@ -444,6 +478,23 @@ export function Composer({
             {estimateLabel}
           </span>
         )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/png,image/jpeg,image/gif,image/webp"
+          multiple
+          hidden
+          onChange={onPickFiles}
+        />
+        <button
+          type="button"
+          className="btn-composer-max"
+          onClick={() => fileRef.current?.click()}
+          title="Attach image"
+          aria-label="Attach image"
+        >
+          📎
+        </button>
         {onToggleDictation && (
           <button
             type="button"

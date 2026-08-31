@@ -12,3 +12,5 @@ vite.config.ts
 tsconfig*.json
 .gitignore
 !dist/**
+docs/suite-architecture
+docs/suite-architecture/**

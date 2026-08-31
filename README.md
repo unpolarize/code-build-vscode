@@ -18,6 +18,10 @@ One UI, many agents: **Claude Code**, **Grok**, **Codex**, and any **ACP** agent
 
 ## Architecture (Approach A — ACP-canonical)
 
+> Suite-level architecture (how CB relates to Code Sessions, KP, the sessions daemon and where the
+> store is heading) lives in the **private** `unpolarize/architecture` repo — `../architecture/tools/`
+> next to this clone (`docs/suite-architecture` symlink). This section covers only CB internals.
+
 ```
 Webview (React + Vite)  ──typed postMessage──▶  Extension Host
   chat · tool cards · diffs                       SessionManager

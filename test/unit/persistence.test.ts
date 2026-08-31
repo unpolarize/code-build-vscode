@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { SessionStore, writeFileAtomic } from '../../src/host/persistence/store';
+import {
+  SessionStore,
+  writeFileAtomic,
+  keepLastCompleteTurns,
+  hasVisibleReplayRecords,
+  type OffsetRec
+} from '../../src/host/persistence/store';
 import {
   exportToClaudeJsonl,
   exportToMarkdown,
@@ -74,6 +80,54 @@ test('updateMeta rewrites the title in index and transcript header', () => {
   store.updateMeta(retitled);
   assert.equal(store.list()[0].title, 'Fix the parser bug');
   assert.equal(store.load('sess-1').meta?.title, 'Fix the parser bug');
+});
+
+test('list() does not scan a large transcript once hasContent is stamped', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+  store.flushSync('sess-1');
+  const p = store.transcriptPath('sess-1');
+  const blob = '{"type":"update","update":{"kind":"agent_message_chunk","content":{"type":"text","text":"' +
+    'x'.repeat(80) +
+    '"}}}\n';
+  fs.appendFileSync(p, blob.repeat(20_000)); // ~2 MB of decoy lines
+  const t0 = performance.now();
+  const listed = store.list();
+  const ms = performance.now() - t0;
+  assert.equal(listed[0].id, 'sess-1');
+  assert.ok(ms < 50, `list() took ${ms.toFixed(1)}ms — must not read the 2 MB JSONL`);
+});
+
+test('updateMeta does not rewrite the JSONL body', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'hi');
+  store.flushSync('sess-1');
+  const p = store.transcriptPath('sess-1');
+  const before = fs.readFileSync(p, 'utf8');
+  store.updateMeta('sess-1', { title: 'only in index' });
+  const after = fs.readFileSync(p, 'utf8');
+  assert.equal(after, before, 'JSONL must stay append-only on meta patches');
+  assert.equal(store.list()[0].title, 'only in index');
+  assert.equal(store.load('sess-1').meta?.title, 'only in index');
+});
+
+test('legacy index rows without hasContent migrate via 64KB head scan', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.appendUserText('sess-1', 'legacy prompt');
+  store.flushSync('sess-1');
+  const indexPath = path.join(root, 'index.json');
+  fs.writeFileSync(indexPath, JSON.stringify([{ ...meta }], null, 2));
+  const store2 = new SessionStore(root);
+  assert.equal(store2.list()[0]?.id, 'sess-1');
+  const stamped = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Array<{ hasContent?: boolean }>;
+  assert.equal(stamped[0].hasContent, true);
 });
 
 test('updateMeta patch RMW: title-then-bsid leaves both intact', () => {
@@ -417,6 +471,16 @@ test('appendUserText/appendUpdate persist epoch-ms ts on each record', () => {
   assert.equal((records[1] as { ts?: number }).ts, tUpd);
 });
 
+test('appendUserText persists image attachments with the user record', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  const images = [{ mimeType: 'image/png', data: 'ZmFrZQ==', name: 'shot.png' }];
+  store.appendUserText('sess-1', 'look', 1_700_000_333_000, images);
+  const { records } = store.load('sess-1');
+  assert.equal(records[0].type, 'user');
+  assert.deepEqual((records[0] as { images?: unknown }).images, images);
+});
+
 test('legacy transcripts without ts still load', () => {
   const root = tmpRoot();
   const store = new SessionStore(root);
@@ -432,4 +496,119 @@ test('legacy transcripts without ts still load', () => {
   const { records } = store.load('sess-1');
   assert.equal(records[0].type, 'user');
   assert.equal((records[0] as { ts?: number }).ts, undefined);
+});
+
+test('loadMeta reads index.json, not the JSONL body', () => {
+  const root = tmpRoot();
+  const store = new SessionStore(root);
+  store.createSession(meta);
+  store.commitSession({ ...meta, title: 'from-index', hasContent: true });
+  fs.writeFileSync(store.transcriptPath('sess-1'), `${'not-json\n'.repeat(20_000)}garbage`);
+  const m = store.loadMeta('sess-1');
+  assert.equal(m?.id, 'sess-1');
+  assert.equal(m?.title, 'from-index');
+  assert.equal(m?.cwd, '/repo');
+});
+
+test('loadTail of a small file is complete and not truncated', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  store.appendUserText('sess-1', 'hello');
+  const tail = store.loadTail('sess-1');
+  assert.equal(tail.truncated, false);
+  assert.equal(tail.records.length, 1);
+  assert.equal((tail.records[0] as { text: string }).text, 'hello');
+  assert.equal(tail.meta?.id, 'sess-1');
+});
+
+test('loadTail of a large file skips the prefix and keeps the last user line', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  const pad = 'x'.repeat(120);
+  for (let i = 0; i < 4000; i++) store.appendUserText('sess-1', `pad-${i} ${pad}`);
+  store.appendUserText('sess-1', 'visible-tail');
+  const tail = store.loadTail('sess-1', { maxBytes: 16 * 1024, maxRecords: 40 });
+  assert.equal(tail.truncated, true);
+  assert.ok(tail.fileBytes > 16 * 1024);
+  const texts = tail.records.map((r) => (r as { text?: string }).text);
+  assert.ok(texts.includes('visible-tail'), `tail texts: ${texts.slice(-3)}`);
+  assert.ok(!texts.includes(`pad-0 ${pad}`));
+  assert.ok(tail.records.length <= 40);
+  assert.equal(tail.meta?.id, 'sess-1');
+  assert.ok(tail.olderFromByte > 0);
+  const older = store.loadBefore('sess-1', tail.olderFromByte, { maxBytes: 16 * 1024, maxRecords: 40 });
+  assert.ok(older.records.length > 0);
+  const olderTexts = older.records.map((r) => (r as { text?: string }).text);
+  assert.ok(!olderTexts.includes('visible-tail'));
+  assert.ok(older.olderFromByte >= 0);
+  assert.ok(older.olderFromByte < tail.olderFromByte || older.olderFromByte === 0);
+});
+
+test('keepLastCompleteTurns drops leading assistant chunks (no mid-turn start)', () => {
+  const rec = (type: string, text: string): OffsetRec => ({
+    rec: type === 'user' ? { type, text } : { type, update: { kind: 'agent_message_chunk', text } },
+    start: 0
+  });
+  const rows = [
+    rec('update', 'orphan-end-of-prev'),
+    rec('update', 'still-prev'),
+    rec('user', 'hello'),
+    rec('update', 'full-reply')
+  ];
+  const kept = keepLastCompleteTurns(rows, 8);
+  assert.equal(kept[0].rec.type, 'user');
+  assert.equal((kept[0].rec as { text?: string }).text, 'hello');
+  assert.equal(kept.length, 2);
+  assert.equal(keepLastCompleteTurns(rows.slice(0, 2), 8).length, 0);
+});
+
+test('loadTail starts on a user turn even when the byte window cuts a prior reply', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  store.appendUserText('sess-1', 'old-prompt');
+  const blob = 'y'.repeat(400);
+  for (let i = 0; i < 40; i++) {
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: blob }
+    });
+  }
+  store.appendUserText('sess-1', 'latest-prompt');
+  store.appendUpdate('sess-1', {
+    kind: 'agent_message_chunk',
+    content: { type: 'text', text: 'complete-reply' }
+  });
+  const tail = store.loadTail('sess-1', { maxBytes: 4 * 1024, maxTurns: 2 });
+  assert.ok(tail.records.length >= 2);
+  assert.equal(tail.records[0].type, 'user');
+  assert.equal((tail.records[0] as { text?: string }).text, 'latest-prompt');
+  const kinds = tail.records.map((r) => r.type);
+  assert.ok(kinds.includes('update'));
+});
+
+test('hasVisibleReplayRecords ignores system_init-only shells', () => {
+  assert.equal(hasVisibleReplayRecords([{ type: 'update', update: { kind: 'system_init' } }]), false);
+  assert.equal(hasVisibleReplayRecords([{ type: 'user', text: 'hi' }]), true);
+  assert.equal(
+    hasVisibleReplayRecords([{ type: 'update', update: { kind: 'agent_message_chunk' } }]),
+    true
+  );
+});
+
+test('loadTail of a long chunk-only file does not return empty', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  for (let i = 0; i < 80; i++) {
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `chunk-${i}-${'z'.repeat(40)}` }
+    });
+  }
+  const tail = store.loadTail('sess-1', { maxRecords: 20, maxTurns: 8, maxBytes: 10_000_000 });
+  assert.ok(tail.records.length > 0, 'must not wipe a no-user window to []');
+  assert.ok(tail.records.length <= 20);
 });

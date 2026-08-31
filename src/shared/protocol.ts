@@ -93,6 +93,9 @@ export interface SessionMeta {
   /** Stop-governor trips (warn or hard stop) recorded on this session,
    * oldest first. Persisted so CSV can join stop outcomes to sessions. */
   stopEvents?: StopEventRecord[];
+  /** Index-sidecar flag: transcript has a user turn or substantive agent
+   * output. `list()` uses this instead of scanning JSONL. */
+  hasContent?: boolean;
 }
 
 /** Compact boundary marker — written to the transcript when a host-side
@@ -239,6 +242,10 @@ export type WebviewToHost =
    * `file://` strings; the host maps them to workspace-relative paths and
    * base64-encodes images, replying with `droppedFilesResolved`. */
   | { type: 'resolveDroppedUris'; uris: string[] }
+  /** Webview paste saw no image items (common in VS Code webviews) but
+   * the user hit Cmd/Ctrl-V. Host reads the OS clipboard; replies with
+   * `clipboardImage` or `clipboardText`. */
+  | { type: 'readClipboardImage'; fallbackText?: string }
   | { type: 'listSessions' }
   /** Resume a session by id. When `source` is set to 'claude' or 'grok',
    * the host loads the upstream transcript (cwd is required to locate it)
@@ -282,7 +289,11 @@ export type WebviewToHost =
   | { type: 'voiceModeChanged'; mode: VoiceMode }
   /** Start host-side STT (macOS Speech / future backends). */
   | { type: 'sttStart'; lang?: string }
-  | { type: 'sttStop' };
+  | { type: 'sttStop' }
+  /** Webview finished applying a historyBatch (backpressure). */
+  | { type: 'historyBatchAck' }
+  /** Scroll-up: request the JSONL window before the current tail. */
+  | { type: 'loadOlderHistory' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -377,6 +388,8 @@ export type HostToWebview =
       type: 'droppedFilesResolved';
       items: Array<{ path: string; isImage: boolean; mimeType?: string; data?: string; name?: string }>;
     }
+  | { type: 'clipboardImage'; mimeType: string; data: string; name?: string }
+  | { type: 'clipboardText'; text: string }
   | { type: 'sessionsList'; sessions: SessionMeta[] }
   | {
       type: 'historyLoaded';
@@ -387,7 +400,49 @@ export type HostToWebview =
         update?: SessionUpdate;
         marker?: CompactMarker;
         ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
+      /** More JSONL exists before this tail — scroll up to load it. */
+      hasOlder?: boolean;
+    }
+  /** Older JSONL window, prepended on scroll-up. */
+  | {
+      type: 'historyOlder';
+      meta: SessionMeta;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        marker?: CompactMarker;
+        ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
+      }>;
+      hasOlder: boolean;
+    }
+  /** Off-thread restore: bytes so far. `loading` paints chrome immediately. */
+  | {
+      type: 'historyProgress';
+      phase: 'loading' | 'done' | 'error';
+      bytesRead: number;
+      bytesTotal: number;
+      records: number;
+      error?: string;
+    }
+  /** One chunk of a full-transcript restore (child process). Append, do not replace. */
+  | {
+      type: 'historyBatch';
+      meta: SessionMeta;
+      records: Array<{
+        type: string;
+        text?: string;
+        update?: SessionUpdate;
+        marker?: CompactMarker;
+        ts?: number;
+        images?: Array<{ mimeType: string; data: string; name?: string }>;
+      }>;
+      bytesRead: number;
+      bytesTotal: number;
+      recordsSoFar: number;
     }
   /** A compact completed on the live session — append the divider to the
    * timeline. Reload replay comes from the persisted `compact` transcript

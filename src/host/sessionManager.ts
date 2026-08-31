@@ -39,12 +39,16 @@ import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
-import { SessionStore } from './persistence/store';
+import { SessionStore, hasVisibleReplayRecords } from './persistence/store';
+import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
+import { daemonAppend, daemonCreate, daemonPatchMeta } from './daemonClient';
+import { readOsClipboardImage } from './clipboardImage';
 import {
   claudeJsonlPathFor,
   grokChatPathFor,
   loadClaudeHistory,
-  loadGrokHistory
+  loadGrokHistory,
+  locateGrokChatHistory
 } from './persistence/externalReplay';
 import { listAllSessions } from './persistence/externalSources';
 import {
@@ -62,7 +66,12 @@ import {
   exportHasTurns,
   type ExportRecord
 } from './persistence/jsonlExporter';
-import { spawn } from 'node:child_process';
+import { spawn, fork, type ChildProcess } from 'node:child_process';
+import {
+  replayTranscriptFile,
+  type ReplayEvent,
+  type ReplayRecord
+} from './persistence/transcriptReplay';
 import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
@@ -74,6 +83,10 @@ import {
   type PerfDebugMode
 } from './perf/sessionPerf';
 import * as fsSync from 'node:fs';
+import { startSpan, type Span } from './hostTrace';
+
+/** Last `detectAll` result so a new panel can paint before `which`×N. */
+let cachedBackends: HydrateState['backends'] = [];
 
 /** Shared Output channel for the flight recorder (one per extension host). */
 let perfOutput: vscode.OutputChannel | undefined;
@@ -91,6 +104,11 @@ function getPerfOutput(): vscode.OutputChannel {
 export class SessionManager {
   private session?: AgentSession;
   private meta?: SessionMeta;
+  /** Child that streams JSONL off the extension host (issue #24). */
+  private replayChild?: ChildProcess;
+  /** Byte offset of the oldest record currently in the webview. 0 = no older. */
+  private historyOlderFrom = 0;
+  private historyOlderBusy = false;
   private unsubscribe?: () => void;
   private titled = false;
   private pendingResumeId?: string;
@@ -211,7 +229,8 @@ export class SessionManager {
 
   constructor(
     private readonly panel: ChatSurface,
-    private readonly context: vscode.ExtensionContext
+    private readonly context: vscode.ExtensionContext,
+    private openSpan?: Span
   ) {
     this.panel.onMessage((msg) => void this.handle(msg));
   }
@@ -251,20 +270,31 @@ export class SessionManager {
     switch (msg.type) {
       case 'ready':
         this.webviewReady = true;
-        await this.hydrate();
-        // If a resume was queued before the webview mounted, run it now so the
-        // historyLoaded message isn't dropped (the React app only listens after mount).
+        if (!this.openSpan) this.openSpan = startSpan('cb.hydrate');
+        this.openSpan.mark('webview.ready');
+        // Transcript first. hydrate() does not clear items, and detectAll
+        // (`which` × N) used to sit in front of historyLoaded so a restored
+        // chat stayed empty until backends resolved. Keep pendingResumeId
+        // set through hydrate() so autoStart does not spawn a fresh session.
         if (this.pendingResumeId) {
           const id = this.pendingResumeId;
           const connect = this.pendingResumeConnect ?? true;
-          this.pendingResumeId = undefined;
-          this.pendingResumeConnect = undefined;
+          // Returns after chrome + child fork; does not wait for 200 MB parse.
           await this.loadExistingSession(id, { connect });
+          this.openSpan?.mark('resume.start');
         } else if (this.pendingExternal) {
-          const ext = this.pendingExternal;
-          this.pendingExternal = undefined;
-          await this.openExternalSession(ext);
+          await this.openExternalSession(this.pendingExternal);
+          this.openSpan?.mark('external.load');
         }
+        await this.hydrate();
+        this.pendingResumeId = undefined;
+        this.pendingResumeConnect = undefined;
+        this.pendingExternal = undefined;
+        this.openSpan?.end();
+        this.openSpan = undefined;
+        break;
+      case 'loadOlderHistory':
+        this.loadOlderHistory();
         break;
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
@@ -274,6 +304,15 @@ export class SessionManager {
       case 'resolveDroppedUris': {
         const items = await this.resolveDroppedUris(msg.uris);
         this.panel.post({ type: 'droppedFilesResolved', items });
+        break;
+      }
+      case 'readClipboardImage': {
+        const img = await readOsClipboardImage();
+        if (img) {
+          this.panel.post({ type: 'clipboardImage', mimeType: img.mimeType, data: img.data, name: img.name });
+        } else {
+          this.panel.post({ type: 'clipboardText', text: msg.fallbackText ?? '' });
+        }
         break;
       }
       case 'newSession':
@@ -316,8 +355,10 @@ export class SessionManager {
           });
           break;
         }
-        await this.ensureSession();
+        // Busy first so the working pill stays up while idle-reconnect
+        // spawns the CLI (session.start can take several seconds).
         this.panel.post({ type: 'busy', busy: true });
+        await this.ensureSession();
         // Arm the stall watchdog for this turn (D1). The silence clock starts
         // now, at submission, so a turn that produces NO output at all (the
         // claude `error_during_execution`/0-token stall) is still caught.
@@ -331,10 +372,19 @@ export class SessionManager {
         });
         this.pushPerfHud();
         const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
-        if (originalText) {
+        const images = msg.blocks
+          .filter((b): b is Extract<ContentBlock, { type: 'image' }> => b.type === 'image')
+          .map((b) => ({ mimeType: b.mimeType, data: b.data }));
+        if (originalText || images.length > 0) {
           // First real prompt: promote to history + derive a title from it.
-          this.commitAndTitle(originalText);
-          this.store.appendUserText(this.meta!.id, originalText);
+          this.commitAndTitle(originalText || '(image)');
+          this.store.appendUserText(
+            this.meta!.id,
+            originalText,
+            Date.now(),
+            images.length > 0 ? images : undefined
+          );
+          void daemonAppend(this.meta!.id, { type: 'user', text: originalText });
         }
         // Stash for the classifier (paired with the upcoming
         // assistant text on the next `result`). Bumps turnIndex AFTER
@@ -859,20 +909,18 @@ export class SessionManager {
 
   private async hydrate(): Promise<void> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
-    const backends = await detectAll(overrides);
     const allowBypass = this.config.get<boolean>('allowDangerouslySkipPermissions', false);
     const defaultBackend = this.defaultBackend();
-    // Memory inventory snapshot for the Header chip. Cheap scan
-    // (handful of stat()+readFile()s); rerun on every hydrate so a
-    // panel reload or session swap picks up CLAUDE.md edits.
     const wsRoots = vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
     const memSources = scanMemorySources(wsRoots);
     const memTotals = summariseSources(memSources);
-    const state: HydrateState = {
+    this.openSpan?.mark('hydrate.memory');
+    const sessions = this.store.list().slice(0, 100);
+    this.openSpan?.mark('hydrate.list');
+    const base = {
       session: this.meta ?? null,
-      backends,
       allowBypass,
-      sessions: this.store.list().slice(0, 100),
+      sessions,
       defaultBackend,
       memoryEntries: memTotals.totalEntries,
       memoryFiles: memTotals.totalFiles,
@@ -882,18 +930,25 @@ export class SessionManager {
       voice: this.voiceHydrateConfig(),
       stallAutoCancelSeconds: this.effectiveStallAutoCancelSeconds()
     };
-    this.perf.setMode(state.perfDebug ?? 'off');
+    this.perf.setMode(base.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
-    this.panel.post({ type: 'hydrate', state });
+    // Paint the panel before `which`×N (detectAll). Warm cache makes the
+    // second open instant; first open still shows chrome while binaries resolve.
+    this.panel.post({
+      type: 'hydrate',
+      state: { ...base, backends: cachedBackends } as HydrateState
+    });
+    this.openSpan?.mark('hydrate.paint');
+    const backends = await detectAll(overrides);
+    cachedBackends = backends;
+    this.openSpan?.mark('hydrate.detectAll');
+    this.panel.post({ type: 'hydrate', state: { ...base, backends } as HydrateState });
 
-    // Eager-start the default backend session (like Claude Code connects on open) so
-    // the agent's slash commands surface immediately — but only if it's installed and
-    // we don't already have a live session.
     const autoStart = this.config.get<boolean>('autoStartSession', true);
     const defaultAvailable = backends.find((b) => b.id === defaultBackend)?.available;
-    // Don't auto-start a blank session if we're about to resume a previous one.
     if (autoStart && !this.session && defaultAvailable && !this.pendingResumeId && !this.pendingExternal) {
       await this.openSession(defaultBackend);
+      this.openSpan?.mark('hydrate.openSession');
     }
   }
 
@@ -1605,6 +1660,8 @@ export class SessionManager {
     this.titled = false;
     // Write the transcript header but do NOT index yet (lazy: see commitAndTitle).
     this.store.createSession(this.meta);
+    this.mirrorCreate(this.meta);
+    this.rememberLast(this.meta.id);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     await this.session.start({
@@ -2356,6 +2413,8 @@ export class SessionManager {
 
     this.store.createSession(this.meta);
     this.store.commitSession(this.meta);
+    this.mirrorCreate(this.meta);
+    this.rememberLast(this.meta.id);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
 
@@ -2493,10 +2552,40 @@ export class SessionManager {
     this.store.updateMeta(this.meta);
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
-    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
+    this.rememberLast(this.meta.id);
+    void daemonPatchMeta(this.meta.id, {
+      title: this.meta.title,
+      hasContent: true,
+      backend: this.meta.backend,
+      project_path: this.meta.cwd
+    });
+  }
+
+  private workspaceFolderPaths(): string[] {
+    return vscode.workspace.workspaceFolders?.map((f) => f.uri.fsPath) ?? [];
+  }
+
+  private rememberLast(id: string): void {
+    void this.context.workspaceState.update(LAST_SESSION_KEY, id);
+  }
+
+  private mirrorCreate(meta: SessionMeta): void {
+    void daemonCreate({
+      id: meta.id,
+      backend: meta.backend,
+      cwd: meta.cwd,
+      title: meta.title,
+      model: meta.model,
+      mode: meta.mode,
+      effort: meta.effort,
+      kind: meta.sessionKind
+    });
   }
 
   private teardownSession(): void {
+    this.killReplayChild();
+    this.historyOlderFrom = 0;
+    this.historyOlderBusy = false;
     this.flushIpcImmediate();
     this.store.flushSync();
     // A reserve primer belongs to the resume attempt that armed it; never
@@ -2718,6 +2807,7 @@ export class SessionManager {
   ): void {
     const t0 = performance.now();
     this.store.appendUpdate(sessionId, update);
+    void daemonAppend(sessionId, update);
     // lastDiskMs is enqueue cost until flush; use wall for the hot path sample.
     const diskMs = Math.max(this.store.lastDiskMs, performance.now() - t0);
     this.perf.onUpdate(update, { diskMs });
@@ -3101,6 +3191,251 @@ export class SessionManager {
     this.currentAssistantBuf = '';
   }
 
+  private killReplayChild(): void {
+    const child = this.replayChild;
+    this.replayChild = undefined;
+    if (!child || child.killed) return;
+    try {
+      child.kill();
+    } catch {
+      /* already gone */
+    }
+  }
+
+  /**
+   * Parse JSONL in a child process (or yielding in-process fallback).
+   * Host only forwards batches — never readFileSync of the body.
+   */
+  private startTranscriptReplay(
+    filePath: string,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): void {
+    this.killReplayChild();
+    const worker = this.context.asAbsolutePath('dist/transcriptWorker.js');
+    if (!fsSync.existsSync(worker)) {
+      void this.replayInProcess(filePath, meta, be, connect, skipReplay);
+      return;
+    }
+    const child = fork(worker, [filePath], {
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    });
+    this.replayChild = child;
+    child.on('message', (raw: ReplayEvent) => {
+      if (this.replayChild !== child) return;
+      this.onReplayEvent(raw, meta, be, connect, skipReplay, () => {
+        if (this.replayChild === child && child.connected) child.send({ type: 'more' });
+      });
+    });
+    child.on('error', (err) => {
+      if (this.replayChild !== child) return;
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'error',
+        bytesRead: 0,
+        bytesTotal: 0,
+        records: 0,
+        error: err.message
+      });
+      this.killReplayChild();
+    });
+    child.on('exit', (code) => {
+      if (this.replayChild !== child) return;
+      this.replayChild = undefined;
+      if (code && code !== 0) {
+        this.panel.post({
+          type: 'historyProgress',
+          phase: 'error',
+          bytesRead: 0,
+          bytesTotal: 0,
+          records: 0,
+          error: `transcript worker exited ${code}`
+        });
+      }
+    });
+  }
+
+  private async replayInProcess(
+    filePath: string,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): Promise<void> {
+    await replayTranscriptFile(filePath, async (ev) => {
+      await new Promise<void>((r) => setImmediate(r));
+      this.onReplayEvent(ev, meta, be, connect, skipReplay, () => {
+        /* in-process: emit already awaited a tick */
+      });
+    });
+  }
+
+  private onReplayEvent(
+    ev: ReplayEvent,
+    meta: SessionMeta,
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean,
+    requestMore: () => void
+  ): void {
+    if (ev.type === 'progress') {
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'loading',
+        bytesRead: ev.bytesRead,
+        bytesTotal: ev.bytesTotal,
+        records: ev.recordCount
+      });
+      return;
+    }
+    if (ev.type === 'batch') {
+      this.panel.post({
+        type: 'historyBatch',
+        meta,
+        records: ev.records as never,
+        bytesRead: ev.bytesRead,
+        bytesTotal: ev.bytesTotal,
+        recordsSoFar: ev.recordCount
+      });
+      // Yield so the webview can paint; worker waits for `more`.
+      setImmediate(requestMore);
+      return;
+    }
+    if (ev.type === 'error') {
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'error',
+        bytesRead: 0,
+        bytesTotal: 0,
+        records: 0,
+        error: ev.message
+      });
+      this.killReplayChild();
+      return;
+    }
+    if (ev.type === 'done') {
+      this.killReplayChild();
+      this.panel.post({
+        type: 'historyProgress',
+        phase: 'done',
+        bytesRead: ev.bytesTotal,
+        bytesTotal: ev.bytesTotal,
+        records: ev.recordCount
+      });
+      this.openSpan?.mark('resume.replay');
+      this.applyReplayPrimer(ev.lastRecords, be, connect, skipReplay);
+    }
+  }
+
+  private applyReplayPrimer(
+    lastRecords: ReplayRecord[],
+    be: BackendId,
+    connect: boolean,
+    skipReplay: boolean
+  ): void {
+    const nativeResume =
+      BACKENDS[be].supportsResume &&
+      !!(this.meta?.backendSessionId ??
+        (this.meta?.source === 'claude' || this.meta?.source === 'grok' ? this.meta.id : undefined));
+    if (lastRecords.length === 0) return;
+    const primer = serializeSelfResumePrimer({
+      records: lastRecords as never,
+      lastNTurns: 10,
+      backendLabel: backendLabel(be)
+    });
+    if (primer && !nativeResume) {
+      this.pendingPrimer = primer;
+      if (connect && !skipReplay) {
+        this.panel.post({
+          type: 'notice',
+          text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
+          detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
+        });
+      } else if (!connect) {
+        this.fallbackPrimer = primer;
+      }
+    } else if (primer) {
+      this.fallbackPrimer = primer;
+    }
+  }
+
+  /**
+   * Local JSONL may be an empty shell (meta + system_init) when the session
+   * was opened from Claude/Grok. Prefer a contentful local row with the same
+   * native id, then the upstream CLI transcript.
+   */
+  private resolveRestoreRecords(
+    id: string,
+    meta: SessionMeta
+  ): { records: Array<{ type: string; [k: string]: unknown }>; olderFromByte: number } {
+    const local = this.store.loadTail(id);
+    if (hasVisibleReplayRecords(local.records)) {
+      return { records: local.records, olderFromByte: local.olderFromByte };
+    }
+    const nativeId = meta.backendSessionId || id;
+    const siblings = this.store
+      .list()
+      .filter((m) => m.id !== id && (m.id === nativeId || m.backendSessionId === nativeId));
+    siblings.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    for (const sib of siblings) {
+      const tail = this.store.loadTail(sib.id);
+      if (!hasVisibleReplayRecords(tail.records)) continue;
+      this.meta = { ...meta, ...sib, title: meta.title || sib.title };
+      this.panel.setTitle?.(this.meta.title);
+      this.rememberLast(sib.id);
+      return { records: tail.records, olderFromByte: tail.olderFromByte };
+    }
+    const cwd = meta.cwd || this.cwd;
+    if (meta.source === 'claude' || meta.backend === 'claude') {
+      const replay = loadClaudeHistory(claudeJsonlPathFor(cwd, nativeId));
+      if (replay && replay.records.length > 0) {
+        return { records: replay.records as never, olderFromByte: 0 };
+      }
+    }
+    if (meta.source === 'grok' || meta.backend === 'grok') {
+      const grokPath = grokChatPathFor(cwd, nativeId);
+      const replay =
+        loadGrokHistory(grokPath) ??
+        (locateGrokChatHistory(nativeId)
+          ? loadGrokHistory(locateGrokChatHistory(nativeId) as string)
+          : null);
+      if (replay && replay.records.length > 0) {
+        return { records: replay.records as never, olderFromByte: 0 };
+      }
+    }
+    return { records: local.records, olderFromByte: local.olderFromByte };
+  }
+
+  /** Scroll-up: one JSONL window before the records already in the webview. */
+  private loadOlderHistory(): void {
+    const id = this.meta?.id;
+    if (!id || this.historyOlderBusy) return;
+    if (this.historyOlderFrom <= 0) {
+      this.panel.post({
+        type: 'historyOlder',
+        meta: this.meta!,
+        records: [],
+        hasOlder: false
+      });
+      return;
+    }
+    this.historyOlderBusy = true;
+    try {
+      const page = this.store.loadBefore(id, this.historyOlderFrom);
+      this.historyOlderFrom = page.olderFromByte;
+      this.panel.post({
+        type: 'historyOlder',
+        meta: page.meta ?? this.meta!,
+        records: page.records as never,
+        hasOlder: page.olderFromByte > 0
+      });
+    } finally {
+      this.historyOlderBusy = false;
+    }
+  }
+
   /**
    * Load a previous persisted session.
    * - `connect: true` (default) — spawn the agent (Open Previous / first prompt).
@@ -3114,8 +3449,8 @@ export class SessionManager {
     id: string,
     opts?: { connect?: boolean; skipReplay?: boolean }
   ): Promise<void> {
-    const loaded = this.store.load(id);
-    if (!loaded.meta) {
+    const meta = this.store.loadMeta(id);
+    if (!meta) {
       this.panel.post({
         type: 'sessionUpdate',
         sessionId: id,
@@ -3123,86 +3458,53 @@ export class SessionManager {
       });
       return;
     }
+    if (!sessionMatchesWorkspace(meta.cwd, this.workspaceFolderPaths())) {
+      this.panel.post({
+        type: 'notice',
+        text: `Not restoring session from another workspace (${meta.cwd || 'unknown cwd'}).`,
+        detail: 'codeBuild.lastSessionId is workspace-scoped. Open the original folder to continue that chat.'
+      });
+      return;
+    }
 
     const connect = opts?.connect ?? true;
     const skipReplay = opts?.skipReplay === true;
 
+    this.teardownSession();
     if (!skipReplay) {
-      this.teardownSession();
-      // Reset per-session classifier state so a fresh chat starts the
-      // turn counter at 0.
       this.userTurnsSent = 0;
       this.lastUserText = '';
       this.currentAssistantBuf = '';
-    } else {
-      this.teardownSession();
     }
 
-    const be = loaded.meta.backend;
+    const be = meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
-    // Same resume-id resolution we'll pass to session.start() below —
-    // hoisted so the startup notice's hover tooltip shows the actual
-    // --resume <id> we're about to use (or "(none)" when we have
-    // nothing to resume with).
-    // Prefer the native agent session id we captured at system_init.
-    // For external imports the local id *is* the upstream id (claude jsonl
-    // name / grok session folder UUID).
     const earlyResumeId =
-      loaded.meta.backendSessionId ??
-      (loaded.meta.source === 'claude' || loaded.meta.source === 'grok'
-        ? loaded.meta.id
-        : undefined);
-    this.meta = loaded.meta;
-    // Re-hydrate the per-backend native-session memory so a panel reopened on
-    // this conversation knows which backends already have a native thread — and
-    // resumes them natively instead of re-summarizing on switch.
+      meta.backendSessionId ??
+      (meta.source === 'claude' || meta.source === 'grok' ? meta.id : undefined);
+    this.meta = meta;
     if (this.meta.backendSessions) {
-      for (const [b, id] of Object.entries(this.meta.backendSessions)) {
-        if (id) this.previousSessionByBackend.set(b as BackendId, id);
+      for (const [b, sid] of Object.entries(this.meta.backendSessions)) {
+        if (sid) this.previousSessionByBackend.set(b as BackendId, sid);
       }
     }
-    this.titled = true; // existing session already has its title
+    this.titled = true;
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
-    void this.context.globalState.update('codeBuild.lastSessionId', this.meta.id);
+    this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
-      // Replay the stored transcript so the UI shows the full conversation history
-      this.panel.post({ type: 'historyLoaded', meta: this.meta, records: loaded.records as any });
-      this.postCheckpointIds();
-    }
-
-    // Self-resume primer for backends without native --resume (grok ACP
-    // today). The new agent process has zero memory of the conversation
-    // even though the user sees the history in the UI. Inject the last
-    // N turns verbatim as a one-shot primer on the first prompt so the
-    // agent picks up where it left off. claude with a valid resume id
-    // skips this — its own `--resume` already feeds the jsonl back to
-    // the model. See [[serializeSelfResumePrimer]].
-    const nativeResume = BACKENDS[be].supportsResume && !!earlyResumeId;
-    if (loaded.records.length > 0) {
-      const primer = serializeSelfResumePrimer({
-        records: loaded.records as any,
-        lastNTurns: 10,
-        backendLabel: backendLabel(be)
+      const painted = this.resolveRestoreRecords(id, meta);
+      this.historyOlderFrom = painted.olderFromByte;
+      this.panel.post({
+        type: 'historyLoaded',
+        meta: this.meta ?? meta,
+        records: painted.records as never,
+        hasOlder: painted.olderFromByte > 0
       });
-      if (primer && !nativeResume) {
-        this.pendingPrimer = primer;
-        if (connect) {
-          this.panel.post({
-            type: 'notice',
-            text: `Restored conversation context — the last 10 turns will be prepended to your first message so ${be} has memory of the prior chat.`,
-            detail: `${be} doesn't support an external --resume flag, so the new agent process is a fresh spawn with no memory of the conversation. Code Build is injecting the recent transcript as a one-shot primer; the agent uses it to pick up where it left off, then forgets it (the primer fires only on the FIRST message after this resume). Hover the audit card that'll appear above your next user message to inspect the full primer text.`
-          });
-        } else {
-          this.fallbackPrimer = primer;
-        }
-      } else if (primer) {
-        // Native resume attempt (grok session/load or claude --resume).
-        // Held in reserve for handleResumeFallback — see fallbackPrimer.
-        this.fallbackPrimer = primer;
-      }
+      this.postCheckpointIds();
+      this.applyReplayPrimer(painted.records, be, connect, skipReplay);
     }
 
     if (!connect) {
@@ -3220,21 +3522,27 @@ export class SessionManager {
     this.panel.post({ type: 'dismissNotice', key: 'idle-restore' });
 
     const spawnStart = Date.now();
-    const cancelNudge = this.postStartupNotice({
-      be,
-      text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
-      cwd: loaded.meta.cwd,
-      resumeId: earlyResumeId,
-      spawnStart
-    });
+    // Open Previous still shows "Resuming uuid…". skipReplay is the
+    // first prompt after an idle restore — the user already sent a
+    // message; chat notices here stole the last-item slot, hid the
+    // working pill, and scrolled the You-bubble off screen.
+    const cancelNudge = skipReplay
+      ? () => {}
+      : this.postStartupNotice({
+          be,
+          text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
+          cwd: meta.cwd,
+          resumeId: earlyResumeId,
+          spawnStart
+        });
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });
     this.perf.setSessionMeta({
       sessionId: id,
-      backend: loaded.meta.backend,
-      model: loaded.meta.model,
-      modePerm: loaded.meta.mode
+      backend: meta.backend,
+      model: meta.model,
+      modePerm: meta.mode
     });
     this.unsubscribe = this.session.onEvent((update) => {
       this.routeAgentUpdate(id, update, {
@@ -3243,6 +3551,7 @@ export class SessionManager {
           firstEventAt = Date.now();
           const ms = firstEventAt - spawnStart;
           cancelNudge();
+          if (skipReplay) return;
           this.panel.post({
             type: 'notice',
             text: `${be} ready · first event in ${(ms / 1000).toFixed(1)}s`

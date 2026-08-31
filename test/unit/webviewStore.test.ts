@@ -8,7 +8,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SessionUpdate, ToolCall } from '../../src/shared/acpTypes';
 import type { HostToWebview, SessionMeta } from '../../src/shared/protocol';
-import { appendUser, initialState, reduce, replayTimestamp, type ChatState } from '../../webview-ui/src/store';
+import {
+  appendUser,
+  initialState,
+  isAwaitingFirstToken,
+  reduce,
+  replayTimestamp,
+  type ChatState
+} from '../../webview-ui/src/store';
 
 const meta: SessionMeta = {
   id: 's1',
@@ -351,6 +358,120 @@ describe('historyLoaded replay', () => {
     assert.equal(users[0].text, 'older prompt');
     assert.equal(users[1].text, 'why only today?');
     assert.equal(s.busy, true);
+  });
+
+  it('replays persisted user images onto the restored bubble', () => {
+    const img = { mimeType: 'image/png', data: 'aaa', name: 'shot.png' };
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [{ type: 'user', text: 'look at this', ts: 1, images: [img] }]
+    } as HostToWebview);
+    assert.equal(s.items[0].kind, 'user');
+    assert.deepEqual((s.items[0] as { images?: unknown }).images, [img]);
+  });
+
+  it('copies images from an optimistic bubble onto a text-only replay of the same prompt', () => {
+    const img = { mimeType: 'image/png', data: 'bbb' };
+    let s = appendUser(initialState, 'look at this', [img]);
+    s = reduce(s, {
+      type: 'historyLoaded',
+      meta,
+      records: [userRec('look at this')]
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 1);
+    assert.deepEqual((users[0] as { images?: unknown }).images, [img]);
+  });
+
+  it('historyProgress loading at 0 bytes clears items; historyBatch appends', () => {
+    let s = reduce(initialState, {
+      type: 'historyProgress',
+      phase: 'loading',
+      bytesRead: 0,
+      bytesTotal: 1000,
+      records: 0
+    } as HostToWebview);
+    assert.equal(s.historyLoad?.phase, 'loading');
+    assert.equal(s.items.length, 0);
+    s = reduce(s, {
+      type: 'historyBatch',
+      meta,
+      records: [userRec('one')],
+      bytesRead: 100,
+      bytesTotal: 1000,
+      recordsSoFar: 1
+    } as HostToWebview);
+    s = reduce(s, {
+      type: 'historyBatch',
+      meta,
+      records: [userRec('two')],
+      bytesRead: 200,
+      bytesTotal: 1000,
+      recordsSoFar: 2
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 2);
+    assert.equal(users[0].text, 'one');
+    assert.equal(users[1].text, 'two');
+    assert.equal(s.historyLoad?.records, 2);
+    s = reduce(s, {
+      type: 'historyProgress',
+      phase: 'done',
+      bytesRead: 1000,
+      bytesTotal: 1000,
+      records: 2
+    } as HostToWebview);
+    assert.equal(s.historyLoad?.phase, 'done');
+    assert.equal(s.items.length, 2);
+  });
+
+  it('historyLoaded hasOlder; historyOlder prepends without dropping the tail', () => {
+    let s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [userRec('tail')],
+      hasOlder: true
+    } as HostToWebview);
+    assert.equal(s.hasOlder, true);
+    assert.equal((s.items[0] as { text?: string }).text, 'tail');
+    s = reduce(s, {
+      type: 'historyOlder',
+      meta,
+      records: [userRec('older')],
+      hasOlder: false
+    } as HostToWebview);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.map((u) => u.text).join(','), 'older,tail');
+    assert.equal(s.hasOlder, false);
+    assert.equal(s.olderSeq, 1);
+  });
+});
+
+describe('isAwaitingFirstToken', () => {
+  const user = (text: string): ChatState['items'][number] =>
+    ({ kind: 'user', id: 'u', createdAt: 0, text }) as ChatState['items'][number];
+  const notice = (text: string): ChatState['items'][number] =>
+    ({ kind: 'notice', id: 'n', createdAt: 0, text }) as ChatState['items'][number];
+  const thought = (text: string): ChatState['items'][number] =>
+    ({ kind: 'thought', id: 't', createdAt: 0, text }) as ChatState['items'][number];
+  const context = (): ChatState['items'][number] =>
+    ({ kind: 'context', id: 'c', createdAt: 0, origin: 'prompt', summary: 'primer', sections: [] }) as ChatState['items'][number];
+
+  it('stays true when a Resuming/ready notice lands after the You-bubble', () => {
+    assert.equal(isAwaitingFirstToken([user('hi'), notice('Resuming `abcd1234` (grok)…')], true), true);
+  });
+
+  it('stays true across primer/context chrome until thinking starts', () => {
+    assert.equal(isAwaitingFirstToken([user('hi'), context(), notice('grok ready')], true), true);
+  });
+
+  it('turns false once a thought/assistant chunk arrives', () => {
+    assert.equal(isAwaitingFirstToken([user('hi'), notice('Resuming'), thought('working')], true), false);
+  });
+
+  it('is false when not busy', () => {
+    assert.equal(isAwaitingFirstToken([user('hi')], false), false);
   });
 });
 

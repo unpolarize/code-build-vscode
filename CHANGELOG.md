@@ -1,5 +1,103 @@
 # Changelog
 
+## 0.21.2 — 2026-08-29
+
+### Restore empty Claude shells from the real transcript
+
+A remounted Claude session (`source: claude`) can have a local JSONL of only `meta` + `system_init` while the conversation lives in `~/.claude/projects/…/<id>.jsonl` (or another local row with the same native id). Restore now falls back to that content. Also: a no-user tail window is no longer trimmed to **zero** records.
+
+## 0.21.1 — 2026-08-29
+
+### Tail pages start on a complete user turn
+
+Last-N JSONL records could begin in the middle of an assistant stream, so the newest bubble was a fragment. Pages now snap to `user` records (grow the byte window up to 8 MB to finish the last turn). Scroll-up still loads the previous complete turns.
+
+## 0.21.0 — 2026-08-29
+
+### Tail first, older on scroll-up
+
+Restore paints the **latest** events immediately (`loadTail`). Scrolling to the top loads the previous JSONL window (`loadBefore` → `historyOlder` prepend, scroll position kept). A 220 MB session no longer streams from byte 0.
+
+## 0.20.0 — 2026-08-29
+
+### Full history on restore, parsed outside the extension host
+
+0.19.4 only painted the last ~200 records. Reload now streams the **whole** JSONL.
+
+- Child process `dist/transcriptWorker.js` reads the file with a stream (not `readFileSync` on the ext-host thread).
+- Webview paints immediately with **Loading conversation… N / M MB · K events** and appends `historyBatch` chunks (80 records); the worker waits for `more` so the host/webview can stay responsive.
+- `loadMeta` still used for cwd check. `loadTail` is no longer the restore path.
+- Tests: `transcriptReplay.test.ts`, webview `historyBatch` append.
+
+## 0.19.4 — 2026-08-29
+
+### Restore no longer reads a 220 MB JSONL
+
+Reload of this chat stayed empty 15–40 s after CSV was already fast. The newest `~/.codebuild/sessions/*.jsonl` is **220 MB**. Deserialize called `SessionStore.load()` (full `readFileSync` + `JSON.parse` every line) just to check `cwd`, then `loadExistingSession` did it again and `postMessage`d the whole transcript into the webview.
+
+- Restore uses **`loadMeta`** (index.json / JSONL line 0).
+- Replay uses **`loadTail`** (last ≤2 MB / 200 records). A notice says when older turns were omitted.
+- Tests: `persistence.test.ts` loadMeta / loadTail.
+
+## 0.19.3 — 2026-08-29
+
+### Restored chat posts history before backend detect
+
+On webview `ready`, `historyLoaded` runs **before** `hydrate()`/`detectAll`. A remount no longer waits on `which` × N with an empty transcript. `pendingResumeId` stays set through hydrate so autoStart does not spawn a fresh session.
+
+## 0.19.2 — 2026-08-29
+
+### Grok history path fallback
+
+- If `~/.grok/sessions/<urlencoded-cwd>/<id>/chat_history.jsonl` is missing, walk one level of cwd folders so Open/resume still replays the transcript.
+
+## 0.19.1 — 2026-08-29
+
+### Host-trace shared with CS / KP
+
+- Same NDJSON contract (`src: cb|csv|cs|kp`) and `flushTrace()` for CLI exits. File sink stays async (no fsync).
+
+## 0.19.0 — 2026-08-29
+
+### Host-trace: keystroke → panel → hydrate
+
+- Always-on spans on **Output → Code Build**: `START cb.newConversation` / `+Nms` marks / `DONE …ms SLOW`. Marks: `panel`, `webview.ready`, `hydrate.memory`, `hydrate.list`, `hydrate.paint`, `hydrate.detectAll`, `hydrate.openSession`.
+- Durable NDJSON at `~/.sessions/.daemon/host-trace.ndjson` (rotated at 2 MB). Event-loop `STALL` lines include `task=` of the in-flight mark.
+- `npm run ship` builds, packages, and `code --install-extension --force` so a landed slice can be tried without a manual vsce step. Do not reload the working chat thread; use a second window.
+
+## 0.18.1 — 2026-08-29
+
+### Text paste stays in the webview; host lag is visible
+
+- **Paste:** `text/plain` inserts in the composer with no host hop (no osascript). The host is probed only when the event looks like an image (or has no clipboard data) — leftover screenshot+text still prefers the image.
+- **Lag:** extension host samples `monitorEventLoopDelay` every 30 s onto the **Code Build** output channel; p99 > 200 ms is tagged `STALL`.
+
+## 0.18.0 — 2026-08-29
+
+### Workspace-scoped last session + fast list + daemon writes
+
+- **Issue #6:** `codeBuild.lastSessionId` moves from `globalState` to `workspaceState`. Restore is refused unless `meta.cwd` is this window's folder (or a subdir).
+- **New chat no longer scans JSONL.** `index.json` is the list SoT with a persisted `hasContent` flag and an mtime+size memory cache. `list()` does not read transcripts. `updateMeta` patches the index only (no 96 MB rewrite). Legacy rows migrate once via a 64 KB head scan. Hydrate paints before `which`×N.
+- **Phase 1 dual-write:** create/append/patchMeta also go to the CS daemon when it is up. Local `~/.codebuild` remains the fallback.
+- Includes 0.17.3 (idle reconnect UX) and 0.17.4 (image paste) which were installed but never committed.
+
+## 0.17.4 — 2026-08-26
+
+### Image paste no longer dumps leftover clipboard text
+
+- Cmd/Ctrl-V in the composer **prefers an image** over `text/plain`. macOS often keeps the previous copy's text next to a new screenshot; the old handler only looked for `kind === 'file' && image/*`, missed the bitmap, and inserted the stale paragraph instead of a thumb.
+- If the webview paste event has no image items (common in VS Code webviews), the host reads the **OS clipboard** (macOS PNG via osascript) and attaches that. Text is inserted only when there is no image.
+- Paperclip button to attach PNG/JPEG/GIF/WebP from a file picker.
+- Transcript replay copies images onto a matching You-bubble when JSONL has text only.
+
+## 0.17.3 — 2026-08-26
+
+### Send after idle restore no longer looks stuck
+
+- First prompt after a VS Code remount used to post **Resuming `uuid`…** (then `grok ready · first event in Xs`) as chat notices. Those became the last item, hid the **working…** pill, and scrolled the new **You** bubble off screen — so send looked like a resume with no progress until thinking started. Idle reconnect is now quiet; Open Previous still shows Resuming.
+- The working pill ignores notice / primer cards after the You-bubble, so host chrome cannot hide it.
+- Active-question banner shows attached image thumbs (up to 4). User JSONL records persist images so they survive remount.
+
 ## 0.18.2 — 2026-08-30
 
 ### ACP protocol-version pin chip
