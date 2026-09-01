@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.22.1",
+  "version": "0.23.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -429,6 +429,24 @@
           "type": "boolean",
           "default": false,
           "description": "Stop governor: reserved — no-progress detector (subgoals unchanged across steps). Not yet active; the detector ships as a follow-up slice."
+        },
+        "codeBuild.mediaToolTax.mode": {
+          "type": "string",
+          "enum": ["off", "warn"],
+          "default": "warn",
+          "description": "Runtime media/pixel tool-tax governor: meters screenshot/image tool_result payloads (not MCP schema tokens). 'warn' (default) shows a sticky pause notice with a prefer-DOM hint after thresholds; 'off' disables. Advisory only — never rewrites or blocks tools."
+        },
+        "codeBuild.mediaToolTax.maxMediaResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Media tool-tax: soft-gate after this many image/pixel tool results in the session. 0 disables the count gate."
+        },
+        "codeBuild.mediaToolTax.maxMediaWindowPct": {
+          "type": "number",
+          "default": 15,
+          "minimum": 0,
+          "description": "Media tool-tax: soft-gate when estimated session media tokens exceed this percent of the model context window. 0 disables the window-% gate."
         },
         "codeBuild.defaultModel": {
           "type": "string",

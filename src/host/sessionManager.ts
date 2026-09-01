@@ -87,6 +87,12 @@ import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
 import { StopGovernor, type GovernorConfig, type GovernorTrip } from './stopGovernor';
+import {
+  DEFAULT_MEDIA_TOOL_TAX_CONFIG,
+  MEDIA_TAX_DOM_HINT,
+  MediaToolTaxTracker,
+  type MediaToolTaxConfig
+} from '../shared/mediaToolTax';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -242,6 +248,10 @@ export class SessionManager {
   private governor?: StopGovernor;
   /** Session id the current governor instance belongs to. */
   private governorSessionId: string | undefined;
+  /** Runtime media/pixel tool-tax meter (post-tool payloads; not MCP schemas). */
+  private mediaTax = new MediaToolTaxTracker();
+  /** Session id the current media-tax tracker belongs to. */
+  private mediaTaxSessionId: string | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -2236,6 +2246,11 @@ export class SessionManager {
       this.governor.setConfig(this.readGovernorConfig());
     }
     this.governor.startTurn(Date.now());
+    if (this.mediaTaxSessionId !== sid) {
+      this.mediaTax = new MediaToolTaxTracker();
+      this.mediaTaxSessionId = sid;
+    }
+    this.mediaTax.startTurn();
   }
 
   private readGovernorConfig(): GovernorConfig {
@@ -2253,6 +2268,7 @@ export class SessionManager {
   /** Feed session-budget counters from the live event stream, then evaluate.
    * Runs on EVERY update (unlike the watchdog, which needs an armed turn). */
   private feedGovernor(update: SessionUpdate): void {
+    this.feedMediaTax(update);
     const gov = this.governor;
     if (!gov) return;
     // A replacement session's startup events must never feed a governor
@@ -2279,6 +2295,83 @@ export class SessionManager {
     }
     const trip = gov.check(Date.now());
     if (trip) this.onGovernorTrip(trip);
+  }
+
+  private readMediaTaxConfig(): MediaToolTaxConfig {
+    const mode = this.config.get<'off' | 'warn'>('mediaToolTax.mode', 'warn');
+    return {
+      mode,
+      maxMediaResults: Math.max(
+        0,
+        this.config.get<number>(
+          'mediaToolTax.maxMediaResults',
+          DEFAULT_MEDIA_TOOL_TAX_CONFIG.maxMediaResults
+        )
+      ),
+      maxMediaWindowPct: Math.max(
+        0,
+        this.config.get<number>(
+          'mediaToolTax.maxMediaWindowPct',
+          DEFAULT_MEDIA_TOOL_TAX_CONFIG.maxMediaWindowPct
+        )
+      )
+    };
+  }
+
+  /**
+   * Meter image/pixel tool_result payloads (runtime tax). Soft-gate only —
+   * sticky notice + prefer-DOM hint; never rewrites or blocks tools in v1.
+   */
+  private feedMediaTax(update: SessionUpdate): void {
+    const sid = this.meta?.id;
+    if (sid && this.mediaTaxSessionId !== sid) {
+      this.mediaTax = new MediaToolTaxTracker();
+      this.mediaTaxSessionId = sid;
+    }
+    const cfg = this.readMediaTaxConfig();
+    if (cfg.mode === 'off') return;
+
+    switch (update.kind) {
+      case 'tool_call':
+      case 'tool_call_update': {
+        const tc = update.toolCall;
+        if (!tc.content || !Array.isArray(tc.content) || tc.content.length === 0) break;
+        this.mediaTax.noteToolContent(tc.content, {
+          toolCallId: tc.toolCallId,
+          toolTitle: 'title' in tc ? tc.title : undefined
+        });
+        break;
+      }
+      case 'result':
+      case 'error':
+        this.mediaTax.endTurn();
+        break;
+      default:
+        break;
+    }
+
+    // Context window: reuse model family table via a local heuristic (200k/128k).
+    const model = this.meta?.model ?? '';
+    const windowTokens = /claude|opus|sonnet|haiku/i.test(model)
+      ? 200_000
+      : /grok|gpt-5|o3|o4|codex|gpt-4|o1/i.test(model)
+        ? 128_000
+        : undefined;
+
+    const { chip, newlyPaused, pauseReasons } = this.mediaTax.check(cfg, windowTokens);
+    if (newlyPaused) {
+      const detail =
+        pauseReasons.join('; ') +
+        `\nSession media tax: ~${chip.sessionMediaTokens} tok across ${chip.sessionMediaCount} media result(s).` +
+        `\n${MEDIA_TAX_DOM_HINT}` +
+        `\nAdjust with codeBuild.mediaToolTax.* (advisory only — tools are not blocked).`;
+      this.panel.post({
+        type: 'notice',
+        key: 'media-tool-tax',
+        text: `⚠️ Media tool-tax pause: screenshot/pixel MCP results are inflating tokens (${chip.label}). Prefer DOM/text snapshots.`,
+        detail
+      });
+    }
   }
 
   /** A budget crossed its limit: record the stop event on SessionMeta (CSV
