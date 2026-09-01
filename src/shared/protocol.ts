@@ -386,6 +386,7 @@ export type HostToWebview =
   /** Host confirms the effective stall auto-cancel after a picker change. */
   | { type: 'stallTimeout'; seconds: number }
   | { type: 'perfHud'; hud: PerfHudMsg }
+  | { type: 'daemonStatus'; up: boolean; version?: string; error?: string }
   | { type: 'activityStrip'; segments: ActivitySegmentMsg[]; turnDurationMs: number }
   /** Progressive tool-activity narration for quiet backends: the currently
    * running tool as `{verb, target, startedAtMs}` (null clears the strip).

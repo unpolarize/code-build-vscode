@@ -184,6 +184,19 @@ export function Header({
 
       <div className="header-spacer" />
 
+      {state.daemon && (
+        <span
+          className={state.daemon.up ? 'daemon-chip daemon-up' : 'daemon-chip daemon-down'}
+          title={
+            state.daemon.up
+              ? `Sessions daemon connected (v${state.daemon.version ?? '?'}) — transcripts dual-write to ~/.sessions`
+              : `Sessions daemon down — ${state.daemon.error ?? 'local fallback'}`
+          }
+        >
+          {state.daemon.up ? `daemon ${state.daemon.version ?? 'ok'}` : 'daemon off · local'}
+        </span>
+      )}
+
       {state.perfDebug !== 'off' && state.perfHud?.enabled && (
         <button
           type="button"

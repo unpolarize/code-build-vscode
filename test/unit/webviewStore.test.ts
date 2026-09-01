@@ -617,3 +617,13 @@ describe('usage fold across compact', () => {
     assert.equal(s.usage?.costUsd, 1.55);
   });
 });
+
+describe('daemonStatus', () => {
+  it('stores daemon visibility for the header chip', () => {
+    let s = reduce(initialState, { type: 'daemonStatus', up: true, version: '0.13.2' } as HostToWebview);
+    assert.deepEqual(s.daemon, { up: true, version: '0.13.2', error: undefined });
+    s = reduce(s, { type: 'daemonStatus', up: false, error: 'unreachable' } as HostToWebview);
+    assert.equal(s.daemon?.up, false);
+    assert.equal(s.daemon?.error, 'unreachable');
+  });
+});

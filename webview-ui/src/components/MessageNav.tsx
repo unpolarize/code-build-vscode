@@ -16,6 +16,10 @@ interface Props {
   /** idx of the user turn navigated to; isLast when that turn is the latest. */
   onNavigate?: (idx: number, isLast: boolean) => void;
   onJumpLatest?: () => void;
+  /** Older transcript pages exist on the host (tail-first restore). */
+  hasOlder?: boolean;
+  /** Ask the host for the previous page; ↑ on the first loaded turn uses it. */
+  onNeedOlder?: () => void;
 }
 
 /** Floating navigator that lets the user jump between their own messages in
@@ -37,7 +41,7 @@ interface Props {
  * node (set by MessageList.tsx). We rely on the DOM rather than fed-through
  * refs because items are reordered on every reduce() and refs would churn.
  */
-export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
+export function MessageNav({ items, follow, onNavigate, onJumpLatest, hasOlder, onNeedOlder }: Props) {
   const userItems = items.filter((it) => it.kind === 'user');
   const [openList, setOpenList] = useState(false);
   const [currentIdx, setCurrentIdx] = useState(userItems.length - 1);
@@ -53,6 +57,12 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
   onNavigateRef.current = onNavigate;
   const onJumpLatestRef = useRef(onJumpLatest);
   onJumpLatestRef.current = onJumpLatest;
+  const hasOlderRef = useRef(hasOlder);
+  hasOlderRef.current = hasOlder;
+  const onNeedOlderRef = useRef(onNeedOlder);
+  onNeedOlderRef.current = onNeedOlder;
+  /** User-turn count when ↑ asked for an older page; null when idle. */
+  const pendingPrev = useRef<number | null>(null);
 
   function setIdx(idx: number) {
     idxRef.current = idx;
@@ -152,10 +162,30 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
     const next = stepUserTurn(from, -1, users.length);
     if (next === from && next === 0) {
       setIdx(0);
+      // First loaded turn, but the transcript continues on disk: pull the
+      // previous page and step into it once it lands (see effect below).
+      if (hasOlderRef.current && onNeedOlderRef.current && pendingPrev.current === null) {
+        pendingPrev.current = users.length;
+        onNeedOlderRef.current();
+      }
       return;
     }
     scrollTo(next);
   }
+
+  // An older page was prepended after ↑ asked for it: land on the last
+  // turn of that page (the one just before the previously-first turn).
+  useEffect(() => {
+    const before = pendingPrev.current;
+    if (before === null) return;
+    if (userItems.length > before) {
+      pendingPrev.current = null;
+      scrollTo(userItems.length - before - 1);
+    } else if (!hasOlder) {
+      pendingPrev.current = null;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userItems.length, hasOlder]);
 
   function next() {
     const users = userItemsRef.current;
@@ -211,7 +241,7 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
   // Hide when there's nothing to navigate (no point showing "0 / 0").
   if (userItems.length === 0) return null;
 
-  const atFirst = currentIdx <= 0;
+  const atFirst = currentIdx <= 0 && !hasOlder;
   const atLast = currentIdx >= userItems.length - 1;
 
   return (
@@ -220,7 +250,7 @@ export function MessageNav({ items, follow, onNavigate, onJumpLatest }: Props) {
         className="msg-nav-btn"
         onClick={prev}
         disabled={atFirst}
-        title="Previous user message (Alt+↑)"
+        title={hasOlder && currentIdx <= 0 ? 'Load earlier messages (Alt+↑)' : 'Previous user message (Alt+↑)'}
         aria-label="Previous message"
       >
         ↑

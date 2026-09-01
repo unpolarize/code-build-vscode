@@ -252,6 +252,13 @@ export function App() {
     setOlderLoading(false);
   }, [state.olderSeq, state.hasOlder]);
 
+  /** Scroll-up and the ↑ navigator share one request path for older pages. */
+  function requestOlder() {
+    if (!state.hasOlder || olderLoading) return;
+    setOlderLoading(true);
+    post({ type: 'loadOlderHistory' });
+  }
+
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       const t0 = performance.now();
@@ -547,11 +554,7 @@ export function App() {
         hasOlder={state.hasOlder}
         olderSeq={state.olderSeq}
         olderLoading={olderLoading}
-        onNeedOlder={() => {
-          if (!state.hasOlder || olderLoading) return;
-          setOlderLoading(true);
-          post({ type: 'loadOlderHistory' });
-        }}
+        onNeedOlder={requestOlder}
         onAskUserAnswer={(toolCallId, answers) => {
           dispatch({ kind: 'askUserAnswered', toolCallId, answers });
           post({ type: 'askUserAnswer', toolCallId, answers });
@@ -567,6 +570,8 @@ export function App() {
           if (!isLast) setFollow(false);
         }}
         onJumpLatest={() => setFollow(true)}
+        hasOlder={state.hasOlder}
+        onNeedOlder={requestOlder}
       />
       {state.permissionQueue.length > 0 && (
         <PermissionPrompt

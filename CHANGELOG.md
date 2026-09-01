@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.1 — 2026-09-01
+
+### Merge: daemon chip + nav-loads-older onto night /compact line
+
+Reconciles the interactive lane's stashed 0.22.0 (daemon visibility chip, ↑ loads earlier pages, daemonStatus protocol) with the night lane's 0.21.4–0.21.6 (/compact, cost fold, its own port of the native-id reuse fix). Where both lanes wrote the same function (`findLocalSessionForNative`), the night version (adds `backendSessionHistory` matching for post-/compact ids) wins.
+
+## 0.22.0 — 2026-08-31
+
+### Daemon visibility chip (spec S3)
+
+Header shows `daemon <version>` (green) when the CS sessions daemon answered `hello`, or `daemon off · local` (amber, tooltip has the reason) when persistence is on the `~/.codebuild` fallback. Probed after hydrate on every panel open/restore. Spec: `architecture/tools/specs/2026-08-31-async-jobs-status-design.md` R2/R4.
+
+
 ## 0.21.6 — 2026-08-31
 
 ### Built-in `/compact` — one-click context compaction (all backends)

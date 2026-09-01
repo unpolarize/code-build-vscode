@@ -160,6 +160,7 @@ export interface ChatState {
   /** From `codeBuild.perfDebug` via hydrate. */
   perfDebug: 'off' | 'hud' | 'full';
   perfHud: PerfHudMsg | null;
+  daemon: { up: boolean; version?: string; error?: string } | null;
   activitySegments: ActivitySegmentMsg[];
   activityTurnDurationMs: number;
   perfSnapshot: PerfSnapshotMsg | null;
@@ -241,6 +242,7 @@ export const initialState: ChatState = {
   showActiveQuestionBanner: true,
   perfDebug: 'hud',
   perfHud: null,
+  daemon: null,
   activitySegments: [],
   activityTurnDurationMs: 0,
   perfSnapshot: null,
@@ -322,6 +324,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, stallAutoCancelSeconds: msg.seconds };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
+    case 'daemonStatus':
+      return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
     case 'perfHud':
       return { ...state, perfHud: msg.hud };
     case 'activityStrip':

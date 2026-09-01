@@ -52,7 +52,7 @@ import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
 import { SessionStore, hasVisibleReplayRecords } from './persistence/store';
 import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
-import { daemonAppend, daemonCreate, daemonPatchMeta } from './daemonClient';
+import { daemonAppend, daemonCreate, daemonHello, daemonPatchMeta } from './daemonClient';
 import { readOsClipboardImage } from './clipboardImage';
 import {
   claudeJsonlPathFor,
@@ -282,6 +282,25 @@ export class SessionManager {
     this.panel.post(msg);
   }
 
+  /** Daemon visibility (spec R2/R4): chip in the webview header shows
+   * connected + version, or that persistence is on the local fallback. */
+  private async postDaemonStatus(): Promise<void> {
+    try {
+      const hello = await daemonHello();
+      this.panel.post(
+        hello
+          ? { type: 'daemonStatus', up: true, version: hello.daemonVersion }
+          : { type: 'daemonStatus', up: false, error: 'daemon unreachable — sessions persist to ~/.codebuild only' }
+      );
+    } catch (e) {
+      this.panel.post({
+        type: 'daemonStatus',
+        up: false,
+        error: e instanceof Error ? e.message : String(e)
+      });
+    }
+  }
+
   private get config() {
     return vscode.workspace.getConfiguration('codeBuild');
   }
@@ -311,6 +330,7 @@ export class SessionManager {
           this.openSpan?.mark('external.load');
         }
         await this.hydrate();
+        void this.postDaemonStatus();
         this.pendingResumeId = undefined;
         this.pendingResumeConnect = undefined;
         this.pendingExternal = undefined;
