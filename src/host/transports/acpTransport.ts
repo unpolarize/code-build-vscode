@@ -13,6 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { acpIdForPermissionMode, permissionModeFromAcpId } from '../../shared/permissionModes';
 import { settleAcpProcessExit } from './acpProcessExit';
 import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
 import { createPathGuard, type PathGuard } from '../pathGuard';
@@ -31,8 +32,23 @@ import {
   isAskUserQuestionMethod,
   parseAskUserQuestionParams
 } from './askUserQuestion';
+import {
+  evaluateProtocolVersionPin,
+  HOST_ACP_PROTOCOL_VERSION
+} from '../../shared/protocolVersionPin';
+import { evaluateSpendLimitChip } from '../../shared/spendLimitChip';
 
 export type { AcpMcpServer };
+
+function updateHasRateLimits(update: Record<string, unknown>): boolean {
+  if (update.rate_limits != null || update.rateLimits != null) return true;
+  const meta = update._meta;
+  if (meta && typeof meta === 'object') {
+    const m = meta as Record<string, unknown>;
+    if (m.rate_limits != null || m.rateLimits != null) return true;
+  }
+  return false;
+}
 export { DEFAULT_BROWSER_MCP_SERVERS } from './mcpServers';
 
 let mcpOutput: vscode.OutputChannel | undefined;
@@ -47,8 +63,15 @@ interface InitializeResult {
   protocolVersion: number;
   agentCapabilities?: { loadSession?: boolean };
 }
+/** `modes` object on the ACP session/new | session/load RESPONSE. There is
+ * no available_modes_update event — this response is the only inventory. */
+interface SessionModes {
+  currentModeId: string;
+  availableModes?: { id: string; name?: string; description?: string }[];
+}
 interface NewSessionResult {
   sessionId: string;
+  modes?: SessionModes;
 }
 interface PromptResult {
   stopReason: string;
@@ -142,6 +165,10 @@ export class AcpTransport extends BaseAgentSession {
   private acpSessionId?: string;
   private startOpts?: StartOpts;
   private mode: PermissionMode = 'default';
+  /** Mode ids advertised on session/new|load `modes.availableModes`, when
+   * present. setMode validates against this so an unsupported selection
+   * fails fast (and the caller reverts) instead of a wire round-trip. */
+  private availableModeIds?: string[];
   private pendingPermissions = new PendingPermissionResolvers();
   /** In-flight Grok `_x.ai/ask_user_question` RPC resolvers, keyed by toolCallId. */
   private pendingAskUser = new Map<string, (value: unknown) => void>();
@@ -218,10 +245,28 @@ export class AcpTransport extends BaseAgentSession {
     this.readyPromise = (async () => {
       try {
         const init = await this.rpc!.request<InitializeResult>('initialize', {
-          protocolVersion: 1,
+          protocolVersion: HOST_ACP_PROTOCOL_VERSION,
           clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } },
           clientInfo: { name: 'code-build-vscode', version: '0.0.1' }
         });
+        // Protocol-version pin chip — read-only; warn never blocks start.
+        const pin = evaluateProtocolVersionPin({
+          hostVersion: HOST_ACP_PROTOCOL_VERSION,
+          agentInitialize: init
+        });
+        this.emit({
+          kind: 'protocol_version_update',
+          hostVersion: pin.hostVersion,
+          agentVersion: pin.agentVersion,
+          experimental: pin.experimental,
+          label: pin.label,
+          warn: pin.warn,
+          ...(pin.warnReason ? { warnReason: pin.warnReason } : {})
+        });
+        // Spend-limit parity: Grok/Codex-via-ACP usually omit rate_limits →
+        // chip shows n/a (never fake 100%). If initialize carries Claude-shaped
+        // rate_limits.spend_limit (or camelCase), surface remaining %.
+        this.emitSpendLimit(init);
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
@@ -241,13 +286,14 @@ export class AcpTransport extends BaseAgentSession {
           // restores on-disk transcript + context. History may also stream
           // as session/update notifications; CB already replays from disk.
           try {
-            await this.rpc!.request('session/load', {
+            const loadResult = await this.rpc!.request<{ modes?: SessionModes }>('session/load', {
               sessionId: opts.resumeId,
               cwd: opts.cwd,
               mcpServers
             });
             this.acpSessionId = opts.resumeId;
             this.emit({ kind: 'system_init', backendSessionId: opts.resumeId! });
+            this.ingestModes(loadResult?.modes);
             loaded = true;
           } catch (err) {
             // session/load can reject for reasons that don't doom the
@@ -282,6 +328,7 @@ export class AcpTransport extends BaseAgentSession {
           // After a resume_fallback this OVERWRITES the stale id, so the
           // next reload resumes the session that actually exists.
           this.emit({ kind: 'system_init', backendSessionId: session.sessionId });
+          this.ingestModes(session.modes);
         }
       } catch (err) {
         // Surface handshake failures in the chat (the message handler's
@@ -316,9 +363,38 @@ export class AcpTransport extends BaseAgentSession {
     if (method === 'session/update') {
       const p = params as { update?: Record<string, unknown> };
       if (p.update) {
-        for (const u of normalizeAcpUpdate(p.update as never)) this.emit(u);
+        for (const u of normalizeAcpUpdate(p.update as never)) {
+          // Keep the auto-approve mode in lockstep with the agent's own
+          // mode changes — otherwise the chip shows agent truth while
+          // handlePermission still applies the stale spawn-time mode.
+          if (u.kind === 'current_mode_update' && u.mode) this.mode = u.mode;
+          this.emit(u);
+        }
+        // Only re-evaluate when the update actually carries rate_limits —
+        // a bare agent_message_chunk must not wipe a prior spend chip to n/a.
+        if (updateHasRateLimits(p.update)) this.emitSpendLimit(p.update);
       }
     }
+  }
+
+  private lastSpendLimitLabel?: string;
+
+  private emitSpendLimit(status: unknown): void {
+    const chip = evaluateSpendLimitChip(
+      status && typeof status === 'object' ? (status as Record<string, unknown>) : null
+    );
+    if (chip.label === this.lastSpendLimitLabel) return;
+    this.lastSpendLimitLabel = chip.label;
+    this.emit({
+      kind: 'spend_limit_update',
+      available: chip.available,
+      usedPercentage: chip.usedPercentage,
+      remainingPercentage: chip.remainingPercentage,
+      resetsAt: chip.resetsAt,
+      label: chip.label,
+      warn: chip.warn,
+      ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
+    });
   }
 
   /** Session cwd used as the sandbox root for the fs/* bridge. */
@@ -363,6 +439,13 @@ export class AcpTransport extends BaseAgentSession {
       case 'fs/write_text_file': {
         const p = params as { path: string; content: string };
         const safe = this.resolveFsPath(p.path);
+        try {
+          // Pre-image capture must see the disk BEFORE this write lands;
+          // a capture failure must never block the agent's write.
+          this.startOpts?.onFsPreWrite?.(safe);
+        } catch {
+          /* capture is best-effort */
+        }
         await fs.writeFile(safe, p.content, 'utf8');
         return null;
       }
@@ -540,11 +623,54 @@ export class AcpTransport extends BaseAgentSession {
     }
   }
 
-  setMode(mode: PermissionMode): void {
-    // Track the mode so handlePermission can auto-approve in bypass/acceptEdits.
-    // (ACP session/set_mode for the agent's own mode tracking lands later;
-    // the auto-approve path is what actually unblocks the user today.)
+  /** Ingest the `modes` object from a session/new|load response: remember
+   * the advertised inventory (setMode validates against it) and seed the
+   * webview picker + chip before any current_mode_update arrives. */
+  private ingestModes(modes: SessionModes | undefined): void {
+    if (!modes?.currentModeId) return;
+    const available = (modes.availableModes ?? [])
+      .filter((m) => typeof m?.id === 'string' && m.id.length > 0)
+      .map((m) => ({ id: m.id, name: m.name || m.id, description: m.description }));
+    this.availableModeIds = available.length > 0 ? available.map((m) => m.id) : undefined;
+    this.emit({ kind: 'modes_update', currentModeId: modes.currentModeId, availableModes: available });
+    const mapped = permissionModeFromAcpId(modes.currentModeId);
+    if (mapped) this.mode = mapped;
+    this.emit({
+      kind: 'current_mode_update',
+      mode: mapped,
+      vendorModeId: modes.currentModeId
+    });
+  }
+
+  async setMode(mode: PermissionMode): Promise<void> {
+    // Track the mode locally first so handlePermission can auto-approve in
+    // bypass/acceptEdits; before the handshake completes there is no wire
+    // session yet, so local tracking is the whole effect.
+    const prev = this.mode;
     this.mode = mode;
+    if (!this.rpc || !this.acpSessionId) return;
+    let modeId = acpIdForPermissionMode(mode);
+    // When the agent advertised its inventory on session/new|load, reject
+    // unsupported modes locally instead of guessing — the caller reverts
+    // the chip and skips persisting the selection. Aliases count: an agent
+    // advertising `manual` (not `default`) still accepts mode 'default',
+    // and we send the id the agent actually advertised.
+    if (this.availableModeIds) {
+      const advertised = this.availableModeIds.includes(modeId)
+        ? modeId
+        : this.availableModeIds.find((id) => permissionModeFromAcpId(id) === mode);
+      if (!advertised) {
+        this.mode = prev;
+        throw new Error(`${this.backend} does not support permission mode '${mode}'`);
+      }
+      modeId = advertised;
+    }
+    try {
+      await this.rpc.request('session/set_mode', { sessionId: this.acpSessionId, modeId });
+    } catch (err) {
+      this.mode = prev;
+      throw err;
+    }
   }
 
   respondPermission(requestId: string, outcome: PermissionOutcome): void {

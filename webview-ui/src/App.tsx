@@ -4,7 +4,7 @@ import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpType
 import { post, setState } from './vscodeApi';
 import { parseUriList } from './util/mentions';
 import { appendUser, initialState, markAskUserAnswered, reduce, type ChatState, type ImageAttachment } from './store';
-import { BUILTIN_COMMANDS, BUILTIN_NAMES } from './builtinCommands';
+import { BUILTIN_COMMANDS, BUILTIN_NAMES, parseCompactFocus } from './builtinCommands';
 import { Header } from './components/Header';
 import { MessageList } from './components/MessageList';
 import { Composer } from './components/Composer';
@@ -13,6 +13,7 @@ import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
 import { ActivityStrip } from './components/ActivityStrip';
+import { NowLine } from './components/NowLine';
 import { PerfPanel } from './components/PerfPanel';
 import { VoiceBar } from './components/VoiceBar';
 import { useVoiceController } from './voice/useVoiceController';
@@ -302,8 +303,14 @@ export function App() {
     }
   }, [state.session?.id]);
 
-  // Merge always-on built-ins with agent-provided commands for the slash palette.
-  const allCommands = [...BUILTIN_COMMANDS, ...state.commands];
+  // Merge always-on built-ins with agent-provided commands for the slash
+  // palette. Agent commands that collide with a builtin name (e.g. grok's
+  // /compact) are dropped — handleBuiltin intercepts them anyway, so listing
+  // both would show a duplicate entry that can never reach the agent.
+  const allCommands = [
+    ...BUILTIN_COMMANDS,
+    ...state.commands.filter((c) => !BUILTIN_NAMES.has(c.name))
+  ];
 
   /** Intercept built-in slash commands; everything else (incl. agent commands) is sent. */
   function handleBuiltin(text: string): boolean {
@@ -332,6 +339,11 @@ export function App() {
         break;
       case 'handoff':
         post({ type: 'handoff' });
+        break;
+      case 'compact':
+        // Built-in shadows any agent-advertised /compact (BUILTIN_NAMES
+        // wins here); the host does the summarize→respawn, never the agent.
+        post({ type: 'compact', focus: parseCompactFocus(text) });
         break;
       case 'voice':
         voice.toggleInteractive();
@@ -531,6 +543,7 @@ export function App() {
         loading={state.historyLoad?.phase === 'loading'}
         follow={follow}
         onFollowChange={setFollow}
+        checkpointIds={state.checkpointIds}
         hasOlder={state.hasOlder}
         olderSeq={state.olderSeq}
         olderLoading={olderLoading}
@@ -568,6 +581,7 @@ export function App() {
         visActive={state.visActive}
         onEndVis={() => post({ type: 'endVoiceIdeation' })}
       />
+      <NowLine now={state.nowLine} />
       <div
         className="composer-shell"
         style={{

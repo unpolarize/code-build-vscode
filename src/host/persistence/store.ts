@@ -3,7 +3,7 @@ import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import type { SessionUpdate } from '../../shared/acpTypes';
-import type { SessionMeta } from '../../shared/protocol';
+import type { CompactMarker, SessionMeta } from '../../shared/protocol';
 
 /** Bytes from EOF to replay into a restored chat. perf #8 / issue #23. */
 export const REPLAY_TAIL_BYTES = 512 * 1024;
@@ -25,7 +25,28 @@ export function keepLastCompleteTurns(records: OffsetRec[], maxTurns: number): O
   }
   if (userIdx.length === 0) return [];
   const take = Math.max(1, maxTurns);
-  const start = userIdx[Math.max(0, userIdx.length - take)];
+  let start = userIdx[Math.max(0, userIdx.length - take)];
+  // Compact dividers snap to the page of the turn they precede — otherwise a
+  // marker just before the first kept user line falls off the painted tail
+  // page. With the marker kept, olderFromByte lands on it, the older page
+  // ends before it, and the divider renders exactly once. Invisible session
+  // chrome (e.g. the post-respawn system_init) may sit between the marker and
+  // the user line; hop over it, but only move `start` when a compact exists.
+  let probe = start;
+  while (probe > 0) {
+    const prev = records[probe - 1].rec;
+    if (prev.type === 'compact') {
+      probe -= 1;
+      start = probe;
+      continue;
+    }
+    const kind = (prev as { update?: { kind?: string } }).update?.kind;
+    if (prev.type === 'update' && kind && INVISIBLE_UPDATE.has(kind)) {
+      probe -= 1;
+      continue;
+    }
+    break;
+  }
   return records.slice(start);
 }
 
@@ -233,6 +254,31 @@ export class SessionStore {
     if (images && images.length > 0) rec.images = images;
     this.enqueue(id, JSON.stringify(rec) + '\n');
     this.markHasContent(id);
+  }
+
+  /** Persist a /compact boundary. Replays through `load()` like any other
+   * body record so `historyLoaded` reconstructs both segments around the
+   * divider. Not "content" for hasContent() — a compact can only follow
+   * real turns, so it never has to rescue an otherwise-empty session. */
+  appendCompactMarker(id: string, marker: CompactMarker): void {
+    this.enqueue(id, JSON.stringify({ type: 'compact', marker }) + '\n');
+  }
+
+  /** Explicitly drop the persisted native backend id (post-/compact
+   * respawn). Can't ride updateMeta: mergeSessionMeta skips undefined patch
+   * values by design, so "clear" needs its own verb that deletes the key
+   * from the index row — otherwise a reload between the compact and the new
+   * system_init would --resume the pre-compact native thread. */
+  clearBackendSessionId(id: string): SessionMeta | undefined {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    if (!fs.existsSync(p)) return undefined;
+    const current = this.findIndexRow(id) ?? readJsonlMetaHead(p);
+    if (!current) return undefined;
+    const cleared: SessionMeta = { ...current };
+    delete cleared.backendSessionId;
+    this.upsertIndex(cleared);
+    return cleared;
   }
 
   private enqueue(id: string, line: string): void {
@@ -447,6 +493,32 @@ export class SessionStore {
 
   list(): SessionMeta[] {
     return this.readIndexRaw().filter((m) => m.hasContent === true);
+  }
+
+  /**
+   * The contentful local row that already owns a native (Claude / Grok)
+   * session id — matched on `backendSessionId`, `backendSessionHistory`, or a
+   * local id equal to the native id. "Open in Code Build" from CSV must reuse
+   * this row instead of writing a second, empty shell under the native id:
+   * that shell is what a reloaded tab used to restore as a blank chat.
+   * Prefers CB-native rows (id !== nativeId), newest first. `cwd` narrows to
+   * rows of that workspace. Only contentful rows (`list()`) are considered —
+   * a shell alone is not a match so the caller can replay upstream.
+   */
+  findLocalSessionForNative(nativeId: string, cwd?: string): SessionMeta | undefined {
+    if (!nativeId) return undefined;
+    const want = cwd ? path.resolve(cwd) : undefined;
+    const rows = this.list().filter((m) => {
+      const owns =
+        m.id === nativeId ||
+        m.backendSessionId === nativeId ||
+        (m.backendSessionHistory ?? []).some((h) => h.id === nativeId);
+      if (!owns) return false;
+      if (want && m.cwd && path.resolve(m.cwd) !== want) return false;
+      return true;
+    });
+    rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return rows.find((m) => m.id !== nativeId) ?? rows[0];
   }
 
   /**

@@ -1,4 +1,5 @@
 import type { ContentBlock, PlanEntry, SessionUpdate, ToolCall } from '../../../shared/acpTypes';
+import { permissionModeFromAcpId } from '../../../shared/permissionModes';
 
 /** Shape of an ACP `session/update` notification's `update` field (partial). */
 interface AcpUpdate {
@@ -14,6 +15,9 @@ interface AcpUpdate {
   entries?: { content: string; status: string }[];
   availableCommands?: { name: string; description?: string }[];
   currentModeId?: string;
+  /** Some agents follow the narrative ACP docs and send `modeId` instead of
+   * the schema's `currentModeId` — accepted as a fallback, never preferred. */
+  modeId?: string;
 }
 
 type AcpContentBlock =
@@ -39,10 +43,22 @@ export function normalizeAcpUpdate(u: AcpUpdate): SessionUpdate[] {
       return [{ kind: 'plan', entries: (u.entries ?? []).map(toPlanEntry) }];
     case 'available_commands_update':
       return [{ kind: 'available_commands_update', commands: u.availableCommands ?? [] }];
-    case 'current_mode_update':
-      return u.currentModeId
-        ? [{ kind: 'current_mode_update', mode: 'default' }] // mode mapping refined in P5
+    case 'current_mode_update': {
+      // Wire field is `currentModeId` (schema SSOT; some doc examples show
+      // `modeId` — tolerated as fallback). Unknown ids pass through with
+      // mode:null — never throw, never coerce to 'default' (opencode
+      // reports agent roles here).
+      const wireId = u.currentModeId ?? u.modeId;
+      return wireId
+        ? [
+            {
+              kind: 'current_mode_update',
+              mode: permissionModeFromAcpId(wireId),
+              vendorModeId: wireId
+            }
+          ]
         : [];
+    }
     default:
       return [];
   }

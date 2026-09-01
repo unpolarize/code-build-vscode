@@ -148,3 +148,12 @@ test('codex: supports native resume via exec resume <thread_id>', () => {
   // restored codex session with backendSessionId does not also get a primer.
   assert.equal(BACKENDS.codex.supportsResume, true);
 });
+
+test('claude: auto and dontAsk spawn with the matching --permission-mode (not silently default)', () => {
+  const auto = claude({ ...base, mode: 'auto' });
+  assert.equal(auto[auto.indexOf('--permission-mode') + 1], 'auto');
+  const dontAsk = claude({ ...base, mode: 'dontAsk' });
+  assert.equal(dontAsk[dontAsk.indexOf('--permission-mode') + 1], 'dontAsk');
+  const bypassOff = claude({ ...base, mode: 'bypass' });
+  assert.equal(bypassOff[bypassOff.indexOf('--permission-mode') + 1], 'bypassPermissions');
+});

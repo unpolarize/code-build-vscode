@@ -93,9 +93,37 @@ export interface SessionMeta {
   /** Stop-governor trips (warn or hard stop) recorded on this session,
    * oldest first. Persisted so CSV can join stop outcomes to sessions. */
   stopEvents?: StopEventRecord[];
+  /** Session-cumulative cost floor (USD) carried across /compact respawns.
+   * Backend cost totals are PROCESS-scoped (claude's total_cost_usd restarts
+   * near $0 after the respawn), so the true session total is
+   * costBaseUsd + the live process total. Set at compact time to the
+   * pre-compact folded total plus the summarize spend; the host folds it
+   * into every outgoing usage/result costUsd BEFORE persisting/forwarding,
+   * so the HUD, replayed records and stop governor all see one
+   * non-decreasing figure — the raw process total never reaches the UI. */
+  costBaseUsd?: number;
   /** Index-sidecar flag: transcript has a user turn or substantive agent
    * output. `list()` uses this instead of scanning JSONL. */
   hasContent?: boolean;
+}
+
+/** Compact boundary marker — written to the transcript when a host-side
+ * /compact summarizes the conversation and respawns the backend at the
+ * same CB session id. Renders as a divider (never a bubble) between the
+ * pre-compact scrollback and the post-compact continuation; on reload the
+ * persisted record replays both segments around the divider. */
+export interface CompactMarker {
+  /** Epoch-ms when the compact completed (marker append time). */
+  at: number;
+  /** Input-token level just before the compact (from the last usage event),
+   * when known — lets the divider say what was reclaimed. */
+  preTokens?: number;
+  /** First ~200 chars of the generated summary, for the divider tooltip.
+   * The full summary travels to the agent as the next-prompt primer and
+   * is auditable via the contextInjected card, not stored here. */
+  summaryPreview: string;
+  /** User's `/compact <focus>` instructions, when given. */
+  instructions?: string;
 }
 
 /** One stop-governor trip: which budget fired, what the counters were. */
@@ -211,6 +239,10 @@ export type WebviewToHost =
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
+  /** "Restore code to here" on an edit ToolCard — revert tracked files to
+   * their pre-images before this tool call (code-only; host shows a modal
+   * confirm before touching disk). */
+  | { type: 'restoreCheckpoint'; toolCallId: string }
   | { type: 'openInCodeSessions' }
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
@@ -248,6 +280,13 @@ export type WebviewToHost =
   /** /handoff — write a structured HANDOFF.md pack for continuing this
    * work on another backend. */
   | { type: 'handoff' }
+  /** /compact [focus] — summarize the transcript and respawn the backend at
+   * the same CB session id with a summary primer (host-side for all
+   * backends; never forwarded to the agent as prompt text). `focus` is the
+   * optional user steer for the summary. Host handler lands with the
+   * compact verb slice; the marker plumbing (CompactMarker + compactMarker
+   * event + persistence) is already wired. */
+  | { type: 'compact'; focus?: string }
   /** Start a Voice Ideation Session (new chat + VIS preamble + KP bias). */
   | { type: 'startVoiceIdeation'; backend?: BackendId }
   /** End VIS: send close prompt and parse/write KP objects from the reply. */
@@ -348,6 +387,12 @@ export type HostToWebview =
   | { type: 'stallTimeout'; seconds: number }
   | { type: 'perfHud'; hud: PerfHudMsg }
   | { type: 'activityStrip'; segments: ActivitySegmentMsg[]; turnDurationMs: number }
+  /** Progressive tool-activity narration for quiet backends: the currently
+   * running tool as `{verb, target, startedAtMs}` (null clears the strip).
+   * Posted ONLY on tool open/close transitions — the webview owns the
+   * 1 Hz elapsed display off `startedAtMs`. Gated host-side by
+   * `codeBuild.progressiveActivity` (auto = non-Claude backends only). */
+  | { type: 'nowLine'; now: { verb: string; target: string; startedAtMs: number } | null }
   | { type: 'perfSnapshot'; snapshot: PerfSnapshotMsg }
   | { type: 'perfPanelOpen'; open: boolean }
   | { type: 'fileSuggestions'; suggestions: Array<{ path: string; label?: string }> }
@@ -368,6 +413,7 @@ export type HostToWebview =
         type: string;
         text?: string;
         update?: SessionUpdate;
+        marker?: CompactMarker;
         ts?: number;
         images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
@@ -382,6 +428,7 @@ export type HostToWebview =
         type: string;
         text?: string;
         update?: SessionUpdate;
+        marker?: CompactMarker;
         ts?: number;
         images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
@@ -404,6 +451,7 @@ export type HostToWebview =
         type: string;
         text?: string;
         update?: SessionUpdate;
+        marker?: CompactMarker;
         ts?: number;
         images?: Array<{ mimeType: string; data: string; name?: string }>;
       }>;
@@ -411,6 +459,13 @@ export type HostToWebview =
       bytesTotal: number;
       recordsSoFar: number;
     }
+  /** A compact completed on the live session — append the divider to the
+   * timeline. Reload replay comes from the persisted `compact` transcript
+   * record via `historyLoaded`, not this event. */
+  | { type: 'compactMarker'; marker: CompactMarker }
+  /** Full list of tool call ids with a restorable write checkpoint (replaces
+   * the previous list). ToolCards matching an id show "Restore code to here". */
+  | { type: 'checkpointAvailable'; toolCallIds: string[] }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`
    * is the BackendId (not the human label) of the source — the host

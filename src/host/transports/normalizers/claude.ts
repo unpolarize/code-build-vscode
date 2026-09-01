@@ -1,4 +1,8 @@
 import type { ContentBlock, SessionUpdate } from '../../../shared/acpTypes';
+import {
+  evaluateSpendLimitChip,
+  type SpendLimitStatusFields
+} from '../../../shared/spendLimitChip';
 
 /**
  * Normalizes Claude Code `--output-format stream-json` NDJSON lines into ACP-shaped
@@ -22,11 +26,16 @@ export interface ClaudeMessage {
   usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
   // system init
   session_id?: string;
+  /** Claude 2.1.251+ statusline / gateway fields when present on a line. */
+  rate_limits?: SpendLimitStatusFields['rate_limits'];
+  rateLimits?: SpendLimitStatusFields['rateLimits'];
 }
 
 export class ClaudeNormalizer {
   /** Returns the backend session id once the init message is seen. */
   sessionId?: string;
+  /** Last spend-limit label emitted — skip duplicate chips on status pings. */
+  private lastSpendLimitLabel?: string;
 
   parseLine(obj: ClaudeMessage): SessionUpdate[] {
     switch (obj.type) {
@@ -46,7 +55,17 @@ export class ClaudeNormalizer {
         // bogus event looked like fresh agent progress and reset the
         // watchdog. The host still needs the FIRST one to persist the
         // resume id on SessionMeta (sessionManager.captureBackendSessionId).
-        return firstForId ? [{ kind: 'system_init', backendSessionId: obj.session_id }] : [];
+        const out: SessionUpdate[] = [];
+        if (firstForId) {
+          out.push({ kind: 'system_init', backendSessionId: obj.session_id });
+        }
+        // Spend-limit parity: only when the line actually carries
+        // rate_limits (Claude 2.1.251+ status/gateway). Do not force n/a
+        // on every system_init — that would spam JSONL and break the
+        // one-update-per-init contract. Chip stays unset until limits appear.
+        const spend = this.maybeSpendLimitUpdate(obj);
+        if (spend) out.push(spend);
+        return out;
       }
       case 'assistant':
         return this.fromAssistant(obj);
@@ -85,9 +104,34 @@ export class ClaudeNormalizer {
         }
         return updates;
       }
-      default:
-        return [];
+      default: {
+        // Some Claude builds may attach rate_limits to non-system lines
+        // (status / usage-class). Opportunistically surface the chip.
+        const spend = this.maybeSpendLimitUpdate(obj);
+        return spend ? [spend] : [];
+      }
     }
+  }
+
+  /** Emit spend_limit_update when rate_limits are present and the label changed. */
+  private maybeSpendLimitUpdate(obj: ClaudeMessage): SessionUpdate | undefined {
+    const hasLimits =
+      (obj.rate_limits != null && typeof obj.rate_limits === 'object') ||
+      (obj.rateLimits != null && typeof obj.rateLimits === 'object');
+    if (!hasLimits) return undefined;
+    const chip = evaluateSpendLimitChip(obj as SpendLimitStatusFields);
+    if (chip.label === this.lastSpendLimitLabel) return undefined;
+    this.lastSpendLimitLabel = chip.label;
+    return {
+      kind: 'spend_limit_update',
+      available: chip.available,
+      usedPercentage: chip.usedPercentage,
+      remainingPercentage: chip.remainingPercentage,
+      resetsAt: chip.resetsAt,
+      label: chip.label,
+      warn: chip.warn,
+      ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
+    };
   }
 
   private fromAssistant(obj: ClaudeMessage): SessionUpdate[] {

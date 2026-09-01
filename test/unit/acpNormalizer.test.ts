@@ -76,3 +76,34 @@ test('unknown sessionUpdate yields no events', () => {
   const out = normalizeAcpUpdate({ sessionUpdate: 'mystery' } as never);
   assert.equal(out.length, 0);
 });
+
+test('current_mode_update maps Claude wire ids and keeps vendorModeId', () => {
+  const table: [string, string | null][] = [
+    ['default', 'default'],
+    ['manual', 'default'],
+    ['acceptEdits', 'acceptEdits'],
+    ['plan', 'plan'],
+    ['auto', 'auto'],
+    ['dontAsk', 'dontAsk'],
+    ['bypassPermissions', 'bypass']
+  ];
+  for (const [wire, mode] of table) {
+    const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update', currentModeId: wire } as never);
+    assert.deepEqual(out, [{ kind: 'current_mode_update', mode, vendorModeId: wire }], `wire '${wire}'`);
+  }
+});
+
+test('current_mode_update passes unknown ids through with mode null (never throws, never forces default)', () => {
+  const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update', currentModeId: 'build' } as never);
+  assert.deepEqual(out, [{ kind: 'current_mode_update', mode: null, vendorModeId: 'build' }]);
+});
+
+test('current_mode_update without currentModeId yields no events', () => {
+  const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update' } as never);
+  assert.equal(out.length, 0);
+});
+
+test('current_mode_update accepts narrative-docs `modeId` as fallback for `currentModeId`', () => {
+  const out = normalizeAcpUpdate({ sessionUpdate: 'current_mode_update', modeId: 'plan' } as never);
+  assert.deepEqual(out, [{ kind: 'current_mode_update', mode: 'plan', vendorModeId: 'plan' }]);
+});

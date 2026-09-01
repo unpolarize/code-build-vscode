@@ -1,0 +1,51 @@
+import { useEffect, useState } from 'react';
+import { formatNowLine } from '../../../src/shared/nowLine';
+
+interface Props {
+  now: { verb: string; target: string; startedAtMs: number } | null;
+}
+
+/** Progressive tool-activity strip: `now: <verb> <target> · <elapsed>s`,
+ * a single line above the composer. Isolated from MessageList — the 1 Hz
+ * elapsed tick re-renders only this component, off wall-clock
+ * `Date.now() - startedAtMs` (the host posts nothing between tool
+ * open/close transitions). The timer pauses while the tab is hidden. */
+export function NowLine({ now }: Props) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!now) return;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const start = () => {
+      if (!timer) {
+        // Repaint immediately on tab reveal so elapsed never shows stale.
+        setTick((t) => t + 1);
+        timer = setInterval(() => setTick((t) => t + 1), 1000);
+      }
+    };
+    const stop = () => {
+      if (timer) {
+        clearInterval(timer);
+        timer = undefined;
+      }
+    };
+    const onVisibility = () => (document.hidden ? stop() : start());
+    document.addEventListener('visibilitychange', onVisibility);
+    onVisibility();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [now]);
+  if (!now) return null;
+  const elapsed = Math.max(0, Math.round((Date.now() - now.startedAtMs) / 1000));
+  const line = formatNowLine(now);
+  return (
+    <div className="now-line" title={`${now.verb} ${now.target}`}>
+      <span className="now-line-label">now:</span>
+      {/* aria-live excludes the 1 Hz elapsed span — otherwise screen
+          readers re-announce the whole line every second. */}
+      <span className="now-line-text" aria-live="polite">{line}</span>
+      <span className="now-line-elapsed" aria-hidden="true">· {elapsed}s</span>
+    </div>
+  );
+}

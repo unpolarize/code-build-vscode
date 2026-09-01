@@ -14,6 +14,14 @@ export interface CodexEvent {
   item?: CodexItem;
 }
 
+/** Known `item.type` vocabulary (codex exec --json):
+ * `assistant_message` (≤0.141) / `agent_message` (≥0.142) — final answer text;
+ * `reasoning`, `command_execution`, `file_change`, `patch`;
+ * `mcp_tool_call` {server, tool, status, error?} — item.started fires;
+ * `web_search` {query} — usually completed-only (no item.started);
+ * `todo_list` {items[].text, items[].completed} — started/updated/completed
+ * each carry the full snapshot. Kept as `string` — unknown types must fall
+ * through to [] rather than fail parsing. */
 interface CodexItem {
   id?: string;
   type?: string;
@@ -23,6 +31,11 @@ interface CodexItem {
   exit_code?: number;
   status?: string;
   changes?: { path: string; old?: string; new?: string }[];
+  server?: string;
+  tool?: string;
+  error?: { message?: string } | string;
+  query?: string;
+  items?: { text?: string; completed?: boolean }[];
 }
 
 export class CodexNormalizer {
@@ -31,6 +44,8 @@ export class CodexNormalizer {
    * is still unset (session restore) — it does not pre-write this field. */
   threadId?: string;
   private emittedAssistant = new Set<string>();
+  /** Tool ids whose opening `tool_call` has been emitted (see openCloseTool). */
+  private openedTools = new Set<string>();
 
   parseLine(ev: CodexEvent): SessionUpdate[] {
     switch (ev.type) {
@@ -47,6 +62,11 @@ export class CodexNormalizer {
           : [];
       }
       case 'turn.started':
+        // Codex is spawn-per-prompt and item ids restart at item_0 every
+        // turn. Without this reset a reused id makes turn 2's final answer
+        // hit the dedupe set (dropped) and open-tool tracking go stale.
+        this.emittedAssistant.clear();
+        this.openedTools.clear();
         return [];
       case 'turn.completed':
         return [
@@ -80,6 +100,9 @@ export class CodexNormalizer {
     if (!item) return [];
     const completed = evType === 'item.completed';
     switch (item.type) {
+      // codex-cli ≥0.142 renamed assistant_message → agent_message; without
+      // the alias the final Codex answer was silently dropped (tracker #14).
+      case 'agent_message':
       case 'assistant_message': {
         // Emit once, on completion, to avoid duplicating partial text.
         if (!completed || !item.text) return [];
@@ -97,9 +120,81 @@ export class CodexNormalizer {
       case 'file_change':
       case 'patch':
         return [fileChangeTool(item, completed)];
+      case 'mcp_tool_call':
+        return this.openCloseTool(item, completed, {
+          title: [item.server, item.tool].filter(Boolean).join('.') || 'mcp',
+          kind: 'other',
+          failed: item.status === 'failed' || !!item.error,
+          failureText: typeof item.error === 'string' ? item.error : item.error?.message
+        });
+      case 'web_search':
+        return this.openCloseTool(item, completed, {
+          title: item.query ?? 'web search',
+          kind: 'search',
+          failed: item.status === 'failed' || !!item.error,
+          failureText: typeof item.error === 'string' ? item.error : item.error?.message
+        });
+      case 'todo_list': {
+        // Mirror to the TodoWrite shape: sessionManager.interceptToolCall
+        // posts a `taskList` and the webview suppresses the generic ToolCard
+        // for title `todo_write`, replacing the checklist card in place.
+        // Every event carries the full snapshot, so emit on each.
+        if (!Array.isArray(item.items)) return [];
+        const todos = item.items.map((t) => ({
+          content: t.text ?? '',
+          status: t.completed ? 'completed' : 'pending'
+        }));
+        return [
+          {
+            kind: 'tool_call',
+            toolCall: {
+              toolCallId: item.id ?? 'todo',
+              title: 'todo_write',
+              kind: 'other',
+              status: completed ? 'completed' : 'in_progress',
+              rawInput: { todos }
+            }
+          }
+        ];
+      }
       default:
         return [];
     }
+  }
+
+  /** Codex tools that open with item.started and close with item.completed —
+   * except when they arrive completed-only (web_search today). The webview
+   * no-ops a tool_call_update for an id it never saw, so a completed item
+   * whose open event never fired must emit the opening tool_call first,
+   * immediately followed by the terminal update. */
+  private openCloseTool(
+    item: CodexItem,
+    completed: boolean,
+    shape: { title: string; kind: string; failed: boolean; failureText?: string }
+  ): SessionUpdate[] {
+    const id = item.id ?? shape.title;
+    const open: SessionUpdate = {
+      kind: 'tool_call',
+      toolCall: { toolCallId: id, title: shape.title, kind: shape.kind, status: 'in_progress' }
+    };
+    if (!completed) {
+      if (this.openedTools.has(id)) return []; // item.updated — nothing new to say
+      this.openedTools.add(id);
+      return [open];
+    }
+    const close: SessionUpdate = {
+      kind: 'tool_call_update',
+      toolCall: {
+        toolCallId: id,
+        status: shape.failed ? 'failed' : 'completed',
+        // Surface the failure reason on the card; a bare failed row says nothing.
+        content: shape.failed && shape.failureText ? [{ type: 'text', text: shape.failureText }] : []
+      }
+    };
+    const opened = this.openedTools.has(id);
+    this.openedTools.add(id); // duplicate completed for the same id must not re-open a card
+    if (opened) return [close];
+    return [open, close];
   }
 }
 

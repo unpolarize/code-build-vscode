@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { BackendId, PermissionMode } from '../shared/acpTypes';
+import { acpIdForPermissionMode } from '../shared/permissionModes';
 
 const pexecFile = promisify(execFile);
 
@@ -211,16 +212,10 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
 };
 
 function claudePermMode(mode: PermissionMode): string {
-  switch (mode) {
-    case 'plan':
-      return 'plan';
-    case 'acceptEdits':
-      return 'acceptEdits';
-    case 'bypass':
-      return 'bypassPermissions';
-    default:
-      return 'default';
-  }
+  // Wire ids match CB's vocabulary except bypass→bypassPermissions, so
+  // auto/dontAsk spawn with the matching --permission-mode instead of
+  // silently degrading to 'default'.
+  return acpIdForPermissionMode(mode);
 }
 
 function codexSandbox(mode: PermissionMode): string {

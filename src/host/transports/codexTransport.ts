@@ -117,7 +117,7 @@ export class CodexTransport extends BaseAgentSession {
     this.proc?.kill('SIGINT');
   }
 
-  setMode(mode: PermissionMode): void {
+  async setMode(mode: PermissionMode): Promise<void> {
     this.mode = mode;
   }
 

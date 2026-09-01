@@ -34,7 +34,13 @@ Webview (React + Vite)  ──typed postMessage──▶  Extension Host
 
 - **AcpTransport** — newline-delimited JSON-RPC 2.0 over the agent's stdio
   (`initialize` → `session/new` → `session/prompt` → `session/update`), bridging
-  `fs/*` and `session/request_permission` back to the editor/UI.
+  `fs/*` and `session/request_permission` back to the editor/UI. After
+  `initialize`, a read-only **ACP protocol-version pin** chip in the chat header
+  shows the negotiated version (amber warn on v1↔experimental-v2 mismatch; never
+  blocks the session). A **spend-limit parity** chip mirrors Claude Code 2.1.251
+  `/usage` spend-limit bar semantics when `rate_limits.spend_limit` is present;
+  other backends show `spend n/a` (never fake remaining %).
+
 - **StreamJsonTransport** — drives `claude -p --input-format stream-json
   --output-format stream-json`; a `ClaudeNormalizer` maps native NDJSON to
   `SessionUpdate`s.

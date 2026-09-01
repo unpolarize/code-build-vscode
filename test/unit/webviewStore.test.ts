@@ -523,3 +523,97 @@ describe('permission FIFO queue', () => {
     assert.equal(s.permissionQueue[0].tool.rawInput, undefined);
   });
 });
+
+describe('compact marker (divider plumbing)', () => {
+  const marker = {
+    at: 1_700_000_100_000,
+    preTokens: 150_000,
+    summaryPreview: 'Goal: ship the thing…',
+    instructions: 'focus on the migration'
+  };
+
+  it('compactMarker appends a compact item to the timeline', () => {
+    const s = reduce(initialState, { type: 'compactMarker', marker } as HostToWebview);
+    assert.equal(s.items.length, 1);
+    assert.equal(s.items[0].kind, 'compact');
+    assert.deepEqual((s.items[0] as any).marker, marker);
+  });
+
+  it('historyLoaded replays both segments around the persisted compact record', () => {
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [
+        { type: 'user', text: 'before compact' },
+        { type: 'update', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'old reply' } } },
+        { type: 'compact', marker },
+        { type: 'user', text: 'after compact' },
+        { type: 'update', update: { kind: 'agent_message_chunk', content: { type: 'text', text: 'new reply' } } }
+      ]
+    } as HostToWebview);
+    assert.deepEqual(
+      s.items.map((it) => it.kind),
+      ['user', 'assistant', 'compact', 'user', 'assistant']
+    );
+    assert.deepEqual((s.items[2] as any).marker, marker);
+  });
+
+  it('compact divider is a turn boundary — pre-compact edits never join the post-compact files card', () => {
+    let s = apply(
+      initialState,
+      toolCall({ toolCallId: 't1', title: 'Edit', rawInput: { file_path: '/pre.ts' } })
+    );
+    s = reduce(s, { type: 'compactMarker', marker } as HostToWebview);
+    s = apply(s, { kind: 'result', stopReason: 'end_turn' });
+    assert.equal(
+      s.items.some((it) => it.kind === 'files'),
+      false,
+      'result after the divider must not aggregate pre-compact tool edits'
+    );
+  });
+});
+
+describe('nowLine strip', () => {
+  const nowMsg = (now: { verb: string; target: string; startedAtMs: number } | null): HostToWebview =>
+    ({ type: 'nowLine', now }) as HostToWebview;
+
+  it('sets and clears from host posts', () => {
+    let s = reduce(initialState, nowMsg({ verb: 'run', target: 'npm test', startedAtMs: 5 }));
+    assert.deepEqual(s.nowLine, { verb: 'run', target: 'npm test', startedAtMs: 5 });
+    s = reduce(s, nowMsg(null));
+    assert.equal(s.nowLine, null);
+  });
+
+  it('busy:false clears a stuck line (cancel belt+braces)', () => {
+    let s = reduce(initialState, nowMsg({ verb: 'run', target: 'sleep 99', startedAtMs: 5 }));
+    s = reduce(s, { type: 'busy', busy: true } as HostToWebview);
+    assert.ok(s.nowLine, 'busy:true must not clear');
+    s = reduce(s, { type: 'busy', busy: false } as HostToWebview);
+    assert.equal(s.nowLine, null);
+  });
+});
+
+// --- usage fold across a /compact boundary -----------------------------------
+
+describe('usage fold across compact', () => {
+  it('costUsd never decreases: pre-compact → synthetic base row → folded post-respawn usage', () => {
+    // The host folds costBaseUsd into every usage/result costUsd before
+    // posting, and writes a synthetic cost-only usage row at compact time.
+    // The reducer's merge must carry the folded figure forward and keep the
+    // last real token counts when a cost-only row lands.
+    let s = initialState;
+    s = apply(s, { kind: 'usage', usage: { inputTokens: 90_000, costUsd: 1.2 } });
+    assert.equal(s.usage?.costUsd, 1.2);
+    // Synthetic summarize-usage: cost only — token fields must survive the merge.
+    s = apply(s, { kind: 'usage', usage: { costUsd: 1.25 } });
+    assert.equal(s.usage?.costUsd, 1.25);
+    assert.equal(s.usage?.inputTokens, 90_000);
+    // Post-respawn: process reports $0.15, host folds to base + 0.15.
+    s = apply(s, { kind: 'usage', usage: { inputTokens: 4_000, costUsd: 1.4 } });
+    assert.equal(s.usage?.costUsd, 1.4);
+    assert.equal(s.usage?.inputTokens, 4_000);
+    // Result rows fold the same way (claude reports cost only on results).
+    s = apply(s, { kind: 'result', stopReason: 'end_turn', usage: { costUsd: 1.55 } });
+    assert.equal(s.usage?.costUsd, 1.55);
+  });
+});

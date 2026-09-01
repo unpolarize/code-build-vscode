@@ -424,6 +424,39 @@ test('atomic index upsert: store commits leave parseable index.json (no bare wri
   assert.deepEqual(JSON.parse(fs.readFileSync(perfPath, 'utf8')), { ok: true });
 });
 
+test('compact marker round-trips: order preserved between the two segments', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'long conversation');
+  store.appendUpdate('sess-1', { kind: 'agent_message_chunk', content: { type: 'text', text: 'reply' } });
+  store.appendCompactMarker('sess-1', {
+    at: 1_700_000_100_000,
+    preTokens: 150_000,
+    summaryPreview: 'Goal: ship the thing…',
+    instructions: 'focus on the migration'
+  });
+  store.appendUserText('sess-1', 'post-compact prompt');
+
+  const { records } = store.load('sess-1');
+  assert.deepEqual(
+    records.map((r) => r.type),
+    ['user', 'update', 'compact', 'user']
+  );
+  const marker = (records[2] as { marker: { at: number; preTokens?: number; summaryPreview: string; instructions?: string } }).marker;
+  assert.equal(marker.at, 1_700_000_100_000);
+  assert.equal(marker.preTokens, 150_000);
+  assert.equal(marker.summaryPreview, 'Goal: ship the thing…');
+  assert.equal(marker.instructions, 'focus on the migration');
+});
+
+test('compact marker alone is not content', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.appendCompactMarker('sess-1', { at: 1, summaryPreview: '' });
+  assert.equal(store.hasContent('sess-1'), false);
+});
+
 test('appendUserText/appendUpdate persist epoch-ms ts on each record', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);
@@ -531,6 +564,74 @@ test('keepLastCompleteTurns drops leading assistant chunks (no mid-turn start)',
   assert.equal(keepLastCompleteTurns(rows.slice(0, 2), 8).length, 0);
 });
 
+test('keepLastCompleteTurns keeps a compact marker sitting before the snap-start user', () => {
+  const rows: OffsetRec[] = [
+    { rec: { type: 'user', text: 'pre-compact' }, start: 0 },
+    { rec: { type: 'update', update: { kind: 'agent_message_chunk' } }, start: 40 },
+    { rec: { type: 'compact', marker: { at: 1, summaryPreview: 's' } }, start: 80 },
+    { rec: { type: 'user', text: 'post-compact' }, start: 120 },
+    { rec: { type: 'update', update: { kind: 'agent_message_chunk' } }, start: 160 }
+  ];
+  const kept = keepLastCompleteTurns(rows, 1);
+  assert.deepEqual(
+    kept.map((r) => r.rec.type),
+    ['compact', 'user', 'update']
+  );
+  assert.equal(kept[0].start, 80);
+});
+
+test('keepLastCompleteTurns hops post-respawn chrome between a compact marker and the user line', () => {
+  const rows: OffsetRec[] = [
+    { rec: { type: 'user', text: 'pre-compact' }, start: 0 },
+    { rec: { type: 'compact', marker: { at: 1, summaryPreview: 's' } }, start: 40 },
+    { rec: { type: 'update', update: { kind: 'system_init' } }, start: 80 },
+    { rec: { type: 'user', text: 'post-compact' }, start: 120 }
+  ];
+  const kept = keepLastCompleteTurns(rows, 1);
+  assert.deepEqual(
+    kept.map((r) => r.rec.type),
+    ['compact', 'update', 'user']
+  );
+  // Chrome alone (no compact behind it) must not move the snap start.
+  const noCompact = keepLastCompleteTurns(rows.slice(2), 1);
+  assert.deepEqual(noCompact.map((r) => r.rec.type), ['user']);
+});
+
+test('compact divider at a page edge appears on exactly one of two adjacent pages', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  const pad = 'p'.repeat(200);
+  for (let i = 0; i < 6; i++) {
+    store.appendUserText('sess-1', `pre-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `${pad}-${i}` }
+    });
+  }
+  store.appendCompactMarker('sess-1', { at: 1_700_000_100_000, summaryPreview: 'summary' });
+  for (let i = 0; i < 2; i++) {
+    store.appendUserText('sess-1', `post-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `reply-${i}` }
+    });
+  }
+  // Snap lands on the first post-compact user turn — the divider must ride
+  // the newer page, not silently drop between pages.
+  const tail = store.loadTail('sess-1', { maxTurns: 2 });
+  assert.equal(tail.records[0].type, 'compact');
+  assert.equal((tail.records[1] as { text?: string }).text, 'post-0');
+  assert.equal(tail.truncated, true);
+  assert.ok(tail.olderFromByte > 0);
+  const older = store.loadBefore('sess-1', tail.olderFromByte, { maxTurns: 8 });
+  const olderTypes = older.records.map((r) => r.type);
+  assert.ok(!olderTypes.includes('compact'), `older page must not repeat the divider: ${olderTypes}`);
+  assert.ok(older.records.some((r) => (r as { text?: string }).text === 'pre-5'));
+  const union = [...older.records, ...tail.records];
+  assert.equal(union.filter((r) => r.type === 'compact').length, 1);
+});
+
 test('loadTail starts on a user turn even when the byte window cuts a prior reply', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);
@@ -578,4 +679,66 @@ test('loadTail of a long chunk-only file does not return empty', () => {
   const tail = store.loadTail('sess-1', { maxRecords: 20, maxTurns: 8, maxBytes: 10_000_000 });
   assert.ok(tail.records.length > 0, 'must not wipe a no-user window to []');
   assert.ok(tail.records.length <= 20);
+});
+
+test('findLocalSessionForNative prefers a contentful CB row over a shell with the native id', () => {
+  const store = new SessionStore(tmpRoot());
+  const nativeId = '19c63aa7-d0bf-4b87-a3e8-cbe9c3a35528';
+  // Original CB conversation: local id differs from the Claude session id.
+  const real: SessionMeta = { ...meta, id: 'cb-real', backendSessionId: nativeId, createdAt: 1 };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-real', 'hello');
+  store.flushSync('cb-real');
+  // Shell written by "Open in Code Build": id === native id, meta + system_init only.
+  const shell: SessionMeta = { ...meta, id: nativeId, source: 'claude', createdAt: 2 };
+  store.createSession(shell);
+  store.commitSession(shell);
+  store.appendUpdate(nativeId, { kind: 'system_init', backendSessionId: nativeId } as never);
+  store.flushSync(nativeId);
+
+  assert.equal(store.findLocalSessionForNative(nativeId)?.id, 'cb-real');
+  assert.equal(store.findLocalSessionForNative('unknown-id'), undefined);
+  // A shell alone (no contentful row) is not a match — caller replays upstream.
+  const store2 = new SessionStore(tmpRoot());
+  store2.createSession(shell);
+  store2.commitSession(shell);
+  assert.equal(store2.findLocalSessionForNative(nativeId), undefined);
+});
+
+test('findLocalSessionForNative honours the cwd filter', () => {
+  const store = new SessionStore(tmpRoot());
+  const nativeId = 'n-1';
+  const real: SessionMeta = { ...meta, id: 'cb-real', backendSessionId: nativeId, cwd: '/repo' };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-real', 'hello');
+  store.flushSync('cb-real');
+  assert.equal(store.findLocalSessionForNative(nativeId, '/repo')?.id, 'cb-real');
+  assert.equal(store.findLocalSessionForNative(nativeId, '/elsewhere'), undefined);
+});
+
+test('findLocalSessionForNative matches pre-compact ids via backendSessionHistory', () => {
+  const store = new SessionStore(tmpRoot());
+  const oldNative = 'native-pre-compact';
+  const newNative = 'native-post-compact';
+  const real: SessionMeta = {
+    ...meta,
+    id: 'cb-compacted',
+    backendSessionId: newNative,
+    backendSessionHistory: [
+      { id: oldNative, ts: 1, reason: 'initial' },
+      { id: newNative, ts: 2, reason: 'compact' }
+    ],
+    createdAt: 10
+  };
+  store.createSession(real);
+  store.commitSession(real);
+  store.appendUserText('cb-compacted', 'after compact');
+  store.flushSync('cb-compacted');
+
+  // CSV "Open in Code Build" on either the OLD or NEW native id must land
+  // on the same CB row — never mint a 387 B shell under the native id.
+  assert.equal(store.findLocalSessionForNative(oldNative)?.id, 'cb-compacted');
+  assert.equal(store.findLocalSessionForNative(newNative)?.id, 'cb-compacted');
 });

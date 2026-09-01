@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.21.6 — 2026-08-31
+
+### Built-in `/compact` — one-click context compaction (all backends)
+
+- New `/compact [focus]` builtin: summarizes the conversation (one-shot `claude -p`
+  on Claude sessions — steered by the optional focus text — clipped local summary
+  elsewhere; a summarize failure falls back to the clip with a visible notice, never
+  aborts), appends the durable compact divider (flushed before any kill), then
+  restarts the backend at the SAME Code Build session with a fresh context. The
+  summary + last 5 verbatim turns + a transcript breadcrumb go out as a one-shot
+  primer with your next message (auditable in the injected-context card).
+- Strict idle guard: refuses while a turn is running, a tool call is open, a
+  permission prompt or AskUserQuestion is pending, a handoff primer is being
+  prepared, or a message is queued. Sessions with no user turns are a friendly no-op.
+- Native-id lineage: the pre-compact backend session id is preserved in
+  `backendSessionHistory`, the live `backendSessionId` is explicitly cleared in the
+  persisted index (new `SessionStore.clearBackendSessionId` — a plain meta merge
+  cannot clear it), and the respawn never receives a pre-compact resume id; the new
+  backend id is stamped with transition reason `compact`.
+- The built-in shadows agent-advertised `/compact` (grok) in the slash palette
+  instead of listing an unreachable duplicate.
+- 11 new unit tests: idle guard, empty session, marker preview cap, hybrid primer
+  shape, lineage seed + compact transition, no-resume respawn rule, persisted
+  native-id clear, focus parsing.
+
+## 0.21.5 — 2026-08-31
+
+### Spend-limit parity chip (Claude 2.1.251 `/usage` class)
+
+- **Header chip** reads Claude statusline / gateway `rate_limits.spend_limit` (`used_percentage`, `resets_at`) and shows remaining % + reset tooltip (`spend 37% left`). Missing backends (Codex/Grok fixtures without the field) show **`spend n/a`** — never invents spend math or fakes 100% remaining. Amber warn at ≥75% used / over-limit.
+- Pure `shared/spendLimitChip.ts`; `spend_limit_update` SessionUpdate; Claude stream-json + ACP initialize emit; webview reducer + header chip. Distinct from parked prompt-cache hit meter and 5h/7d dual-window chips. (kp: ideas/cb-claude-spend-limit-bar-host-parity-chip-surfa, agent: grok)
+
+## 0.21.3 — 2026-08-30
+
+### Codex 0.142 item vocabulary in the normalizer (tracker #14 + parity leg)
+
+- **`agent_message` aliased to `assistant_message`** — codex-cli ≥0.142 renamed the final-answer item, so Codex answers were silently dropped (tool cards rendered, no assistant bubble). Shared emit-once dedupe keyed by `item.id ?? text`; still completed-only.
+- **`mcp_tool_call`** → ToolCard kind `other`, titled `server.tool`, in_progress on `item.started`, completed/failed on `item.completed` (error or `status: failed` → failed).
+- **`web_search`** → ToolCard kind `search` titled with the query; arrives completed-only, so the normalizer emits the opening `tool_call` immediately followed by the completed update (the webview no-ops orphan updates by design — unchanged).
+- **`todo_list`** → `todo_write` TodoWrite mirror (`rawInput.todos` as `{content, status}`) so the existing taskList interception replaces the checklist card in place instead of spamming.
+- CS-side codex adapter (code-sessions) still lacks these types — deferred to P3-normalizers. nowLine strip + progressiveActivity setting are the remaining legs of kp: ideas/cb-progressive-tool-activity-stream-for-quiet-ba. (kp: tasks/cb-codex-agent-message-item-type-in-the-normaliz)
+
 ## 0.21.2 — 2026-08-29
 
 ### Restore empty Claude shells from the real transcript
@@ -97,6 +139,42 @@ On webview `ready`, `historyLoaded` runs **before** `hydrate()`/`detectAll`. A r
 - First prompt after a VS Code remount used to post **Resuming `uuid`…** (then `grok ready · first event in Xs`) as chat notices. Those became the last item, hid the **working…** pill, and scrolled the new **You** bubble off screen — so send looked like a resume with no progress until thinking started. Idle reconnect is now quiet; Open Previous still shows Resuming.
 - The working pill ignores notice / primer cards after the You-bubble, so host chrome cannot hide it.
 - Active-question banner shows attached image thumbs (up to 4). User JSONL records persist images so they survive remount.
+
+## 0.18.2 — 2026-08-30
+
+### ACP protocol-version pin chip
+
+- **Header chip** shows the negotiated ACP `protocolVersion` after `initialize` (e.g. `ACP v1`, `ACP v2*`). Amber warn when host (stable v1) and agent disagree on major version or the agent flags experimental/draft — never blocks session start.
+- Pure `shared/protocolVersionPin.ts` evaluates fixtures for v1 and experimental-v2 initialize shapes; `AcpTransport` emits `protocol_version_update` (persisted + replayable). Distinct from capability-matrix and harness/model pins. (kp: ideas/cb-acp-protocol-version-pin-chip-surface-v1-vs-e, agent: grok)
+
+## 0.18.1 — 2026-08-26
+
+### Permission-mode truth on ACP backends (slice 1 of the mode pin chip)
+
+- **`PermissionMode` extended with `auto` and `dontAsk`** (`shared/acpTypes.ts`) so Claude's post-2026-08-14 Auto default is representable. New `shared/permissionModes.ts` maps Claude wire ids both ways: `default`/`manual`→`default`, `bypassPermissions`↔`bypass`, unknown vendor ids (opencode agent roles, codex presets) → `null`, never coerced.
+- **ACP `current_mode_update` normalizer stub replaced** — it hardcoded `'default'` for every mode change. Now maps the real `currentModeId` and always carries `vendorModeId` for labeled passthrough; the webview keeps the host-tracked mode when the vendor id has no permission meaning.
+- **`modes` ingested from the ACP session/new|load response** (the only inventory — ACP has no available_modes_update event): new `modes_update` SessionUpdate seeds the future picker, current mode emitted immediately, advertised ids validate later `setMode` calls.
+- **`AcpTransport.setMode` actually sends `session/set_mode {sessionId, modeId}`** (it previously only set a local field). `AgentSession.setMode` is now async; SessionManager applies optimistically and on rejection reverts the chip, posts a notice, and — fix — no longer persists `lastMode` for a refused mode (persist moved behind transport success).
+- **Claude spawn mapping**: selecting `auto`/`dontAsk` now emits the matching `--permission-mode` instead of silently spawning `default`. Codex sandbox mapping unchanged (auto/dontAsk stay read-only — conservative). Unit tables for the wire-id map, normalizer passthrough, and spawn args. (kp: ideas/cb-permission-mode-pin-chip-auto-mode-default-da)
+
+## 0.18.0 — 2026-08-26
+
+### Write-checkpoint timeline — restore code to any prior edit (multi-backend /rewind parity)
+
+- **New `src/host/writeCheckpoint.ts`** — host-owned per-`toolCallId` full pre-image blobs + NDJSON index under `~/.codebuild/file-history/<sessionId>/` (sibling of the flat `sessions/<uuid>.jsonl` store). Works for every backend — claude stream-json, codex exec-json, grok/opencode ACP — no "claude has /rewind" carve-out. NOT shadow-git, NOT the user's `.git`, NOT VS Code Local History.
+- **Dual capture, never waits for `completed`:** (A) the ACP `fs/write_text_file` bridge stages the pre-image just before the host writes (new `StartOpts.onFsPreWrite`); (B) edit-class `tool_call` / `tool_call_update` records merged by toolCallId — pre-images from a live disk read at first pending sight, the staged bridge read, or (codex only) trusted full `changes[].old` diffs. A path first seen at `completed` with no trusted source is **degraded** — never an invented baseline — and degraded-only tools produce no restore target; failed tools never do.
+- **"⤺ Restore code to here"** on edit ToolCards (host modal confirm listing the files; unsaved-editor warning). Restore is a timeline union — earliest pre-image ≥ the picked tool per path — code-only: conversation and tool cards unchanged. `null` pre-image (Write-new) → restore deletes the file. Out-of-root paths are re-confined under the session PathGuard and skipped + counted; dirty editors are overwritten with restored content and saved (documented). Bash/external writes are not tracked (universal gap — Claude's /rewind shares it).
+- **Ring cap** `codeBuild.writeCheckpoint.maxEntries` (default 50): oldest entries + orphaned blobs GC'd. Skips: binary/null-byte, >1.5 MB, symlinks/non-regular (counted, reported in the restore notice).
+- Protocol: `restoreCheckpoint` (webview→host), `checkpointAvailable` (host→webview, full-list idempotent). 15 new fixture-stream unit tests (in-memory fs — grok pending→write→completed, write-then-announce staging, Write-new delete, version chain, update-merge, codex `changes[].old`, claude completed-race degraded, ring GC, confinement, persistence across reload). (kp: ideas/cb-host-write-checkpoint-timeline-snapshot-acp-w)
+
+## 0.17.3 — 2026-08-26
+
+### /compact marker plumbing (slice 1 of the built-in /compact)
+
+- **`CompactMarker` in `shared/protocol.ts`** — `{ at, preTokens?, summaryPreview, instructions? }`, plus the `compactMarker` host→webview event, the `compact` webview→host command type (handler lands with the compact verb slice), and a `marker` field on `historyLoaded` records.
+- **`SessionStore.appendCompactMarker`** persists a `{ type: 'compact', marker }` transcript record; it replays through `load()`/`historyLoaded` like any body line, and a marker alone never counts as content.
+- **Webview timeline** — new `compact` ChatItem renders as a quiet dashed divider ("Context compacted · Nk tokens summarized", summary/focus in the hover tooltip), never a bubble; scrollback above it is kept. The divider is also a turn boundary: `result` after a compact never aggregates pre-compact tool edits into the files card.
+- 5 new unit tests: store round-trip + not-content, reducer append, replay of both segments around the divider, files-card boundary. (kp: tasks/cb-built-in-compact-one-click-context-compaction)
 
 ## 0.17.2 — 2026-08-26
 

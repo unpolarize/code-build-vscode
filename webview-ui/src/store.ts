@@ -1,6 +1,7 @@
 import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTypes';
 import type {
   ActivitySegmentMsg,
+  CompactMarker,
   HostToWebview,
   HydrateState,
   PerfHudMsg,
@@ -96,6 +97,9 @@ export type ChatItem =
       answers: Record<string, string> | null;
     })
   | (WithTimestamps & { kind: 'tasks'; id: string; toolCallId: string; tasks: TaskEntry[] })
+  /** /compact boundary — renders as a divider between the pre-compact
+   * scrollback and the post-compact continuation, never a bubble. */
+  | (WithTimestamps & { kind: 'compact'; id: string; marker: CompactMarker })
   | (WithTimestamps & {
       kind: 'context';
       id: string;
@@ -176,6 +180,30 @@ export interface ChatState {
   visActive: boolean;
   /** Effective stall auto-cancel (seconds). 0 = warn-only. */
   stallAutoCancelSeconds: number;
+  /** Tool call ids with a restorable host write-checkpoint — edit ToolCards
+   * matching an id show the "Restore code to here" action. */
+  checkpointIds: string[];
+  /** ACP protocol-version pin from the last initialize handshake (null
+   * until an ACP backend connects; stream-json/codex leave this unset). */
+  protocolPin: {
+    hostVersion: number;
+    agentVersion: number | null;
+    experimental: boolean;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
+  /** Spend-limit parity chip from status/rate_limits (null until a
+   * spend_limit_update arrives; missing vendors show available:false / n/a). */
+  spendLimit: {
+    available: boolean;
+    usedPercentage: number | null;
+    remainingPercentage: number | null;
+    resetsAt: number | null;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
   /** Off-thread full-transcript restore (issue #24). */
   historyLoad: {
     phase: 'loading' | 'done' | 'error';
@@ -184,6 +212,9 @@ export interface ChatState {
     records: number;
     error?: string;
   } | null;
+  /** Progressive tool-activity narration (host posts only on tool
+   * open/close transitions; NowLine owns the 1 Hz elapsed tick). */
+  nowLine: { verb: string; target: string; startedAtMs: number } | null;
   /** Older JSONL remains before the painted tail. */
   hasOlder: boolean;
   /** Bumps when older messages are prepended (scroll-anchor). */
@@ -226,7 +257,11 @@ export const initialState: ChatState = {
   },
   visActive: false,
   stallAutoCancelSeconds: 0,
+  checkpointIds: [],
+  protocolPin: null,
+  spendLimit: null,
   historyLoad: null,
+  nowLine: null,
   hasOlder: false,
   olderSeq: 0
 };
@@ -404,6 +439,14 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       else items.push(next);
       return { ...state, items };
     }
+    case 'compactMarker': {
+      const items = state.items.slice();
+      items.push({ kind: 'compact', id: nextId(), createdAt: now(), marker: msg.marker });
+      return { ...state, items };
+    }
+    case 'checkpointAvailable':
+      // Host sends the FULL restorable list each time (idempotent replace).
+      return { ...state, checkpointIds: msg.toolCallIds };
     case 'sessionMeta':
       return {
         ...state,
@@ -411,8 +454,12 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         visActive:
           msg.session.sessionKind === 'voice-ideation' ? true : state.visActive
       };
+    case 'nowLine':
+      return { ...state, nowLine: msg.now };
     case 'busy':
-      return { ...state, busy: msg.busy };
+      // busy:false is the belt+braces clear — cancel/teardown paths post it
+      // even when no explicit nowLine null ever arrives.
+      return msg.busy ? { ...state, busy: true } : { ...state, busy: false, nowLine: null };
     case 'sessionUpdate':
       return applyUpdate(state, msg.update);
     case 'fileSuggestions':
@@ -664,9 +711,36 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
         ]
       };
     case 'current_mode_update':
-      return state.session
+      // mode is null for non-permission vendor ids (opencode agent roles) —
+      // keep the host-tracked mode rather than lying on the chip.
+      return state.session && u.mode
         ? { ...state, session: { ...state.session, mode: u.mode } }
         : state;
+    case 'protocol_version_update':
+      return {
+        ...state,
+        protocolPin: {
+          hostVersion: u.hostVersion,
+          agentVersion: u.agentVersion,
+          experimental: u.experimental,
+          label: u.label,
+          warn: u.warn,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {})
+        }
+      };
+    case 'spend_limit_update':
+      return {
+        ...state,
+        spendLimit: {
+          available: u.available,
+          usedPercentage: u.usedPercentage,
+          remainingPercentage: u.remainingPercentage,
+          resetsAt: u.resetsAt,
+          label: u.label,
+          warn: u.warn,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {})
+        }
+      };
     default:
       return state;
   }
@@ -732,7 +806,9 @@ function collectModifiedFiles(items: ChatItem[]): FileChange[] {
   const map = new Map<string, FileChange>();
   for (let i = items.length - 1; i >= 0; i--) {
     const it = items[i];
-    if (it.kind === 'user' || it.kind === 'files') break; // turn boundary
+    // Turn boundary — a compact divider also stops the scan so pre-compact
+    // edits are never re-attributed to the post-compact turn's files card.
+    if (it.kind === 'user' || it.kind === 'files' || it.kind === 'compact') break;
     if (it.kind !== 'tool') continue;
     const diffs = (it.tool.content ?? []).filter(
       (b): b is { type: 'diff'; path: string; oldText: string; newText: string } => b.type === 'diff'
@@ -773,6 +849,7 @@ type ReplayRecord = {
   type: string;
   text?: string;
   update?: SessionUpdate;
+  marker?: CompactMarker;
   ts?: number;
   images?: ImageAttachment[];
 };
@@ -812,7 +889,14 @@ function replayRecords(
           usage: null,
           usageBreakdown: [],
           permissionQueue: [],
-          busy: false
+          busy: false,
+          // Stale restore actions must not survive a session switch; the host
+          // re-posts checkpointAvailable right after historyLoaded.
+          checkpointIds: [],
+          // Protocol pin / spend-limit re-apply from persisted updates if
+          // the transcript has them; otherwise stay null until next emit.
+          protocolPin: null,
+          spendLimit: null
         };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);
@@ -831,6 +915,9 @@ function replayRecords(
             }
           ]
         };
+      }
+      if (rec.type === 'compact' && rec.marker) {
+        return reduce(next, { type: 'compactMarker', marker: rec.marker });
       }
       if (rec.type !== 'update' || !rec.update) return next;
       const u = rec.update;

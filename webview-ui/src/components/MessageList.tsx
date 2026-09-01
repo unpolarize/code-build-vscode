@@ -21,6 +21,8 @@ interface Props {
   /** When false, do not jump to the latest event (user scrolled or navigated). */
   follow?: boolean;
   onFollowChange?: (follow: boolean) => void;
+  /** Tool call ids with a restorable host write-checkpoint. */
+  checkpointIds?: string[];
   hasOlder?: boolean;
   olderSeq?: number;
   olderLoading?: boolean;
@@ -34,6 +36,7 @@ export function MessageList({
   onAskUserAnswer,
   follow = true,
   onFollowChange,
+  checkpointIds,
   hasOlder,
   olderSeq = 0,
   olderLoading,
@@ -120,6 +123,9 @@ export function MessageList({
           item={item}
           onAskUserAnswer={onAskUserAnswer}
           streaming={item.id === streamingId}
+          canRestore={
+            item.kind === 'tool' && (checkpointIds?.includes(item.tool.toolCallId) ?? false)
+          }
         />
       ))}
       {awaitingFirstToken && (
@@ -157,12 +163,15 @@ function TimeChip({ createdAt, updatedAt }: { createdAt: number; updatedAt?: num
 const Item = memo(function Item({
   item,
   onAskUserAnswer,
-  streaming
+  streaming,
+  canRestore
 }: {
   item: ChatItem;
   onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
   /** True while this is the live streaming assistant/thought bubble. */
   streaming?: boolean;
+  /** Tool items only: a restorable write checkpoint exists for this call. */
+  canRestore?: boolean;
 }) {
   switch (item.kind) {
     case 'user':
@@ -227,7 +236,7 @@ const Item = memo(function Item({
       );
     }
     case 'tool':
-      return <ToolCard tool={item.tool} />;
+      return <ToolCard tool={item.tool} canRestore={canRestore} />;
     case 'files':
       return (
         <div className="msg msg-files">
@@ -326,6 +335,35 @@ const Item = memo(function Item({
           onAnswer={onAskUserAnswer}
         />
       );
+    case 'compact': {
+      // Divider, not a bubble — the scrollback above it is the pre-compact
+      // conversation (kept visible), everything below continues on the
+      // respawned backend. Tooltip carries the summary preview + any
+      // /compact <focus> instructions so the boundary is auditable.
+      const m = item.marker;
+      const tip = [
+        m.summaryPreview ? `Summary: ${m.summaryPreview}` : '',
+        m.instructions ? `Focus: ${m.instructions}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n');
+      // preTokens is the input-token LEVEL just before the compact, not the
+      // amount reclaimed — say "from Nk tokens", never "Nk summarized".
+      const tokens =
+        m.preTokens != null && m.preTokens > 0
+          ? ` · from ${m.preTokens >= 1000 ? `${Math.round(m.preTokens / 1000)}k` : m.preTokens} tokens`
+          : '';
+      return (
+        <div className="msg-compact-divider" title={tip || undefined}>
+          <span className="compact-rule" />
+          <span className="compact-label">
+            Context compacted{tokens}
+            <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+          </span>
+          <span className="compact-rule" />
+        </div>
+      );
+    }
     case 'tasks':
       return <TaskListCard tasks={item.tasks} />;
     case 'context':

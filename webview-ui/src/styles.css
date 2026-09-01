@@ -150,6 +150,51 @@ body {
   cursor: help;
   margin-right: 6px;
 }
+/* ACP protocol-version pin — negotiated from initialize; amber on mismatch. */
+.protocol-pin-chip {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.8;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.protocol-pin-chip-warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: var(--vscode-editorWarning-foreground, #d97706);
+  opacity: 1;
+}
+/* Spend-limit parity — Claude 2.1.251 /usage bar; n/a when vendor omits fields. */
+.spend-limit-chip {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.85;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.spend-limit-chip-warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: var(--vscode-editorWarning-foreground, #d97706);
+  opacity: 1;
+}
+.spend-limit-chip-na {
+  opacity: 0.55;
+  background: rgba(128, 128, 128, 0.1);
+  border-color: rgba(128, 128, 128, 0.25);
+}
 .cmd-hint {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.8em;
@@ -422,6 +467,28 @@ body {
   padding: 6px 10px;
   border-radius: 4px;
 }
+/* /compact boundary — a horizontal-rule divider between the pre-compact
+ * scrollback and the post-compact continuation. Deliberately quiet: the
+ * detail (summary preview, focus) lives in the hover tooltip. */
+.msg-compact-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 14px 0;
+  user-select: none;
+}
+.msg-compact-divider .compact-rule {
+  flex: 1;
+  border-top: 1px dashed var(--vscode-editorWidget-border, #555);
+}
+.msg-compact-divider .compact-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
 .msg-plan ol {
   margin: 4px 0;
   padding-left: 20px;
@@ -508,6 +575,19 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.85em;
   max-height: 280px;
+}
+.tool-restore {
+  margin: 4px 0 2px;
+}
+.tool-restore-btn {
+  cursor: pointer;
+  font-size: 0.85em;
+  opacity: 0.75;
+  color: var(--vscode-textLink-foreground, #3794ff);
+}
+.tool-restore-btn:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 /* Diffs */
@@ -1494,6 +1574,32 @@ body {
   bottom: 0;
   min-width: 2px;
   opacity: 0.9;
+}
+
+.now-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 12px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground, #888);
+  border-top: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.2));
+  white-space: nowrap;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.now-line-label {
+  opacity: 0.7;
+}
+.now-line-text {
+  font-family: var(--vscode-editor-font-family, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.now-line-elapsed {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
 }
 
 .perf-panel {

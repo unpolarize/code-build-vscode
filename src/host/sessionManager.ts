@@ -13,7 +13,18 @@ import type {
   WebviewToHost
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
+import {
+  buildCompactMarker,
+  buildCompactPrimer,
+  compactBlockReason,
+  foldUsageCost,
+  hasCompactableTurns,
+  lastCostUsdFromRecords,
+  prepareCompactLineage,
+  resolveRespawnResumeId
+} from './compact';
 import { cleanCommandText } from '../shared/cleanCommandText';
+import { NowLineTracker } from '../shared/nowLine';
 import {
   parseVisClosePayload,
   visClosePrompt,
@@ -76,6 +87,8 @@ import { classifyTurn } from './classifier';
 import { scanMemorySources, summariseSources } from './memoryScan';
 import { TurnWatchdog } from './turnWatchdog';
 import { StopGovernor, type GovernorConfig, type GovernorTrip } from './stopGovernor';
+import { WriteCheckpointEngine } from './writeCheckpoint';
+import { createPathGuard } from './pathGuard';
 import {
   SessionPerfCollector,
   type PerfDebugMode
@@ -122,6 +135,10 @@ export class SessionManager {
   private readonly editor = new EditorTools();
   private readonly store = new SessionStore();
   private readonly perf = new SessionPerfCollector();
+  /** Write-checkpoint engine for the ACTIVE session (lazily rebuilt when
+   * the session id changes — resume loads the persisted index from disk). */
+  private checkpoints?: WriteCheckpointEngine;
+  private checkpointsSessionId?: string;
   /** Coalesced SessionUpdates waiting for the next IPC flush. */
   private ipcQueue: SessionUpdate[] = [];
   private ipcTimer: ReturnType<typeof setTimeout> | undefined;
@@ -196,10 +213,23 @@ export class SessionManager {
    * a silent, tool-less turn. Rebuilt each prompt so the thresholds pick up
    * config changes. */
   private watchdog?: TurnWatchdog;
+  /** Last input-token level the backend reported (usage/result events) —
+   * feeds CompactMarker.preTokens so the /compact divider can say what it
+   * reclaimed. Reset on openSession (fresh conversation). */
+  private lastInputTokens?: number;
   /** Tool-call ids the agent has opened but not yet finished this turn. A
    * turn with an open tool is doing a (possibly long, silent) command, so
    * the watchdog warns but does NOT auto-cancel it. */
   private readonly openToolCalls = new Set<string>();
+  /** Progressive tool-activity narration (quiet-backend feel-speed).
+   * Posts `{verb, target, startedAtMs}` only on tool open/close
+   * transitions; the webview owns the 1 Hz elapsed tick. Gated by
+   * `codeBuild.progressiveActivity`, re-read per transition so live
+   * setting changes apply without reload (perfDebug pattern). */
+  private readonly nowLine = new NowLineTracker({
+    post: (now) => this.panel.post({ type: 'nowLine', now }),
+    isEnabled: () => this.progressiveActivityEnabled()
+  });
   /** True while a permission_request is outstanding (the agent is blocked on a
    * human decision). Combined with pending AskUserQuestions, this tells the
    * stall watchdog the turn is legitimately paused on the user, not stuck. */
@@ -435,6 +465,9 @@ export class SessionManager {
         this.session?.cancel();
         this.flushIpcImmediate();
         this.perf.onCancel();
+        // A soft ACP cancel may never emit result/error — take the
+        // now-line down explicitly (busy:false alone leaves it stuck).
+        this.nowLine.clear();
         this.panel.post({ type: 'busy', busy: false });
         this.pushPerfHud();
         break;
@@ -455,6 +488,9 @@ export class SessionManager {
         break;
       case 'openDiff':
         await this.editor.openDiff(msg.path, msg.oldText, msg.newText);
+        break;
+      case 'restoreCheckpoint':
+        await this.handleRestoreCheckpoint(msg.toolCallId);
         break;
       case 'revealLocation':
         await this.editor.revealLocation(msg.path, msg.line);
@@ -511,6 +547,9 @@ export class SessionManager {
       case 'requestPerfSnapshot':
         this.refreshDualStore();
         this.panel.post({ type: 'perfSnapshot', snapshot: this.perf.snapshot() });
+        break;
+      case 'compact':
+        await this.compactSession(msg.focus);
         break;
       case 'handoff':
         await this.writeHandoffPack();
@@ -989,6 +1028,181 @@ export class SessionManager {
     return records;
   }
 
+  /** /compact [focus] — host-side context compaction for ALL backends.
+   * Order pinned by the KP task (summarize BEFORE kill; marker durable
+   * BEFORE kill; lineage append BEFORE clearing the native id):
+   * idle-guard → summarize → append marker + flushSync → lineage/clear →
+   * teardown + same-meta.id respawn with NO resume id → primer on the
+   * next prompt. Scrollback is never wiped — the marker renders as a
+   * divider and the meter may read unknown until the next turn. */
+  private async compactSession(focus?: string): Promise<void> {
+    const meta = this.meta;
+    if (!meta) {
+      this.panel.post({ type: 'notice', text: 'No active session to compact.' });
+      return;
+    }
+    const blocked = compactBlockReason({
+      turnActive: this.watchdog?.active ?? false,
+      openToolCalls: this.openToolCalls.size,
+      awaitingPermission:
+        this.awaitingPermission || (this.session?.hasPendingPermissions() ?? false),
+      pendingQuestions: this.pendingAskUserQuestions.size,
+      primerPending: this.primerPending,
+      queuedPrompt: this.queuedPromptBlocks !== undefined
+    });
+    if (blocked) {
+      this.panel.post({
+        type: 'notice',
+        text: `Can't compact yet — ${blocked}. Let it finish (or hit Stop), then run /compact again.`
+      });
+      return;
+    }
+    const records = this.collectTranscriptRecords();
+    if (!hasCompactableTurns(records)) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Nothing to compact — this conversation has no user turns yet.'
+      });
+      return;
+    }
+
+    // Hold the guard across the (up to 90s) summarize await: primerPending
+    // makes the 'prompt' case QUEUE any message sent mid-compact instead of
+    // starting a turn the kill would land on; it also makes a second
+    // /compact refuse via compactBlockReason. finishPrimerDecision() in the
+    // finally releases the queued prompt WITH the compact primer prepended.
+    this.primerPending = true;
+
+    const be = backendLabel(meta.backend);
+    const useClaude = meta.backend === 'claude';
+    this.panel.post({
+      type: 'notice',
+      text: `Compacting this conversation${focus ? ` (focus: ${focus})` : ''}…`,
+      detail: useClaude
+        ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
+        : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
+    });
+
+    try {
+      // Session total so far — records are persisted post-fold, so this
+      // already includes any earlier compact's base. meta.costBaseUsd as a
+      // floor covers the compact-again-before-any-new-cost-report edge.
+      const preTotalUsd = Math.max(lastCostUsdFromRecords(records) ?? 0, meta.costBaseUsd ?? 0);
+
+      // Summarize BEFORE any kill. On failure still compact with the clipped
+      // fallback + a visible notice — never abort, never a silent no-op.
+      let summary: string;
+      let summarizeCostUsd = 0;
+      try {
+        if (useClaude) {
+          const r = await this.summarizeViaClaude(records, meta.model, focus, 'compact');
+          summary = r.text;
+          summarizeCostUsd = r.costUsd ?? 0;
+        } else {
+          summary = clippedSummaryFallback(records, be);
+        }
+      } catch (e) {
+        summary = clippedSummaryFallback(records, be);
+        this.panel.post({
+          type: 'notice',
+          text: 'LLM summarisation failed — compacting with a clipped summary instead.',
+          detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+        });
+      }
+
+      // Persist the new cost floor BEFORE the kill: the respawned process
+      // restarts its total near $0, so from here on every usage/result
+      // costUsd is folded (+= costBaseUsd) at the routeAgentUpdate ingress.
+      // The synthetic summarize-usage record makes the folded total (incl.
+      // the one-shot's spend) durable and visible immediately — a reload
+      // replays it, so the HUD never dips below the pre-compact figure.
+      const newCostBaseUsd = preTotalUsd + summarizeCostUsd;
+      if (newCostBaseUsd > 0) {
+        meta.costBaseUsd = newCostBaseUsd;
+        this.store.updateMeta(meta);
+        const syntheticUsage: SessionUpdate = { kind: 'usage', usage: { costUsd: newCostBaseUsd } };
+        this.store.appendUpdate(meta.id, syntheticUsage);
+        // Mirror to the daemon store like every routeAgentUpdate event —
+        // CSV analytics must see the same non-decreasing cost trail.
+        void daemonAppend(meta.id, syntheticUsage);
+        this.panel.post({ type: 'sessionUpdate', sessionId: meta.id, update: syntheticUsage });
+        this.governor?.noteUsage(newCostBaseUsd);
+      }
+
+      // Marker durable BEFORE the kill (appendCompactMarker only enqueues;
+      // kill-before-flush would lose the divider).
+      const marker = buildCompactMarker({
+        now: Date.now(),
+        preTokens: this.lastInputTokens,
+        summary,
+        focus
+      });
+      this.store.appendCompactMarker(meta.id, marker);
+      this.store.flushSync(meta.id);
+      this.panel.post({ type: 'compactMarker', marker });
+      // The pre-compact level is spent — a later divider must not reuse it.
+      this.lastInputTokens = undefined;
+
+      // One-shot primer for the first post-compact prompt. Latched before the
+      // respawn — teardownSession never clears pendingPrimer.
+      this.pendingPrimer = buildCompactPrimer({
+        records,
+        summary,
+        backendLabel: be,
+        focus,
+        transcriptPath: this.store.transcriptPath(meta.id)
+      });
+
+      // Lineage first, THEN clear. The store needs the explicit clear verb:
+      // mergeSessionMeta skips undefined patch values, so updateMeta alone
+      // would leave the stale native id resumable after a reload.
+      if (prepareCompactLineage(meta)) {
+        this.store.updateMeta(meta);
+        this.store.clearBackendSessionId(meta.id);
+        this.panel.post({ type: 'sessionMeta', session: meta });
+      }
+
+      // Kill + respawn at the same CB session id, never resuming the
+      // pre-compact native thread; the respawn arms pendingBackendIdReason so
+      // the new system_init is stamped 'compact' in backendSessionHistory.
+      try {
+        await this.loadExistingSession(meta.id, {
+          connect: true,
+          skipReplay: true,
+          compactRespawn: true
+        });
+      } catch (e) {
+        // The compact itself is durable (marker flushed, id cleared, primer
+        // latched) — only the respawn failed. Drop the broken transport and
+        // park in idle-restore so the next message retries the reconnect
+        // instead of minting a new chat.
+        this.unsubscribe?.();
+        this.unsubscribe = undefined;
+        this.session?.dispose();
+        this.session = undefined;
+        this.idleResume = true;
+        this.panel.post({
+          type: 'notice',
+          text: `Compacted, but restarting the ${be} backend failed — send a message to reconnect (the compact summary still goes out with it).`,
+          detail: `Error: ${e instanceof Error ? e.message : String(e)}`
+        });
+        return;
+      }
+      this.panel.post({
+        type: 'notice',
+        text: `Compacted${
+          typeof marker.preTokens === 'number'
+            ? ` from ${Math.round(marker.preTokens / 1000)}K input tokens`
+            : ''
+        } — the summary + last 5 turns go out with your next message. The context meter may read unknown until the next turn completes.`
+      });
+    } finally {
+      // Always release the prompt queue — a message sent mid-compact goes
+      // out now, with the compact primer prepended by the prompt path.
+      this.finishPrimerDecision();
+    }
+  }
+
   /** /handoff — write a structured HANDOFF.md briefing (goal, decisions,
    * files touched, last check, risks, next step) into the workspace so the
    * user can continue this work on another agent without losing state.
@@ -1401,7 +1615,7 @@ export class SessionManager {
     try {
       const summary =
         held.sourceBackendId === 'claude'
-          ? await this.summarizeViaClaude(held.records, held.sourceModel)
+          ? (await this.summarizeViaClaude(held.records, held.sourceModel)).text
           : clippedSummaryFallback(held.records, held.fromBackend);
       const primer = serializeHybridConversation({
         records: held.records,
@@ -1459,24 +1673,36 @@ export class SessionManager {
    * summary instead of silently shipping no primer at all. */
   private summarizeViaClaude(
     records: { type: string; text?: string; update?: any }[],
-    model?: string
-  ): Promise<string> {
+    model?: string,
+    focus?: string,
+    variant: 'handoff' | 'compact' = 'handoff'
+  ): Promise<{ text: string; costUsd?: number }> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const bin = overrides['claude'] || 'claude';
     const transcript = buildTranscriptForSummary(records);
+    const brief =
+      variant === 'compact'
+        ? `You are compacting an ongoing conversation between a user and an AI ` +
+          `coding assistant so the SAME assistant can continue it with a fresh, ` +
+          `smaller context. The continuation sees nothing but this summary. ` +
+          `Write a concise summary (200–400 words) covering: the user's goal, ` +
+          `key decisions, files touched + current state, errors already tried, ` +
+          `open todos, the immediate next step, and any constraints the user set.`
+        : `You are summarising a conversation between a user and an AI coding ` +
+          `assistant for handoff to a DIFFERENT AI assistant. The new assistant ` +
+          `has zero prior context. Write a concise summary (200–400 words) ` +
+          `covering: the user's goal, key findings/decisions, current task ` +
+          `state, files involved, and any outstanding questions.`;
     const prompt =
-      `You are summarising a conversation between a user and an AI coding ` +
-      `assistant for handoff to a DIFFERENT AI assistant. The new assistant ` +
-      `has zero prior context. Write a concise summary (200–400 words) ` +
-      `covering: the user's goal, key findings/decisions, current task ` +
-      `state, files involved, and any outstanding questions. Don't include ` +
-      `verbatim turns (those will be appended separately). Just the summary text.\n\n` +
-      `=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
+      brief +
+      ` Don't include verbatim turns (those will be appended separately). Just the summary text.\n` +
+      (focus ? `The user asked you to focus especially on: ${focus}\n` : '') +
+      `\n=== CONVERSATION ===\n${transcript}\n=== END ===\n\nSUMMARY:`;
 
     const args = ['-p', '--output-format', 'json'];
     if (model && model !== 'default') args.push('--model', model);
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<{ text: string; costUsd?: number }>((resolve, reject) => {
       const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
@@ -1502,10 +1728,20 @@ export class SessionManager {
           );
         }
         try {
-          const obj = JSON.parse(stdout) as { result?: string; text?: string };
+          const obj = JSON.parse(stdout) as {
+            result?: string;
+            text?: string;
+            total_cost_usd?: number;
+          };
           const text = (obj.result || obj.text || '').trim();
           if (!text) return reject(new Error('claude returned an empty summary'));
-          resolve(text);
+          // The one-shot's spend is real session cost — /compact folds it
+          // into costBaseUsd so the HUD/governor count the summary too.
+          const costUsd =
+            typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd)
+              ? obj.total_cost_usd
+              : undefined;
+          resolve({ text, costUsd });
         } catch (e) {
           reject(
             new Error(
@@ -1582,6 +1818,7 @@ export class SessionManager {
     this.userTurnsSent = 0;
     this.lastUserText = '';
     this.currentAssistantBuf = '';
+    this.lastInputTokens = undefined;
     const openOpts = this.pendingOpenOpts;
     this.pendingOpenOpts = {};
     if (openOpts.sessionKind !== 'voice-ideation') {
@@ -1663,7 +1900,8 @@ export class SessionManager {
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(remembered.mode),
       forceKp:
-        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation'
+        openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation',
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 
@@ -1867,6 +2105,7 @@ export class SessionManager {
   private armWatchdog(): void {
     this.watchdog?.clear();
     this.openToolCalls.clear();
+    this.nowLine.clear();
     this.awaitingPermission = false;
     this.armGovernor();
     const warnMs = Math.max(0, this.config.get<number>('stallWarnSeconds', 45)) * 1000;
@@ -1901,6 +2140,9 @@ export class SessionManager {
         // escalates SIGINT→SIGKILL) AND force the UI out of "working…",
         // independent of whether the transport ever emits a result.
         this.session?.cancel();
+        // Auto-cancel may never see result/error — clear tracker state so a
+        // stale open-tool entry can't resurface on the next transition.
+        this.nowLine.clear();
         this.panel.post({ type: 'busy', busy: false });
         this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
         this.panel.post({
@@ -1919,6 +2161,7 @@ export class SessionManager {
    * are deliberately NOT treated as progress — claude emits them while idle. */
   private watchTurnLiveness(update: SessionUpdate): void {
     this.feedGovernor(update);
+    this.nowLine.onUpdate(update, Date.now());
     if (!this.watchdog) return;
     switch (update.kind) {
       case 'tool_call':
@@ -1965,6 +2208,10 @@ export class SessionManager {
     if (!this.governor || this.governorSessionId !== sid) {
       this.governor = new StopGovernor(this.readGovernorConfig());
       this.governorSessionId = sid;
+      // Rebuilds after a compact respawn (teardown drops the governor)
+      // must not restart the spend counter at $0 — seed the compact cost
+      // floor so maxEstUsd trips on the true session-cumulative total.
+      this.governor.noteUsage(this.meta?.costBaseUsd);
     } else {
       this.governor.setConfig(this.readGovernorConfig());
     }
@@ -2052,6 +2299,7 @@ export class SessionManager {
       this.governor?.endTurn(Date.now());
       this.watchdog?.clear();
       this.openToolCalls.clear();
+      this.nowLine.clear();
       this.panel.post({ type: 'dismissNotice', key: 'turn-stall' });
       this.panel.post({ type: 'busy', busy: false });
       this.panel.post({
@@ -2234,13 +2482,44 @@ export class SessionManager {
     void this.session?.prompt(blocks);
   }
 
+  /** Keep host meta truthful when the agent reports its own mode (modes
+   * ingested from session/new|load or a live current_mode_update). Without
+   * this, persisted meta disagrees with the chip after a reload. Does NOT
+   * touch globalState.lastMode — an agent-initiated mode change is not a
+   * user selection. */
+  private syncAgentMode(update: SessionUpdate): void {
+    if (update.kind !== 'current_mode_update' || !update.mode || !this.meta) return;
+    if (this.meta.mode === update.mode) return;
+    this.meta.mode = update.mode;
+    this.store.updateMeta(this.meta);
+    this.panel.post({ type: 'sessionMeta', session: this.meta });
+  }
+
   private setMode(mode: PermissionMode): void {
-    if (this.meta) {
-      this.meta.mode = mode;
+    // Optimistic: update meta + chip immediately, but persist lastMode only
+    // after the transport accepts the change. On rejection (ACP
+    // session/set_mode error, unsupported mode id) revert both — persisting
+    // a refused mode would silently re-apply it on every future session.
+    const prevMode = this.meta?.mode;
+    const applyMeta = (m: PermissionMode) => {
+      if (!this.meta) return;
+      this.meta.mode = m;
       this.panel.post({ type: 'sessionMeta', session: this.meta });
-    }
-    this.session?.setMode(mode);
-    this.rememberConfig();
+    };
+    applyMeta(mode);
+    const applied = this.session ? this.session.setMode(mode) : Promise.resolve();
+    applied.then(
+      () => this.rememberConfig(),
+      (err: unknown) => {
+        if (prevMode !== undefined) applyMeta(prevMode);
+        this.panel.post({
+          type: 'notice',
+          text: `Mode change to **${mode}** was rejected: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        });
+      }
+    );
   }
 
   /** Apply a new model selection. Persists onto meta so the picker stays
@@ -2307,6 +2586,19 @@ export class SessionManager {
     title?: string;
   }): Promise<void> {
     if (args.source !== 'claude' && args.source !== 'grok') return;
+
+    // CB already owns this native session (it was started here, compacted
+    // here, or a prior "Open in Code Build" grew content). Reuse that row:
+    // creating a shell under the native id (meta + system_init, hasContent
+    // false) — or rewriting the header of a contentful transcript with the
+    // same id — is what left reloaded tabs with an empty history (#29).
+    // Match current backendSessionId OR any prior id in backendSessionHistory
+    // (post-/compact CSV "Open" on the OLD native id must still land here).
+    const owned = this.store.findLocalSessionForNative(args.sessionId, args.cwd);
+    if (owned && sessionMatchesWorkspace(owned.cwd, this.workspaceFolderPaths())) {
+      await this.loadExistingSession(owned.id, { connect: true });
+      return;
+    }
 
     this.teardownSession();
     // Reset per-session classifier state so a fresh chat starts the
@@ -2408,6 +2700,7 @@ export class SessionManager {
         this.panel.post({ type: 'sessionMeta', session: this.meta });
       }
       this.panel.post({ type: 'historyLoaded', meta: this.meta, records: replay.records });
+      this.postCheckpointIds();
     } else {
       // Best-effort: surface the missing-transcript condition in the chat so
       // the user understands why an external resume produced a blank panel.
@@ -2496,7 +2789,8 @@ export class SessionManager {
       model: this.meta?.model,
       effort: this.meta?.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(mode)
+      additionalTrustedDirs: this.trustedDirs(mode),
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 
@@ -2565,6 +2859,7 @@ export class SessionManager {
     this.watchdog?.clear();
     this.watchdog = undefined;
     this.openToolCalls.clear();
+    this.nowLine.clear();
     // Drop the stop governor so a replacement session's startup events can't
     // feed the old counters (or trip against the wrong SessionMeta).
     this.governor = undefined;
@@ -2577,6 +2872,16 @@ export class SessionManager {
     const v = this.config.get<string>('perfDebug', 'hud');
     if (v === 'full' || v === 'hud' || v === 'off') return v;
     return 'hud';
+  }
+
+  /** `codeBuild.progressiveActivity` gate, host-side (the webview cannot
+   * read codeBuild.*). auto = on for quiet backends, off for Claude which
+   * already streams verbose text. */
+  private progressiveActivityEnabled(): boolean {
+    const v = this.config.get<string>('progressiveActivity', 'auto');
+    if (v === 'on') return true;
+    if (v === 'off') return false;
+    return (this.meta?.backend ?? 'claude') !== 'claude';
   }
 
   private ensurePerfHudTimer(): void {
@@ -2605,6 +2910,119 @@ export class SessionManager {
         segments: turn.segments,
         turnDurationMs: Math.max(dur, 1)
       });
+    }
+  }
+
+  /** Re-announce restorable checkpoint ids after a transcript replay so
+   * ToolCards regain their restore action on reload/resume. Idempotent. */
+  private postCheckpointIds(): void {
+    const sessionId = this.meta?.id;
+    const engine = sessionId ? this.ensureCheckpointEngine(sessionId) : undefined;
+    if (engine) {
+      this.panel.post({ type: 'checkpointAvailable', toolCallIds: engine.listCheckpointIds() });
+    }
+  }
+
+  /** ACP fs/write_text_file bridge hook — stage the pre-image of a path
+   * the moment before the host writes it, ahead of any tool_call naming it. */
+  private captureFsPreWrite(absPath: string): void {
+    const sessionId = this.meta?.id;
+    if (sessionId) this.ensureCheckpointEngine(sessionId)?.onFsWrite(absPath);
+  }
+
+  /** Lazily (re)build the write-checkpoint engine for a session. Returns
+   * undefined when there is no usable workspace root (fail closed — no
+   * capture, no restore). Posts the current restorable-id list to the
+   * webview on every rebuild so ToolCards can show the restore action
+   * after a reload/resume. */
+  private ensureCheckpointEngine(sessionId: string): WriteCheckpointEngine | undefined {
+    if (this.checkpoints && this.checkpointsSessionId === sessionId) return this.checkpoints;
+    const cwd = this.meta?.cwd || this.cwd;
+    if (!cwd) return undefined;
+    let confine: (p: string) => string;
+    try {
+      const guard = createPathGuard(cwd);
+      confine = (p) => guard.confine(p);
+    } catch {
+      return undefined;
+    }
+    // NOTE: file-history/ is a sibling of the FLAT sessions/<uuid>.jsonl
+    // store — a nested sessions/<id>/ dir would collide with it.
+    this.checkpoints = new WriteCheckpointEngine({
+      dir: path.join(os.homedir(), '.codebuild', 'file-history', sessionId),
+      cwd,
+      maxEntries: this.config.get<number>('writeCheckpoint.maxEntries', 50),
+      // Codex normalizes full `changes[].old` into diff oldText — a real
+      // pre-image source. Claude's synthesized diffs are fragments; never
+      // trusted (the engine falls back to pre-write disk reads / degraded).
+      trustDiffOldText: this.meta?.backend === 'codex',
+      confine,
+      onCheckpointsChanged: (toolCallIds) =>
+        this.panel.post({ type: 'checkpointAvailable', toolCallIds })
+    });
+    this.checkpointsSessionId = sessionId;
+    this.panel.post({
+      type: 'checkpointAvailable',
+      toolCallIds: this.checkpoints.listCheckpointIds()
+    });
+    return this.checkpoints;
+  }
+
+  /** "Restore code to here" from an edit ToolCard. Code-only: tracked files
+   * revert to their pre-images before the picked tool; the conversation,
+   * tool cards and agent context are untouched. Bash/external writes are
+   * not tracked (universal gap — Claude's own /rewind shares it). */
+  private async handleRestoreCheckpoint(toolCallId: string): Promise<void> {
+    const sessionId = this.meta?.id;
+    const engine = sessionId ? this.ensureCheckpointEngine(sessionId) : undefined;
+    const paths = engine ? engine.planRestorePaths(toolCallId) : null;
+    if (!engine || !paths || paths.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No restorable checkpoint for that tool call — its pre-images were skipped or the checkpoint history was pruned.'
+      });
+      return;
+    }
+    const confirm = 'Restore code';
+    const pick = await vscode.window.showWarningMessage(
+      `Restore ${paths.length} file${paths.length === 1 ? '' : 's'} to the state before this tool call? Unsaved editor changes to those files will be overwritten. Bash/external file changes are not tracked.`,
+      { modal: true, detail: paths.join('\n') },
+      confirm
+    );
+    if (pick !== confirm) return;
+    const result = engine.restore(toolCallId);
+    if (!result) {
+      this.panel.post({ type: 'notice', text: 'Checkpoint restore failed — entry no longer exists.' });
+      return;
+    }
+    await this.reloadRestoredDocs(result.paths);
+    this.panel.post({
+      type: 'notice',
+      text:
+        `Checkpoint restored: ${result.written} file${result.written === 1 ? '' : 's'} rewritten` +
+        (result.deleted ? `, ${result.deleted} deleted` : '') +
+        (result.skipped ? `, ${result.skipped} skipped (degraded / out-of-root / non-regular)` : '') +
+        '. Conversation unchanged.'
+    });
+  }
+
+  /** Documented restore behavior for open editors: clean documents reload
+   * from disk via the file watcher; DIRTY documents are overwritten with
+   * the restored content and saved — the confirm modal warned about it. */
+  private async reloadRestoredDocs(paths: string[]): Promise<void> {
+    for (const p of paths) {
+      const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === p);
+      if (!doc || !doc.isDirty) continue;
+      try {
+        const restored = await fs.readFile(p, 'utf8');
+        const edit = new vscode.WorkspaceEdit();
+        const full = new vscode.Range(doc.positionAt(0), doc.positionAt(doc.getText().length));
+        edit.replace(doc.uri, full, restored);
+        await vscode.workspace.applyEdit(edit);
+        await doc.save();
+      } catch {
+        /* file was deleted by the restore or unreadable — watcher surfaces it */
+      }
     }
   }
 
@@ -2649,12 +3067,24 @@ export class SessionManager {
     update: SessionUpdate,
     opts?: { onFirstEvent?: () => void }
   ): void {
+    // Fold the /compact cost floor in FIRST: everything downstream — the
+    // persisted record, the governor, the webview HUD — must see the
+    // session-cumulative figure, never the raw (process-scoped) total that
+    // restarts near $0 after a compact respawn.
+    if (this.meta && sessionId === this.meta.id) {
+      update = foldUsageCost(update, this.meta.costBaseUsd);
+    }
     const t0 = performance.now();
     this.store.appendUpdate(sessionId, update);
     void daemonAppend(sessionId, update);
     // lastDiskMs is enqueue cost until flush; use wall for the hot path sample.
     const diskMs = Math.max(this.store.lastDiskMs, performance.now() - t0);
     this.perf.onUpdate(update, { diskMs });
+
+    // Write-checkpoint capture observes the raw stream (edit-class tool_call /
+    // tool_call_update merge + turn boundaries). Same host path for every
+    // backend — claude stream-json included; no "claude has /rewind" carve-out.
+    this.ensureCheckpointEngine(sessionId)?.observeUpdate(update);
 
     this.watchTurnLiveness(update);
     if (
@@ -2670,6 +3100,12 @@ export class SessionManager {
     this.onTurnEvent(update);
     this.captureBackendSessionId(update);
     this.handleResumeFallback(update);
+    this.syncAgentMode(update);
+    if (update.kind === 'usage' && typeof update.usage.inputTokens === 'number') {
+      this.lastInputTokens = update.usage.inputTokens;
+    } else if (update.kind === 'result' && typeof update.usage?.inputTokens === 'number') {
+      this.lastInputTokens = update.usage.inputTokens;
+    }
 
     const immediate =
       update.kind === 'result' ||
@@ -3213,9 +3649,21 @@ export class SessionManager {
       return { records: local.records, olderFromByte: local.olderFromByte };
     }
     const nativeId = meta.backendSessionId || id;
-    const siblings = this.store
-      .list()
-      .filter((m) => m.id !== id && (m.id === nativeId || m.backendSessionId === nativeId));
+    // Prefer the store's native-id join (includes backendSessionHistory so a
+    // post-/compact shell keyed on the NEW id still finds the contentful row
+    // that recorded the OLD id). Fall back to a same-cwd sibling scan.
+    const owned = this.store.findLocalSessionForNative(nativeId, meta.cwd);
+    const siblings = (
+      owned && owned.id !== id
+        ? [owned]
+        : this.store.list().filter(
+            (m) =>
+              m.id !== id &&
+              (m.id === nativeId ||
+                m.backendSessionId === nativeId ||
+                (m.backendSessionHistory ?? []).some((h) => h.id === nativeId))
+          )
+    ).slice();
     siblings.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     for (const sib of siblings) {
       const tail = this.store.loadTail(sib.id);
@@ -3285,7 +3733,14 @@ export class SessionManager {
    */
   async loadExistingSession(
     id: string,
-    opts?: { connect?: boolean; skipReplay?: boolean }
+    opts?: {
+      connect?: boolean;
+      skipReplay?: boolean;
+      /** Post-/compact respawn: spawn fresh at the same CB session id —
+       * never resume the pre-compact native thread — and stamp the new
+       * system_init's id rotation with reason 'compact'. */
+      compactRespawn?: boolean;
+    }
   ): Promise<void> {
     const meta = this.store.loadMeta(id);
     if (!meta) {
@@ -3308,7 +3763,15 @@ export class SessionManager {
     const connect = opts?.connect ?? true;
     const skipReplay = opts?.skipReplay === true;
 
+    // teardownSession zeroes the older-history cursor; on a skipReplay
+    // reconnect the webview keeps its painted page, so losing the cursor
+    // would break "load older" until a full reopen.
+    const preservedOlderFrom = this.historyOlderFrom;
     this.teardownSession();
+    if (skipReplay) this.historyOlderFrom = preservedOlderFrom;
+    // Arm AFTER teardown (teardown clears the field): the respawned
+    // backend's first system_init must be labeled 'compact', not 'respawn'.
+    if (opts?.compactRespawn) this.pendingBackendIdReason = 'compact';
     if (!skipReplay) {
       this.userTurnsSent = 0;
       this.lastUserText = '';
@@ -3318,9 +3781,7 @@ export class SessionManager {
     const be = meta.backend;
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
 
-    const earlyResumeId =
-      meta.backendSessionId ??
-      (meta.source === 'claude' || meta.source === 'grok' ? meta.id : undefined);
+    const earlyResumeId = resolveRespawnResumeId(meta, opts?.compactRespawn === true);
     this.meta = meta;
     if (this.meta.backendSessions) {
       for (const [b, sid] of Object.entries(this.meta.backendSessions)) {
@@ -3341,6 +3802,7 @@ export class SessionManager {
         records: painted.records as never,
         hasOlder: painted.olderFromByte > 0
       });
+      this.postCheckpointIds();
       this.applyReplayPrimer(painted.records, be, connect, skipReplay);
     }
 
@@ -3417,7 +3879,8 @@ export class SessionManager {
       model: this.meta.model,
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
-      additionalTrustedDirs: this.trustedDirs(mode)
+      additionalTrustedDirs: this.trustedDirs(mode),
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
   }
 }
