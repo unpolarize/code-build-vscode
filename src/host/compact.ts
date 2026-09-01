@@ -126,7 +126,8 @@ export function foldUsageCost(update: SessionUpdate, baseUsd: number | undefined
   if (typeof baseUsd !== 'number' || !Number.isFinite(baseUsd) || baseUsd <= 0) return update;
   if (
     (update.kind === 'usage' || update.kind === 'result') &&
-    typeof update.usage?.costUsd === 'number'
+    typeof update.usage?.costUsd === 'number' &&
+    Number.isFinite(update.usage.costUsd)
   ) {
     return { ...update, usage: { ...update.usage, costUsd: update.usage.costUsd + baseUsd } };
   }

@@ -1122,6 +1122,9 @@ export class SessionManager {
         this.store.updateMeta(meta);
         const syntheticUsage: SessionUpdate = { kind: 'usage', usage: { costUsd: newCostBaseUsd } };
         this.store.appendUpdate(meta.id, syntheticUsage);
+        // Mirror to the daemon store like every routeAgentUpdate event —
+        // CSV analytics must see the same non-decreasing cost trail.
+        void daemonAppend(meta.id, syntheticUsage);
         this.panel.post({ type: 'sessionUpdate', sessionId: meta.id, update: syntheticUsage });
         this.governor?.noteUsage(newCostBaseUsd);
       }

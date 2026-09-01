@@ -265,3 +265,10 @@ test('cost fold scenario: $1.20 pre-compact + summarize → base; process $0.15 
   const later = [...records, usageRec({ costUsd: base }), usageRec({ costUsd: hud })];
   close(lastCostUsdFromRecords(later)!, 1.4);
 });
+
+test('foldUsageCost: non-finite inbound cost is never folded/persisted', () => {
+  const bad: SessionUpdate = { kind: 'usage', usage: { costUsd: Number.NaN } };
+  assert.equal(foldUsageCost(bad, 1.25), bad);
+  const inf: SessionUpdate = { kind: 'usage', usage: { costUsd: Number.POSITIVE_INFINITY } };
+  assert.equal(foldUsageCost(inf, 1.25), inf);
+});
