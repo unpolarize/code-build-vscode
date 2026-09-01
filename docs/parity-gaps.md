@@ -21,7 +21,6 @@ not listed.
 | Gap | Why it matters | Sketch |
 |---|---|---|
 | Context-window meter | The most user-visible spend lever for long sessions ("how full is my context?"). Claude shows pct; grok writes `contextWindowUsage` to signals.json. | Pull from the `usage` event for claude (input_tokens) or the `usage_breakdown` stream; render as a thin bar in the header next to the cost figure. |
-| Compact / clear-context action | Claude has `/compact`; users will want a one-click equivalent here. | Built-in `/compact` slash command that posts a synthetic prompt; SessionManager spawns a fresh process at the same id with the previous transcript summarised. |
 | Subagent indicator | claude-code panel highlights when a Task subagent is running. Code-build today shows the tool call but doesn't distinguish "the agent spawned a sub-task". | `tool_call_update.title == 'Task'` → render with a different icon + collapse the inner trace. |
 | Branch / cwd badge | Each backend's behaviour depends on the workspace folder + git branch. claude-code shows the cwd in the header; grok-build-vscode shows the branch on session card. | Show `cwd basename · branch` in the header (run `git rev-parse --abbrev-ref HEAD` in cwd at hydrate). |
 | Session rename | Right-click row in history dropdown → rename. claude-code and grok-build both have it. | Add `renameSession(id, title)` to SessionStore; right-click handler on `.history-item`. |
@@ -33,6 +32,7 @@ not listed.
 | Gap | Reason to skip |
 |---|---|
 | ~~Voice input~~ | **Shipped in 0.13.0** — dictation, hands-free interactive, VIS + TTS. See [VOICE.md](VOICE.md). |
+| ~~Compact / clear-context action~~ | **Shipped in 0.21.6–0.22.1** — built-in host-side `/compact [focus]` on all three backends: summarize (claude -p or clipped fallback) → durable divider marker (flushed pre-kill) → same-session respawn with fresh context + primer; native-id lineage preserved, cost HUD folds `costBaseUsd` across the boundary. |
 | Walkthrough / onboarding pages | claude-code's walkthrough is mostly auth setup; code-build defers to the backend CLI for auth. |
 | Inline diff preview in tool card | Already present (`type: 'diff'` content block); just under-utilised by current normalisers. Tracked as "improve normalisers" rather than a gap. |
 | Plan-mode review UI | grok-build has a Plan / Approve UI; permission-prompt already covers it for the canonical case. |
