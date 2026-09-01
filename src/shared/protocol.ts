@@ -93,6 +93,15 @@ export interface SessionMeta {
   /** Stop-governor trips (warn or hard stop) recorded on this session,
    * oldest first. Persisted so CSV can join stop outcomes to sessions. */
   stopEvents?: StopEventRecord[];
+  /** Session-cumulative cost floor (USD) carried across /compact respawns.
+   * Backend cost totals are PROCESS-scoped (claude's total_cost_usd restarts
+   * near $0 after the respawn), so the true session total is
+   * costBaseUsd + the live process total. Set at compact time to the
+   * pre-compact folded total plus the summarize spend; the host folds it
+   * into every outgoing usage/result costUsd BEFORE persisting/forwarding,
+   * so the HUD, replayed records and stop governor all see one
+   * non-decreasing figure — the raw process total never reaches the UI. */
+  costBaseUsd?: number;
   /** Index-sidecar flag: transcript has a user turn or substantive agent
    * output. `list()` uses this instead of scanning JSONL. */
   hasContent?: boolean;

@@ -198,3 +198,70 @@ test('parseCompactFocus: bare /compact → undefined; trailing text → focus', 
   assert.equal(parseCompactFocus('  /compact  '), undefined);
   assert.equal(parseCompactFocus('/compact keep the auth work'), 'keep the auth work');
 });
+
+// ── cost fold across the compact boundary ─────────────────────────────────
+
+import { foldUsageCost, lastCostUsdFromRecords } from '../../src/host/compact';
+import type { SessionUpdate } from '../../src/shared/acpTypes';
+
+function usageRec(usage: Record<string, number | undefined>): { type: string; update: any } {
+  return { type: 'update', update: { kind: 'usage', usage } };
+}
+
+test('lastCostUsdFromRecords: newest cost-bearing usage/result wins; token-only rows skipped', () => {
+  assert.equal(lastCostUsdFromRecords([]), undefined);
+  assert.equal(lastCostUsdFromRecords([{ type: 'user', text: 'hi' }]), undefined);
+  // Token-only mid-turn usage (claude reports cost only on the result).
+  assert.equal(lastCostUsdFromRecords([usageRec({ inputTokens: 500 })]), undefined);
+  const records = [
+    usageRec({ costUsd: 0.4 }),
+    { type: 'user', text: 'more' },
+    { type: 'update', update: { kind: 'result', stopReason: 'end_turn', usage: { costUsd: 1.2 } } },
+    usageRec({ inputTokens: 90_000 }) // newer but token-only — not the answer
+  ];
+  assert.equal(lastCostUsdFromRecords(records), 1.2);
+});
+
+test('foldUsageCost: adds the base to usage/result costUsd, clones, leaves the rest alone', () => {
+  const usage: SessionUpdate = { kind: 'usage', usage: { inputTokens: 10, costUsd: 0.15 } };
+  const folded = foldUsageCost(usage, 1.25);
+  assert.equal(folded.kind === 'usage' && folded.usage.costUsd, 1.4);
+  assert.equal(folded.kind === 'usage' && folded.usage.inputTokens, 10);
+  // Never mutates the transport's object.
+  assert.equal(usage.usage.costUsd, 0.15);
+  assert.notEqual(folded, usage);
+
+  const result: SessionUpdate = { kind: 'result', stopReason: 'end_turn', usage: { costUsd: 0.15 } };
+  assert.equal((foldUsageCost(result, 1.25) as any).usage.costUsd, 1.4);
+
+  // Nothing to fold → same reference (hot path stays allocation-free).
+  const tokenOnly: SessionUpdate = { kind: 'usage', usage: { inputTokens: 10 } };
+  assert.equal(foldUsageCost(tokenOnly, 1.25), tokenOnly);
+  assert.equal(foldUsageCost(usage, undefined), usage);
+  assert.equal(foldUsageCost(usage, 0), usage);
+  const chunk: SessionUpdate = { kind: 'agent_message_chunk', content: { type: 'text', text: 'x' } } as any;
+  assert.equal(foldUsageCost(chunk, 1.25), chunk);
+});
+
+test('cost fold scenario: $1.20 pre-compact + summarize → base; process $0.15 → HUD non-decreasing', () => {
+  // Pre-compact transcript ends at a folded total of $1.20.
+  const records = [
+    { type: 'user', text: 'go' },
+    { type: 'update', update: { kind: 'result', stopReason: 'end_turn', usage: { costUsd: 1.2 } } }
+  ];
+  const preTotal = Math.max(lastCostUsdFromRecords(records) ?? 0, 0);
+  assert.equal(preTotal, 1.2);
+  // KP example: no summarize spend → base 1.20, respawned process reports 0.15 → 1.35.
+  const close = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} !~ ${b}`);
+  close((foldUsageCost({ kind: 'usage', usage: { costUsd: 0.15 } }, preTotal + 0) as any).usage.costUsd, 1.35);
+  // With a $0.05 one-shot summary the base absorbs it exactly once.
+  const base = preTotal + 0.05;
+  const hud = (foldUsageCost({ kind: 'usage', usage: { costUsd: 0.15 } }, base) as any).usage.costUsd;
+  close(hud, 1.4);
+  assert.ok(hud >= base && base >= preTotal, 'total never decreases across the boundary');
+
+  // A SECOND compact reads the folded records (which now include the
+  // synthetic base row) — compounding needs no special casing.
+  const later = [...records, usageRec({ costUsd: base }), usageRec({ costUsd: hud })];
+  close(lastCostUsdFromRecords(later)!, 1.4);
+});

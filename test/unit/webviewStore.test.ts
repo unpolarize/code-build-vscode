@@ -592,3 +592,28 @@ describe('nowLine strip', () => {
     assert.equal(s.nowLine, null);
   });
 });
+
+// --- usage fold across a /compact boundary -----------------------------------
+
+describe('usage fold across compact', () => {
+  it('costUsd never decreases: pre-compact → synthetic base row → folded post-respawn usage', () => {
+    // The host folds costBaseUsd into every usage/result costUsd before
+    // posting, and writes a synthetic cost-only usage row at compact time.
+    // The reducer's merge must carry the folded figure forward and keep the
+    // last real token counts when a cost-only row lands.
+    let s = initialState;
+    s = apply(s, { kind: 'usage', usage: { inputTokens: 90_000, costUsd: 1.2 } });
+    assert.equal(s.usage?.costUsd, 1.2);
+    // Synthetic summarize-usage: cost only — token fields must survive the merge.
+    s = apply(s, { kind: 'usage', usage: { costUsd: 1.25 } });
+    assert.equal(s.usage?.costUsd, 1.25);
+    assert.equal(s.usage?.inputTokens, 90_000);
+    // Post-respawn: process reports $0.15, host folds to base + 0.15.
+    s = apply(s, { kind: 'usage', usage: { inputTokens: 4_000, costUsd: 1.4 } });
+    assert.equal(s.usage?.costUsd, 1.4);
+    assert.equal(s.usage?.inputTokens, 4_000);
+    // Result rows fold the same way (claude reports cost only on results).
+    s = apply(s, { kind: 'result', stopReason: 'end_turn', usage: { costUsd: 1.55 } });
+    assert.equal(s.usage?.costUsd, 1.55);
+  });
+});

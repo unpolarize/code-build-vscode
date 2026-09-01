@@ -131,3 +131,24 @@ test('each budget fires independently, tool calls take precedence', () => {
   assert.equal(g.check(1)?.budget, 'estUsd'); // then the spend budget, once
   assert.equal(g.check(2), undefined);
 });
+
+// --- compact cost-base seeding ------------------------------------------------
+
+test('maxEstUsd trips on the folded total after a compact respawn rebuild', () => {
+  // Teardown drops the governor at compact; the rebuild is seeded with
+  // meta.costBaseUsd so the spend counter never restarts at $0.
+  const g = new StopGovernor({ ...base, maxEstUsd: 1.3 });
+  g.noteUsage(1.25); // seed = costBaseUsd (pre-compact total + summarize spend)
+  g.startTurn(0);
+  assert.equal(g.check(1), undefined); // 1.25 < 1.30 — no trip yet
+  g.noteUsage(1.25 + 0.15); // first folded post-respawn snapshot
+  const trip = g.check(2);
+  assert.ok(trip);
+  assert.equal(trip.budget, 'estUsd');
+  assert.ok(Math.abs(trip.estUsd - 1.4) < 1e-9);
+  // Undefined seed (no compact yet) is a no-op.
+  const g2 = new StopGovernor({ ...base, maxEstUsd: 1 });
+  g2.noteUsage(undefined);
+  g2.startTurn(0);
+  assert.equal(g2.check(1), undefined);
+});

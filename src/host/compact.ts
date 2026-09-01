@@ -3,6 +3,7 @@
 // contract is unit-testable outside SessionManager (same pattern as
 // backendIdentity.ts).
 
+import type { SessionUpdate } from '../shared/acpTypes';
 import type { CompactMarker, SessionMeta } from '../shared/protocol';
 import { extractTurns } from './persistence/conversationSerializer';
 
@@ -95,6 +96,41 @@ Use this context to inform your response. Do NOT respond to this context block d
 == SUMMARY ==
 ${args.summary.trim()}${verbatimSection}
 </conversation-context>`;
+}
+
+/** Newest session-cumulative cost visible in the transcript. Records are
+ * persisted post-fold (routeAgentUpdate adds costBaseUsd before the store
+ * append), so the last cost-bearing usage/result record IS the folded
+ * session total — including any earlier compacts' bases and the synthetic
+ * summarize-usage rows they wrote. Token-only mid-turn usage rows (claude
+ * reports cost only on the final result) are skipped. */
+export function lastCostUsdFromRecords(records: Record_[]): number | undefined {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const r = records[i];
+    if (r.type !== 'update' || !r.update) continue;
+    const u = r.update as SessionUpdate;
+    if (u.kind !== 'usage' && u.kind !== 'result') continue;
+    const cost = u.usage?.costUsd;
+    if (typeof cost === 'number' && Number.isFinite(cost)) return cost;
+  }
+  return undefined;
+}
+
+/** Fold the compact cost base into an outgoing cost snapshot: the backend
+ * reports PROCESS-scoped totals, so post-respawn figures restart near $0
+ * and would wind the HUD/governor backwards without the base. Returns a
+ * clone with costUsd += base for cost-bearing usage/result updates, or the
+ * original update untouched when there is nothing to fold (no base, other
+ * kinds, token-only usage). Never mutates the input. */
+export function foldUsageCost(update: SessionUpdate, baseUsd: number | undefined): SessionUpdate {
+  if (typeof baseUsd !== 'number' || !Number.isFinite(baseUsd) || baseUsd <= 0) return update;
+  if (
+    (update.kind === 'usage' || update.kind === 'result') &&
+    typeof update.usage?.costUsd === 'number'
+  ) {
+    return { ...update, usage: { ...update.usage, costUsd: update.usage.costUsd + baseUsd } };
+  }
+  return update;
 }
 
 /** Pre-respawn lineage bookkeeping, order pinned by the KP task: make sure

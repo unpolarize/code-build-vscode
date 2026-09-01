@@ -17,7 +17,9 @@ import {
   buildCompactMarker,
   buildCompactPrimer,
   compactBlockReason,
+  foldUsageCost,
   hasCompactableTurns,
+  lastCostUsdFromRecords,
   prepareCompactLineage,
   resolveRespawnResumeId
 } from './compact';
@@ -1082,13 +1084,23 @@ export class SessionManager {
     });
 
     try {
+      // Session total so far — records are persisted post-fold, so this
+      // already includes any earlier compact's base. meta.costBaseUsd as a
+      // floor covers the compact-again-before-any-new-cost-report edge.
+      const preTotalUsd = Math.max(lastCostUsdFromRecords(records) ?? 0, meta.costBaseUsd ?? 0);
+
       // Summarize BEFORE any kill. On failure still compact with the clipped
       // fallback + a visible notice — never abort, never a silent no-op.
       let summary: string;
+      let summarizeCostUsd = 0;
       try {
-        summary = useClaude
-          ? await this.summarizeViaClaude(records, meta.model, focus, 'compact')
-          : clippedSummaryFallback(records, be);
+        if (useClaude) {
+          const r = await this.summarizeViaClaude(records, meta.model, focus, 'compact');
+          summary = r.text;
+          summarizeCostUsd = r.costUsd ?? 0;
+        } else {
+          summary = clippedSummaryFallback(records, be);
+        }
       } catch (e) {
         summary = clippedSummaryFallback(records, be);
         this.panel.post({
@@ -1096,6 +1108,22 @@ export class SessionManager {
           text: 'LLM summarisation failed — compacting with a clipped summary instead.',
           detail: `Error: ${e instanceof Error ? e.message : String(e)}`
         });
+      }
+
+      // Persist the new cost floor BEFORE the kill: the respawned process
+      // restarts its total near $0, so from here on every usage/result
+      // costUsd is folded (+= costBaseUsd) at the routeAgentUpdate ingress.
+      // The synthetic summarize-usage record makes the folded total (incl.
+      // the one-shot's spend) durable and visible immediately — a reload
+      // replays it, so the HUD never dips below the pre-compact figure.
+      const newCostBaseUsd = preTotalUsd + summarizeCostUsd;
+      if (newCostBaseUsd > 0) {
+        meta.costBaseUsd = newCostBaseUsd;
+        this.store.updateMeta(meta);
+        const syntheticUsage: SessionUpdate = { kind: 'usage', usage: { costUsd: newCostBaseUsd } };
+        this.store.appendUpdate(meta.id, syntheticUsage);
+        this.panel.post({ type: 'sessionUpdate', sessionId: meta.id, update: syntheticUsage });
+        this.governor?.noteUsage(newCostBaseUsd);
       }
 
       // Marker durable BEFORE the kill (appendCompactMarker only enqueues;
@@ -1584,7 +1612,7 @@ export class SessionManager {
     try {
       const summary =
         held.sourceBackendId === 'claude'
-          ? await this.summarizeViaClaude(held.records, held.sourceModel)
+          ? (await this.summarizeViaClaude(held.records, held.sourceModel)).text
           : clippedSummaryFallback(held.records, held.fromBackend);
       const primer = serializeHybridConversation({
         records: held.records,
@@ -1645,7 +1673,7 @@ export class SessionManager {
     model?: string,
     focus?: string,
     variant: 'handoff' | 'compact' = 'handoff'
-  ): Promise<string> {
+  ): Promise<{ text: string; costUsd?: number }> {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const bin = overrides['claude'] || 'claude';
     const transcript = buildTranscriptForSummary(records);
@@ -1671,7 +1699,7 @@ export class SessionManager {
     const args = ['-p', '--output-format', 'json'];
     if (model && model !== 'default') args.push('--model', model);
 
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<{ text: string; costUsd?: number }>((resolve, reject) => {
       const proc = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
       let stdout = '';
       let stderr = '';
@@ -1697,10 +1725,20 @@ export class SessionManager {
           );
         }
         try {
-          const obj = JSON.parse(stdout) as { result?: string; text?: string };
+          const obj = JSON.parse(stdout) as {
+            result?: string;
+            text?: string;
+            total_cost_usd?: number;
+          };
           const text = (obj.result || obj.text || '').trim();
           if (!text) return reject(new Error('claude returned an empty summary'));
-          resolve(text);
+          // The one-shot's spend is real session cost — /compact folds it
+          // into costBaseUsd so the HUD/governor count the summary too.
+          const costUsd =
+            typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd)
+              ? obj.total_cost_usd
+              : undefined;
+          resolve({ text, costUsd });
         } catch (e) {
           reject(
             new Error(
@@ -2167,6 +2205,10 @@ export class SessionManager {
     if (!this.governor || this.governorSessionId !== sid) {
       this.governor = new StopGovernor(this.readGovernorConfig());
       this.governorSessionId = sid;
+      // Rebuilds after a compact respawn (teardown drops the governor)
+      // must not restart the spend counter at $0 — seed the compact cost
+      // floor so maxEstUsd trips on the true session-cumulative total.
+      this.governor.noteUsage(this.meta?.costBaseUsd);
     } else {
       this.governor.setConfig(this.readGovernorConfig());
     }
@@ -3022,6 +3064,13 @@ export class SessionManager {
     update: SessionUpdate,
     opts?: { onFirstEvent?: () => void }
   ): void {
+    // Fold the /compact cost floor in FIRST: everything downstream — the
+    // persisted record, the governor, the webview HUD — must see the
+    // session-cumulative figure, never the raw (process-scoped) total that
+    // restarts near $0 after a compact respawn.
+    if (this.meta && sessionId === this.meta.id) {
+      update = foldUsageCost(update, this.meta.costBaseUsd);
+    }
     const t0 = performance.now();
     this.store.appendUpdate(sessionId, update);
     void daemonAppend(sessionId, update);
