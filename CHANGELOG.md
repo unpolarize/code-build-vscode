@@ -45,11 +45,11 @@ Header shows `daemon <version>` (green) when the CS sessions daemon answered `he
 - **Header chip** reads Claude statusline / gateway `rate_limits.spend_limit` (`used_percentage`, `resets_at`) and shows remaining % + reset tooltip (`spend 37% left`). Missing backends (Codex/Grok fixtures without the field) show **`spend n/a`** — never invents spend math or fakes 100% remaining. Amber warn at ≥75% used / over-limit.
 - Pure `shared/spendLimitChip.ts`; `spend_limit_update` SessionUpdate; Claude stream-json + ACP initialize emit; webview reducer + header chip. Distinct from parked prompt-cache hit meter and 5h/7d dual-window chips. (kp: ideas/cb-claude-spend-limit-bar-host-parity-chip-surfa, agent: grok)
 
-## 0.21.4 — 2026-08-31
+## 0.21.4 — 2026-08-30
 
 ### Progressive tool-activity now-line for quiet backends
 
-- **Transient "now line"** under the last message shows what the agent is doing while a quiet backend (Codex/Grok) streams nothing: transition-only `nowLine` posts from the host, 1 Hz elapsed-time strip in the webview, cleared on turn end/cancel.
+- **Transient "now line"** above the composer shows what the agent is doing while a quiet backend (Codex/Grok) streams nothing: transition-only `nowLine` posts from the host, 1 Hz elapsed-time strip in the webview, cleared on turn end/cancel.
 - New setting **`codeBuild.progressiveActivity`** (`auto` | `on` | `off`) — `auto` enables the strip only for backends that don't stream token-level progress. Pure `shared/nowLine.ts`; unit-tested transitions. (kp: ideas/cb-progressive-tool-activity-stream-for-quiet-ba)
 
 ## 0.21.3 — 2026-08-30
