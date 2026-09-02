@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.23.0 — 2026-09-01
+
+### Runtime media/pixel tool-tax governor (advisory)
+
+- New `src/shared/mediaToolTax.ts`: classifies tool_result parts as image/pixel vs text (MIME + large-base64 heuristic), estimates vision-token tax (same bounds as the composer image estimate), and tracks per-turn + session media tax.
+- Soft gate (warn-only): after `codeBuild.mediaToolTax.maxMediaResults` (default 5) media results **or** session media tax ≥ `maxMediaWindowPct` of the model window (default 15%), a sticky notice fires once with a prefer DOM / browser-personal hint. Never rewrites or blocks tools.
+- Distinct from MCP schema budget (`mcpSchemaBudget`) — that meters pre-send tool schemas; this meters post-tool pixel payloads.
+- Config: `codeBuild.mediaToolTax.mode` (`warn`|`off`), `maxMediaResults`, `maxMediaWindowPct`.
+
 ## 0.22.1 — 2026-09-01
 
 ### Merge: daemon chip + nav-loads-older onto night /compact line
