@@ -284,8 +284,16 @@ export class SessionManager {
   applyExternalTitle(id: string | undefined, title: string): boolean {
     const t = title.trim();
     if (!t) return false;
-    if (id && this.meta && this.meta.id !== id) return false;
     if (!this.meta) return false;
+    // Issue #16: a falsy id must NOT rename an arbitrary live panel; and the
+    // caller (CSV) passes the NATIVE session uuid, which for CB-born sessions
+    // differs from the local id — match backendSessionId/history too.
+    if (!id) return false;
+    const owns =
+      this.meta.id === id ||
+      this.meta.backendSessionId === id ||
+      (this.meta.backendSessionHistory ?? []).some((h) => h.id === id);
+    if (!owns) return false;
     this.meta.title = t;
     this.store.updateMeta(this.meta);
     this.panel.setTitle?.(t);

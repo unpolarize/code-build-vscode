@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ChatPanel, CHAT_VIEW_TYPE, CHAT_SIDEBAR_ID, preferredEditorColumn } from './host/panel';
 import { SessionManager } from './host/sessionManager';
 import { ChatViewProvider } from './host/chatViewProvider';
+import { daemonPatchMeta } from './host/daemonClient';
 import { SessionStore } from './host/persistence/store';
 import { listAllSessions } from './host/persistence/externalSources';
 import { MemoryTreeProvider, MEMORY_VIEW_ID, registerMemoryCommands } from './host/memoryView';
@@ -136,9 +137,18 @@ export function activate(context: vscode.ExtensionContext): void {
       'codeBuild.setSessionTitle',
       (arg?: { id?: string; title?: string }) => {
         const title = arg?.title?.trim();
-        if (!title) return;
+        const id = arg?.id?.trim();
+        if (!title || !id) return;
         for (const mgr of managers) {
-          if (mgr.applyExternalTitle(arg?.id, title)) return;
+          if (mgr.applyExternalTitle(id, title)) return;
+        }
+        // No live panel owns it — store-first (issue #16): renaming a closed
+        // session from CSV must still persist and reach the daemon envelope.
+        const store = new SessionStore();
+        const meta = store.findLocalSessionForNative(id) ?? store.loadMeta(id);
+        if (meta) {
+          store.updateMeta(meta.id, { title });
+          void daemonPatchMeta(meta.id, { title });
         }
       },
     ),
