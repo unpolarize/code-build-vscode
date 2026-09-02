@@ -302,7 +302,12 @@ export type WebviewToHost =
   /** Webview finished applying a historyBatch (backpressure). */
   | { type: 'historyBatchAck' }
   /** Scroll-up: request the JSONL window before the current tail. */
-  | { type: 'loadOlderHistory' };
+  | { type: 'loadOlderHistory' }
+  /**
+   * One-click Prefer DOM/CLI from the media-tax pause notice or header chip.
+   * Host arms a session-sticky prompt hint (advisory — never rewrites tools).
+   */
+  | { type: 'preferDomHint' };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -506,6 +511,23 @@ export type HostToWebview =
    * timer that fired just before the agent woke up sat in the chat
    * forever and made it look like the turn never finished. */
   | { type: 'dismissNotice'; key: string }
+  /**
+   * Runtime media/pixel tool-tax header chip. Null clears (new session /
+   * mode off / zero tax). Distinct from MCP schema budget advisor.
+   */
+  | {
+      type: 'mediaToolTax';
+      chip: {
+        label: string;
+        turnMediaTokens: number;
+        sessionMediaTokens: number;
+        sessionMediaCount: number;
+        warn: boolean;
+        pause: boolean;
+        hint?: string;
+        preferDomArmed?: boolean;
+      } | null;
+    }
   /** Topic labels for a completed turn. The host's classifier fires
    * after each end-of-turn `result` event when `codeBuild.classifyTurns`
    * is enabled. `turnIndex` is the 0-based index of the user prompt

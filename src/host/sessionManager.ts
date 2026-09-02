@@ -90,7 +90,9 @@ import { StopGovernor, type GovernorConfig, type GovernorTrip } from './stopGove
 import {
   DEFAULT_MEDIA_TOOL_TAX_CONFIG,
   MEDIA_TAX_DOM_HINT,
+  MEDIA_TAX_PREFER_DOM_INJECT,
   MediaToolTaxTracker,
+  type MediaToolTaxChip,
   type MediaToolTaxConfig
 } from '../shared/mediaToolTax';
 import { WriteCheckpointEngine } from './writeCheckpoint';
@@ -252,6 +254,10 @@ export class SessionManager {
   private mediaTax = new MediaToolTaxTracker();
   /** Session id the current media-tax tracker belongs to. */
   private mediaTaxSessionId: string | undefined;
+  /** Last media-tax chip signature posted to the webview (dedupe). */
+  private mediaTaxLastPosted: string | undefined;
+  /** Session-sticky Prefer DOM/CLI host hint (armed by one-click action). */
+  private preferDomHintArmed = false;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -464,6 +470,11 @@ export class SessionManager {
           blocks = [{ type: 'text', text: this.pendingPrimer }, ...blocks];
           this.pendingPrimer = undefined;
         }
+        // Session-sticky Prefer DOM/CLI hint (media-tax one-click). Advisory
+        // only — never rewrites or blocks tools.
+        if (this.preferDomHintArmed) {
+          blocks = [{ type: 'text', text: MEDIA_TAX_PREFER_DOM_INJECT }, ...blocks];
+        }
         // Transparency: surface exactly what we just injected into the
         // agent's stdin BEFORE writing it. Without this, a 12K primer or
         // a mis-resolved @-mention can silently steer a turn and the
@@ -500,6 +511,9 @@ export class SessionManager {
         this.nowLine.clear();
         this.panel.post({ type: 'busy', busy: false });
         this.pushPerfHud();
+        break;
+      case 'preferDomHint':
+        this.armPreferDomHint();
         break;
       case 'setMode':
         this.setMode(msg.mode);
@@ -2249,6 +2263,9 @@ export class SessionManager {
     if (this.mediaTaxSessionId !== sid) {
       this.mediaTax = new MediaToolTaxTracker();
       this.mediaTaxSessionId = sid;
+      this.mediaTaxLastPosted = undefined;
+      this.preferDomHintArmed = false;
+      this.panel.post({ type: 'mediaToolTax', chip: null });
     }
     this.mediaTax.startTurn();
   }
@@ -2327,9 +2344,15 @@ export class SessionManager {
     if (sid && this.mediaTaxSessionId !== sid) {
       this.mediaTax = new MediaToolTaxTracker();
       this.mediaTaxSessionId = sid;
+      this.mediaTaxLastPosted = undefined;
+      this.preferDomHintArmed = false;
+      this.panel.post({ type: 'mediaToolTax', chip: null });
     }
     const cfg = this.readMediaTaxConfig();
-    if (cfg.mode === 'off') return;
+    if (cfg.mode === 'off') {
+      this.postMediaTaxChip(null);
+      return;
+    }
 
     switch (update.kind) {
       case 'tool_call':
@@ -2359,11 +2382,27 @@ export class SessionManager {
         : undefined;
 
     const { chip, newlyPaused, pauseReasons } = this.mediaTax.check(cfg, windowTokens);
+    const chipOut: MediaToolTaxChip = {
+      ...chip,
+      ...(this.preferDomHintArmed ? { preferDomArmed: true } : {})
+    };
+    // Header chip: show once there is tax, a pause, or Prefer-DOM is armed.
+    if (
+      chipOut.sessionMediaTokens > 0 ||
+      chipOut.turnMediaTokens > 0 ||
+      chipOut.pause ||
+      this.preferDomHintArmed
+    ) {
+      this.postMediaTaxChip(chipOut);
+    } else {
+      this.postMediaTaxChip(null);
+    }
     if (newlyPaused) {
       const detail =
         pauseReasons.join('; ') +
         `\nSession media tax: ~${chip.sessionMediaTokens} tok across ${chip.sessionMediaCount} media result(s).` +
         `\n${MEDIA_TAX_DOM_HINT}` +
+        `\nClick Prefer DOM/CLI on this notice (or the media chip) to arm a session-sticky host hint.` +
         `\nAdjust with codeBuild.mediaToolTax.* (advisory only — tools are not blocked).`;
       this.panel.post({
         type: 'notice',
@@ -2372,6 +2411,60 @@ export class SessionManager {
         detail
       });
     }
+  }
+
+  /** Dedupe-post the media-tax header chip (or clear it). */
+  private postMediaTaxChip(chip: MediaToolTaxChip | null): void {
+    const sig = chip
+      ? `${chip.label}|${chip.warn ? 1 : 0}|${chip.pause ? 1 : 0}|${chip.preferDomArmed ? 1 : 0}|${chip.sessionMediaCount}|${chip.sessionMediaTokens}|${chip.turnMediaTokens}`
+      : 'null';
+    if (sig === this.mediaTaxLastPosted) return;
+    this.mediaTaxLastPosted = sig;
+    this.panel.post({
+      type: 'mediaToolTax',
+      chip: chip
+        ? {
+            label: chip.label,
+            turnMediaTokens: chip.turnMediaTokens,
+            sessionMediaTokens: chip.sessionMediaTokens,
+            sessionMediaCount: chip.sessionMediaCount,
+            warn: chip.warn,
+            pause: chip.pause,
+            ...(chip.hint ? { hint: chip.hint } : {}),
+            ...(chip.preferDomArmed ? { preferDomArmed: true } : {})
+          }
+        : null
+    });
+  }
+
+  /**
+   * One-click Prefer DOM/CLI: arm session-sticky prompt inject, dismiss the
+   * pause notice, confirm in-chat. Never rewrites tools.
+   */
+  private armPreferDomHint(): void {
+    this.preferDomHintArmed = true;
+    this.panel.post({ type: 'dismissNotice', key: 'media-tool-tax' });
+    this.panel.post({
+      type: 'notice',
+      key: 'media-tool-tax-prefer-dom',
+      text:
+        '✅ Prefer DOM/CLI armed — next prompts include a host hint to use text/DOM snapshots (browser-personal) instead of screenshot MCP loops.',
+      detail:
+        `${MEDIA_TAX_DOM_HINT}\n` +
+        `Injected prefix: ${MEDIA_TAX_PREFER_DOM_INJECT}\n` +
+        'Advisory only — tools are not blocked or rewritten. Cleared on new session.'
+    });
+    // Refresh chip so Prefer-DOM armed state shows immediately.
+    const cfg = this.readMediaTaxConfig();
+    const { chip } = this.mediaTax.check(cfg);
+    this.mediaTaxLastPosted = undefined;
+    this.postMediaTaxChip({
+      ...chip,
+      preferDomArmed: true,
+      label: chip.sessionMediaTokens > 0 || chip.turnMediaTokens > 0 ? chip.label : 'media · prefer DOM',
+      warn: true,
+      hint: MEDIA_TAX_DOM_HINT
+    });
   }
 
   /** A budget crossed its limit: record the stop event on SessionMeta (CSV

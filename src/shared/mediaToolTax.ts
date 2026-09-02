@@ -48,6 +48,13 @@ export const DEFAULT_MEDIA_TOOL_TAX_CONFIG: MediaToolTaxConfig = {
 export const MEDIA_TAX_DOM_HINT =
   'Prefer browser-personal / DOM or text snapshots over screenshot / pixel MCP loops.';
 
+/**
+ * Short sticky prompt prefix when the user clicks Prefer DOM/CLI.
+ * Kept tiny (~25 tok) so session-sticky injection stays cheap.
+ */
+export const MEDIA_TAX_PREFER_DOM_INJECT =
+  '[Code Build host] Prefer DOM/text snapshots or the browser-personal Playwright path over screenshot / pixel MCP tools this session.';
+
 const IMAGE_MIME = /^image\//i;
 const PIXEL_MIME = /^(image\/|video\/|application\/octet-stream)/i;
 /** Base64-ish blob long enough to be a real screenshot, not a short id. */
@@ -317,8 +324,9 @@ export interface MediaToolTaxChip {
   pause: boolean;
   /** Prefer-DOM host hint when pause/warn. */
   hint?: string;
+  /** True after the user clicked Prefer DOM/CLI (session-sticky inject armed). */
+  preferDomArmed?: boolean;
 }
-
 function formatTokCount(n: number): string {
   if (n < 1000) return String(Math.round(n));
   if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;

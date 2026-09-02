@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { PermissionMode } from '../../../src/shared/acpTypes';
 import type { ChatState } from '../store';
+import { post } from '../vscodeApi';
 
 const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypass'];
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -162,6 +163,26 @@ export function Header({
         </span>
       )}
 
+      {state.mediaToolTax && (
+        <button
+          type="button"
+          className={
+            state.mediaToolTax.warn || state.mediaToolTax.pause
+              ? 'media-tax-chip media-tax-chip-warn'
+              : 'media-tax-chip'
+          }
+          title={formatMediaTaxTooltip(state.mediaToolTax)}
+          onClick={() => {
+            if (state.mediaToolTax?.preferDomArmed) return;
+            post({ type: 'preferDomHint' });
+          }}
+        >
+          {state.mediaToolTax.preferDomArmed
+            ? `${state.mediaToolTax.label} · DOM`
+            : state.mediaToolTax.label}
+        </button>
+      )}
+
       {onSetStallTimeout && (
         <select
           className="stall-picker"
@@ -317,6 +338,24 @@ function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): st
   }
   if (chip.warnReason) lines.push(chip.warnReason);
   lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
+}
+
+function formatMediaTaxTooltip(chip: NonNullable<ChatState['mediaToolTax']>): string {
+  const lines: string[] = [chip.label];
+  lines.push(`Turn media tax: ~${chip.turnMediaTokens} tok`);
+  lines.push(
+    `Session media tax: ~${chip.sessionMediaTokens} tok across ${chip.sessionMediaCount} media result(s)`
+  );
+  if (chip.hint) lines.push(chip.hint);
+  if (chip.preferDomArmed) {
+    lines.push('Prefer DOM/CLI armed — sticky host hint on prompts this session.');
+  } else if (chip.pause || chip.warn) {
+    lines.push('Click to arm Prefer DOM/CLI (advisory host hint; tools not blocked).');
+  } else {
+    lines.push('Click to arm Prefer DOM/CLI host hint.');
+  }
+  lines.push('Meters post-tool pixel payloads — distinct from MCP schema budget.');
   return lines.join('\n');
 }
 

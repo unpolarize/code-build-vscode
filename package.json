@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.23.0",
+  "version": "0.23.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -434,7 +434,7 @@
           "type": "string",
           "enum": ["off", "warn"],
           "default": "warn",
-          "description": "Runtime media/pixel tool-tax governor: meters screenshot/image tool_result payloads (not MCP schema tokens). 'warn' (default) shows a sticky pause notice with a prefer-DOM hint after thresholds; 'off' disables. Advisory only — never rewrites or blocks tools."
+          "description": "Runtime media/pixel tool-tax governor: meters screenshot/image tool_result payloads (not MCP schema tokens). 'warn' (default) shows a header chip + sticky pause notice with one-click Prefer DOM/CLI after thresholds; 'off' disables. Advisory only — never rewrites or blocks tools."
         },
         "codeBuild.mediaToolTax.maxMediaResults": {
           "type": "number",
