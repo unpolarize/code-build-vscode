@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.2 — 2026-09-02
+
+### Rename consistency (issue #16)
+
+`codeBuild.setSessionTitle` (landed in commit 2ffb695 without its own version — this entry corrects that):
+- requires an id — a falsy id no longer renames an arbitrary live panel;
+- live panels match the **native** session uuid too (`backendSessionId` / `backendSessionHistory`), so a CSV rename reaches a CB-born conversation;
+- with no live panel, the title is written **store-first** (`findLocalSessionForNative`/`loadMeta`) and mirrored to the daemon envelope, so closed sessions rename durably and KP/Fleet views agree.
+
+
 ## 0.23.1 — 2026-09-02
 
 ### Media tool-tax — header chip + Prefer DOM/CLI action
