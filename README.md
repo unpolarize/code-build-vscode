@@ -137,6 +137,11 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
    under `~/.codebuild/`.
 6. **@-mentions now support full paths**: `@knowledge/tech/knowledge-base-architecture.md` (or any subpath) works
    for file context. `@browser` / `@web` injects a browser-context hint.
+7. **Media / pixel tool-tax (advisory):** when screenshot or image MCP tool results inflate tokens, the header
+   shows a `media …` chip and (after thresholds) a sticky pause notice with a one-click **Prefer DOM/CLI** action.
+   That arms a session-sticky host hint to prefer text/DOM snapshots over pixel loops — it never rewrites or
+   blocks tools. Prefer the personal Chrome Playwright path (`browser-personal` skill / Playwright MCP Bridge)
+   over screenshot-heavy MCP servers when browsing authenticated pages. Config: `codeBuild.mediaToolTax.*`.
 
 Sessions are persisted under `~/.codebuild/` and exported in a Code-Sessions-readable
 JSONL format.

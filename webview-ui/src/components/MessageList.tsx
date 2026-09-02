@@ -324,6 +324,18 @@ const Item = memo(function Item({
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
           </div>
           <Markdown className="msg-body" text={item.text} />
+          {item.key === 'media-tool-tax' && (
+            <div className="notice-actions">
+              <button
+                type="button"
+                className="btn notice-action-btn"
+                title="Arm a session-sticky host hint to prefer DOM/text snapshots / browser-personal over screenshot MCP loops. Advisory only — tools are not blocked."
+                onClick={() => post({ type: 'preferDomHint' })}
+              >
+                Prefer DOM/CLI
+              </button>
+            </div>
+          )}
         </div>
       );
     case 'askUser':

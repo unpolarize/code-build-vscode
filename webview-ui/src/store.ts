@@ -205,6 +205,17 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** Runtime media/pixel tool-tax chip (null until tax > 0 or Prefer-DOM armed). */
+  mediaToolTax: {
+    label: string;
+    turnMediaTokens: number;
+    sessionMediaTokens: number;
+    sessionMediaCount: number;
+    warn: boolean;
+    pause: boolean;
+    hint?: string;
+    preferDomArmed?: boolean;
+  } | null;
   /** Off-thread full-transcript restore (issue #24). */
   historyLoad: {
     phase: 'loading' | 'done' | 'error';
@@ -262,6 +273,7 @@ export const initialState: ChatState = {
   checkpointIds: [],
   protocolPin: null,
   spendLimit: null,
+  mediaToolTax: null,
   historyLoad: null,
   nowLine: null,
   hasOlder: false,
@@ -326,6 +338,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, sessions: msg.sessions };
     case 'daemonStatus':
       return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
+    case 'mediaToolTax':
+      return { ...state, mediaToolTax: msg.chip };
     case 'perfHud':
       return { ...state, perfHud: msg.hud };
     case 'activityStrip':
@@ -899,8 +913,10 @@ function replayRecords(
           checkpointIds: [],
           // Protocol pin / spend-limit re-apply from persisted updates if
           // the transcript has them; otherwise stay null until next emit.
+          // Media-tax is live-only (not persisted) — clear on session switch.
           protocolPin: null,
-          spendLimit: null
+          spendLimit: null,
+          mediaToolTax: null
         };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);

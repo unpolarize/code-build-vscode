@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MEDIA_TAX_DOM_HINT,
+  MEDIA_TAX_PREFER_DOM_INJECT,
   MediaToolTaxTracker,
   classifyToolResultContent,
   classifyToolResultPart,
@@ -10,6 +11,7 @@ import {
   isMediaPart,
   type MediaToolTaxConfig
 } from '../../src/shared/mediaToolTax';
+import { reduce, initialState } from '../../webview-ui/src/store';
 
 const PNG_B64 = 'A'.repeat(12_000); // large enough for blob heuristic
 
@@ -200,5 +202,100 @@ describe('MediaToolTaxTracker soft gate', () => {
     assert.equal(snap.sessionMediaCount, 0);
     assert.equal(snap.sessionMediaTokens, 0);
     assert.equal(snap.pause, false);
+  });
+});
+
+describe('screenshot MCP mock smoke', () => {
+  it('chrome-devtools TakeScreenshot-shaped result taxes as image', () => {
+    // Shape mirrors chrome-devtools / Playwright screenshot MCP tool_result
+    // payloads agents commonly return (image content block + optional text).
+    const mockResult = [
+      { type: 'text', text: 'Screenshot captured (1280×720)' },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: PNG_B64
+      }
+    ];
+    const parts = classifyToolResultContent(mockResult, 'TakeScreenshot');
+    assert.equal(parts.filter(isMediaPart).length, 1);
+    assert.equal(parts.find(isMediaPart)!.kind, 'image');
+
+    const t = new MediaToolTaxTracker();
+    t.startTurn();
+    t.noteToolContent(mockResult, {
+      toolCallId: 'mcp-screenshot-1',
+      toolTitle: 'TakeScreenshot'
+    });
+    const { chip, newlyPaused } = t.check({
+      mode: 'warn',
+      maxMediaResults: 1,
+      maxMediaWindowPct: 0
+    });
+    assert.equal(newlyPaused, true);
+    assert.equal(chip.pause, true);
+    assert.ok(chip.sessionMediaTokens > 0);
+    assert.match(chip.label, /media/);
+    assert.equal(chip.hint, MEDIA_TAX_DOM_HINT);
+  });
+
+  it('prefer-DOM inject text stays short and cites browser-personal path', () => {
+    assert.ok(MEDIA_TAX_PREFER_DOM_INJECT.length < 220);
+    assert.match(MEDIA_TAX_PREFER_DOM_INJECT, /browser-personal|DOM/i);
+    assert.match(MEDIA_TAX_PREFER_DOM_INJECT, /screenshot|pixel/i);
+  });
+});
+
+describe('webview mediaToolTax chip surface', () => {
+  it('reducer stores mediaToolTax HostToWebview on ChatState', () => {
+    const next = reduce(initialState, {
+      type: 'mediaToolTax',
+      chip: {
+        label: 'media ~2.1k · sess 8.4k',
+        turnMediaTokens: 2100,
+        sessionMediaTokens: 8400,
+        sessionMediaCount: 3,
+        warn: true,
+        pause: true,
+        hint: MEDIA_TAX_DOM_HINT
+      }
+    });
+    assert.ok(next.mediaToolTax);
+    assert.equal(next.mediaToolTax!.label, 'media ~2.1k · sess 8.4k');
+    assert.equal(next.mediaToolTax!.pause, true);
+    assert.equal(next.mediaToolTax!.hint, MEDIA_TAX_DOM_HINT);
+  });
+
+  it('null chip clears; historyLoaded clears live media tax', () => {
+    const withChip = reduce(initialState, {
+      type: 'mediaToolTax',
+      chip: {
+        label: 'media sess 1.0k',
+        turnMediaTokens: 0,
+        sessionMediaTokens: 1000,
+        sessionMediaCount: 2,
+        warn: false,
+        pause: false,
+        preferDomArmed: true
+      }
+    });
+    assert.equal(withChip.mediaToolTax?.preferDomArmed, true);
+
+    const cleared = reduce(withChip, { type: 'mediaToolTax', chip: null });
+    assert.equal(cleared.mediaToolTax, null);
+
+    const reloaded = reduce(withChip, {
+      type: 'historyLoaded',
+      meta: {
+        id: 's2',
+        backend: 'claude',
+        title: 't',
+        mode: 'default',
+        cwd: '/tmp',
+        createdAt: 1
+      },
+      records: []
+    });
+    assert.equal(reloaded.mediaToolTax, null);
   });
 });

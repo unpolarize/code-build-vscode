@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.1 — 2026-09-02
+
+### Media tool-tax — header chip + Prefer DOM/CLI action
+
+- Header `media …` chip (live session tax); click arms Prefer DOM/CLI.
+- Pause notice gains a one-click **Prefer DOM/CLI** button: session-sticky host hint on subsequent prompts (advisory only).
+- README documents browser-personal as the preferred authenticated-browse path over screenshot MCP loops.
+
 ## 0.23.0 — 2026-09-01
 
 ### Runtime media/pixel tool-tax governor (advisory)
