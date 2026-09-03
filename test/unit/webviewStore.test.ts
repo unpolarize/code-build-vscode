@@ -627,3 +627,29 @@ describe('daemonStatus', () => {
     assert.equal(s.daemon?.error, 'unreachable');
   });
 });
+
+describe('pinnedPermissionMode', () => {
+  it('hydrates and live-updates the workspace permission pin', () => {
+    assert.equal(initialState.pinnedPermissionMode, null);
+    let s = reduce(initialState, {
+      type: 'hydrate',
+      state: {
+        session: null,
+        backends: [],
+        allowBypass: false,
+        sessions: [],
+        defaultBackend: 'claude',
+        memoryEntries: 0,
+        memoryFiles: 0,
+        memoryByProvider: {},
+        showActiveQuestionBanner: true,
+        pinnedPermissionMode: 'auto'
+      }
+    } as HostToWebview);
+    assert.equal(s.pinnedPermissionMode, 'auto');
+    s = reduce(s, { type: 'pinnedMode', mode: 'plan' } as HostToWebview);
+    assert.equal(s.pinnedPermissionMode, 'plan');
+    s = reduce(s, { type: 'pinnedMode', mode: null } as HostToWebview);
+    assert.equal(s.pinnedPermissionMode, null);
+  });
+});

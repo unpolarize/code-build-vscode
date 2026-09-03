@@ -1,4 +1,9 @@
-import type { SessionUpdate, ToolCall, UsageInfo } from '../../src/shared/acpTypes';
+import type {
+  PermissionMode,
+  SessionUpdate,
+  ToolCall,
+  UsageInfo
+} from '../../src/shared/acpTypes';
 import type {
   ActivitySegmentMsg,
   CompactMarker,
@@ -124,6 +129,8 @@ export interface ChatState {
   session: SessionMeta | null;
   backends: HydrateState['backends'];
   allowBypass: boolean;
+  /** Per-workspace sticky permission-mode pin (null when unpinned). */
+  pinnedPermissionMode: PermissionMode | null;
   items: ChatItem[];
   busy: boolean;
   /** FIFO of unanswered permission requests. The UI renders the head;
@@ -238,6 +245,7 @@ export const initialState: ChatState = {
   session: null,
   backends: [],
   allowBypass: false,
+  pinnedPermissionMode: null,
   items: [],
   busy: false,
   permissionQueue: [],
@@ -309,6 +317,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         session: msg.state.session,
         backends: msg.state.backends,
         allowBypass: msg.state.allowBypass,
+        pinnedPermissionMode: msg.state.pinnedPermissionMode ?? null,
         sessions: msg.state.sessions ?? [],
         memoryEntries: msg.state.memoryEntries ?? 0,
         memoryFiles: msg.state.memoryFiles ?? 0,
@@ -334,6 +343,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       };
     case 'stallTimeout':
       return { ...state, stallAutoCancelSeconds: msg.seconds };
+    case 'pinnedMode':
+      return { ...state, pinnedPermissionMode: msg.mode };
     case 'sessionsList':
       return { ...state, sessions: msg.sessions };
     case 'daemonStatus':

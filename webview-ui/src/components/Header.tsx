@@ -85,13 +85,42 @@ export function Header({
         className="mode-picker"
         value={state.session?.mode ?? 'default'}
         onChange={(e) => onSetMode(e.target.value as PermissionMode)}
+        title={
+          state.pinnedPermissionMode
+            ? `Permission mode (workspace pin: ${state.pinnedPermissionMode})`
+            : 'Permission mode'
+        }
       >
         {MODES.map((m) => (
           <option key={m} value={m} disabled={m === 'bypass' && !state.allowBypass}>
             {m}
+            {state.pinnedPermissionMode === m ? ' · pinned' : ''}
           </option>
         ))}
       </select>
+
+      <button
+        type="button"
+        className={
+          state.pinnedPermissionMode
+            ? 'mode-pin-btn mode-pin-btn-active'
+            : 'mode-pin-btn'
+        }
+        title={
+          state.pinnedPermissionMode
+            ? `Unpin workspace mode (${state.pinnedPermissionMode}). New sessions fall back to lastMode / settings.`
+            : 'Pin current permission mode for this workspace (sticky across new sessions)'
+        }
+        onClick={() => {
+          if (state.pinnedPermissionMode) {
+            post({ type: 'unpinMode' });
+          } else {
+            post({ type: 'pinMode' });
+          }
+        }}
+      >
+        {state.pinnedPermissionMode ? '📌' : '📍'}
+      </button>
 
       {modelOptions.length > 0 && (
         <select
