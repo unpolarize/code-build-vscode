@@ -1,9 +1,8 @@
 import { useState } from 'react';
 import type { PermissionMode } from '../../../src/shared/acpTypes';
+import { modePickerOptions } from '../../../src/shared/permissionModes';
 import type { ChatState } from '../store';
 import { post } from '../vscodeApi';
-
-const MODES: PermissionMode[] = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypass'];
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 const EFFORT_LEVELS: Effort[] = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 
@@ -60,6 +59,10 @@ export function Header({
   const modelOptions = currentCap?.models ?? [];
   const supportsEffort = currentCap?.supportsEffort === true;
 
+  // Picker options from the agent-reported modes_update inventory when
+  // present (agent labels, inventory-only modes); static fallback otherwise.
+  const modeOptions = modePickerOptions(state.modeOptions, state.session?.mode ?? 'default');
+
   function toggleHistory() {
     if (!historyOpen) onRefreshSessions();
     setHistoryOpen((v) => !v);
@@ -91,10 +94,10 @@ export function Header({
             : 'Permission mode'
         }
       >
-        {MODES.map((m) => (
-          <option key={m} value={m} disabled={m === 'bypass' && !state.allowBypass}>
-            {m}
-            {state.pinnedPermissionMode === m ? ' · pinned' : ''}
+        {modeOptions.map((o) => (
+          <option key={o.mode} value={o.mode} disabled={o.mode === 'bypass' && !state.allowBypass}>
+            {o.label}
+            {state.pinnedPermissionMode === o.mode ? ' · pinned' : ''}
           </option>
         ))}
       </select>

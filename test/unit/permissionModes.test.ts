@@ -2,14 +2,17 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   acpIdForPermissionMode,
+  FALLBACK_MODE_PICKER_OPTIONS,
   isClaudePermissionBackend,
   isPermissionMode,
+  modePickerOptions,
   permissionModeFromAcpId,
   permissionModeSupportedByInventory,
   resolveEffectivePermissionMode,
   shouldShowAutoEducateBanner
 } from '../../src/shared/permissionModes';
 import type { PermissionMode } from '../../src/shared/acpTypes';
+import { reduce, initialState } from '../../webview-ui/src/store';
 
 test('permissionModeFromAcpId maps every Claude wire id', () => {
   const table: [string, PermissionMode | null][] = [
@@ -242,4 +245,143 @@ test('shouldShowAutoEducateBanner matrix (educate-on-select)', () => {
   for (const row of table) {
     assert.equal(shouldShowAutoEducateBanner(row.input), row.show, row.name);
   }
+});
+
+test('modePickerOptions falls back to the static list without an inventory', () => {
+  assert.deepEqual(modePickerOptions(undefined), FALLBACK_MODE_PICKER_OPTIONS);
+  assert.deepEqual(modePickerOptions(null, 'plan'), FALLBACK_MODE_PICKER_OPTIONS);
+  assert.deepEqual(modePickerOptions([], 'auto'), FALLBACK_MODE_PICKER_OPTIONS);
+  assert.deepEqual(
+    FALLBACK_MODE_PICKER_OPTIONS.map((o) => o.mode),
+    ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypass']
+  );
+});
+
+test('modePickerOptions maps a Claude ACP inventory with agent labels', () => {
+  const options = modePickerOptions(
+    [
+      { id: 'default', name: 'Always Ask' },
+      { id: 'acceptEdits', name: 'Accept Edits' },
+      { id: 'plan', name: 'Plan Mode' },
+      { id: 'bypassPermissions', name: 'Bypass Permissions' }
+    ],
+    'default'
+  );
+  assert.deepEqual(options, [
+    { mode: 'default', label: 'Always Ask' },
+    { mode: 'acceptEdits', label: 'Accept Edits' },
+    { mode: 'plan', label: 'Plan Mode' },
+    { mode: 'bypass', label: 'Bypass Permissions' }
+  ]);
+});
+
+test('modePickerOptions skips non-permission ids and dedupes aliases', () => {
+  // opencode agent roles must never render as permission modes.
+  assert.deepEqual(
+    modePickerOptions([{ id: 'build', name: 'Build' }, { id: 'read-only' }], 'default'),
+    FALLBACK_MODE_PICKER_OPTIONS
+  );
+  // `manual` aliases `default` — first advertised label wins, no dupes.
+  const options = modePickerOptions(
+    [
+      { id: 'default', name: 'Default' },
+      { id: 'manual', name: 'Manual' },
+      { id: 'plan', name: 'Plan' }
+    ],
+    'plan'
+  );
+  assert.deepEqual(options, [
+    { mode: 'default', label: 'Default' },
+    { mode: 'plan', label: 'Plan' }
+  ]);
+});
+
+test('modePickerOptions appends the current mode when the inventory omits it', () => {
+  const options = modePickerOptions(
+    [
+      { id: 'default', name: 'Default' },
+      { id: 'plan', name: 'Plan' }
+    ],
+    'auto'
+  );
+  assert.deepEqual(options, [
+    { mode: 'default', label: 'Default' },
+    { mode: 'plan', label: 'Plan' },
+    { mode: 'auto', label: 'auto' }
+  ]);
+  // Present in inventory — no duplicate appended.
+  assert.equal(
+    modePickerOptions([{ id: 'plan', name: 'Plan' }], 'plan').filter((o) => o.mode === 'plan')
+      .length,
+    1
+  );
+});
+
+test('modePickerOptions labels fall back to the mode id on blank names', () => {
+  assert.deepEqual(modePickerOptions([{ id: 'acceptEdits', name: '  ' }]), [
+    { mode: 'acceptEdits', label: 'acceptEdits' }
+  ]);
+  assert.deepEqual(modePickerOptions([{ id: 'dontAsk' }]), [
+    { mode: 'dontAsk', label: 'dontAsk' }
+  ]);
+});
+
+test('webview store ingests modes_update into modeOptions', () => {
+  assert.equal(initialState.modeOptions, null);
+  const next = reduce(initialState, {
+    type: 'sessionUpdate',
+    sessionId: 's1',
+    update: {
+      kind: 'modes_update',
+      currentModeId: 'default',
+      availableModes: [
+        { id: 'default', name: 'Always Ask' },
+        { id: 'plan', name: 'Plan Mode' }
+      ]
+    }
+  });
+  assert.deepEqual(next.modeOptions, [
+    { id: 'default', name: 'Always Ask' },
+    { id: 'plan', name: 'Plan Mode' }
+  ]);
+});
+
+test('historyLoaded clears stale modeOptions until a persisted modes_update re-applies', () => {
+  const withInventory = reduce(initialState, {
+    type: 'sessionUpdate',
+    sessionId: 's1',
+    update: {
+      kind: 'modes_update',
+      currentModeId: 'default',
+      availableModes: [{ id: 'default', name: 'Always Ask' }]
+    }
+  });
+  assert.equal(withInventory.modeOptions?.length, 1);
+
+  const meta = {
+    id: 's2',
+    backend: 'claude' as const,
+    title: 't',
+    mode: 'default' as const,
+    cwd: '/tmp',
+    createdAt: 1
+  };
+  const cleared = reduce(withInventory, { type: 'historyLoaded', meta, records: [] });
+  assert.equal(cleared.modeOptions, null);
+
+  const restored = reduce(withInventory, {
+    type: 'historyLoaded',
+    meta,
+    records: [
+      {
+        type: 'update',
+        update: {
+          kind: 'modes_update',
+          currentModeId: 'plan',
+          availableModes: [{ id: 'plan', name: 'Plan Mode' }]
+        }
+      }
+    ]
+  });
+  assert.deepEqual(restored.modeOptions, [{ id: 'plan', name: 'Plan Mode' }]);
 });
