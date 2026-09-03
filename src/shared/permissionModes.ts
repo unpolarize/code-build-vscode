@@ -132,6 +132,49 @@ export function permissionModeSupportedByInventory(
   return availableModeIds.some((id) => permissionModeFromAcpId(id) === mode);
 }
 
+/** One header-picker option: CB mode value + agent-provided display label. */
+export interface ModePickerOption {
+  mode: PermissionMode;
+  label: string;
+}
+
+/** Static picker options for backends with no advertised inventory
+ * (stream-json Claude, codex) — mirrors the historical hardcoded Header
+ * list, in its historical order (bypass last). */
+export const FALLBACK_MODE_PICKER_OPTIONS: readonly ModePickerOption[] = (
+  ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypass'] as const
+).map((mode) => ({ mode, label: mode }));
+
+/**
+ * Build the header permission-mode picker options from a `modes_update`
+ * inventory (ACP session/new|load `modes.availableModes`). Inventory entries
+ * whose wire id maps to a CB permission mode become options labeled with the
+ * agent's name for that mode; non-permission ids (opencode agent roles, codex
+ * presets) are skipped. When the inventory is missing/empty or nothing maps,
+ * fall back to the static list. The current mode is appended if the inventory
+ * omits it, so the <select> never renders a blank selection. Bypass gating
+ * (allowBypass) stays a render-time concern — options are returned ungated.
+ */
+export function modePickerOptions(
+  availableModes: readonly { id: string; name?: string }[] | null | undefined,
+  currentMode?: PermissionMode | null
+): readonly ModePickerOption[] {
+  if (!availableModes || availableModes.length === 0) return FALLBACK_MODE_PICKER_OPTIONS;
+  const options: ModePickerOption[] = [];
+  const seen = new Set<PermissionMode>();
+  for (const entry of availableModes) {
+    const mode = permissionModeFromAcpId(entry.id);
+    if (!mode || seen.has(mode)) continue;
+    seen.add(mode);
+    options.push({ mode, label: entry.name?.trim() || mode });
+  }
+  if (options.length === 0) return FALLBACK_MODE_PICKER_OPTIONS;
+  if (currentMode && isPermissionMode(currentMode) && !seen.has(currentMode)) {
+    options.push({ mode: currentMode, label: currentMode });
+  }
+  return options;
+}
+
 /**
  * Claude is the only backend whose permission vocabulary includes Auto
  * (classifier). Other backends either lack permission modes or use

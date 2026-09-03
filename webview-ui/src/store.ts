@@ -131,6 +131,10 @@ export interface ChatState {
   allowBypass: boolean;
   /** Per-workspace sticky permission-mode pin (null when unpinned). */
   pinnedPermissionMode: PermissionMode | null;
+  /** Agent-advertised mode inventory from `modes_update` (ACP
+   * session/new|load `modes.availableModes`). Null until an inventory
+   * arrives — the header picker falls back to its static option list. */
+  modeOptions: { id: string; name: string; description?: string }[] | null;
   items: ChatItem[];
   busy: boolean;
   /** FIFO of unanswered permission requests. The UI renders the head;
@@ -246,6 +250,7 @@ export const initialState: ChatState = {
   backends: [],
   allowBypass: false,
   pinnedPermissionMode: null,
+  modeOptions: null,
   items: [],
   busy: false,
   permissionQueue: [],
@@ -745,6 +750,11 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       return state.session && u.mode
         ? { ...state, session: { ...state.session, mode: u.mode } }
         : state;
+    case 'modes_update':
+      // Agent-advertised inventory (ACP session/new|load) — the header
+      // picker builds its options from this; the current-mode selection
+      // itself arrives via the paired current_mode_update.
+      return { ...state, modeOptions: u.availableModes };
     case 'protocol_version_update':
       return {
         ...state,
@@ -922,12 +932,14 @@ function replayRecords(
           // Stale restore actions must not survive a session switch; the host
           // re-posts checkpointAvailable right after historyLoaded.
           checkpointIds: [],
-          // Protocol pin / spend-limit re-apply from persisted updates if
-          // the transcript has them; otherwise stay null until next emit.
+          // Protocol pin / spend-limit / mode inventory re-apply from
+          // persisted updates if the transcript has them; otherwise stay
+          // null until next emit (static picker fallback for modeOptions).
           // Media-tax is live-only (not persisted) — clear on session switch.
           protocolPin: null,
           spendLimit: null,
-          mediaToolTax: null
+          mediaToolTax: null,
+          modeOptions: null
         };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);
