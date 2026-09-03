@@ -2,10 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   acpIdForPermissionMode,
+  isClaudePermissionBackend,
   isPermissionMode,
   permissionModeFromAcpId,
   permissionModeSupportedByInventory,
-  resolveEffectivePermissionMode
+  resolveEffectivePermissionMode,
+  shouldShowAutoEducateBanner
 } from '../../src/shared/permissionModes';
 import type { PermissionMode } from '../../src/shared/acpTypes';
 
@@ -160,4 +162,84 @@ test('permissionModeSupportedByInventory treats empty inventory as supported', (
   assert.equal(permissionModeSupportedByInventory('bypass', ['bypassPermissions']), true);
   assert.equal(permissionModeSupportedByInventory('auto', ['default', 'plan']), false);
   assert.equal(permissionModeSupportedByInventory('plan', ['build', 'plan']), true);
+});
+
+test('isClaudePermissionBackend is Claude-only', () => {
+  assert.equal(isClaudePermissionBackend('claude'), true);
+  assert.equal(isClaudePermissionBackend('grok'), false);
+  assert.equal(isClaudePermissionBackend('codex'), false);
+  assert.equal(isClaudePermissionBackend('opencode'), false);
+  assert.equal(isClaudePermissionBackend('cline'), false);
+  assert.equal(isClaudePermissionBackend(null), false);
+  assert.equal(isClaudePermissionBackend(undefined), false);
+});
+
+test('shouldShowAutoEducateBanner matrix (educate-on-select)', () => {
+  const base = {
+    selectedMode: 'auto' as PermissionMode,
+    backendId: 'claude',
+    pinnedMode: null as PermissionMode | null,
+    dismissed: false,
+    systemDriven: false
+  };
+  const table: Array<{
+    name: string;
+    input: Parameters<typeof shouldShowAutoEducateBanner>[0];
+    show: boolean;
+  }> = [
+    { name: 'happy path: user picks auto on Claude', input: { ...base }, show: true },
+    {
+      name: 'not auto',
+      input: { ...base, selectedMode: 'plan' },
+      show: false
+    },
+    {
+      name: 'never for grok',
+      input: { ...base, backendId: 'grok' },
+      show: false
+    },
+    {
+      name: 'never for codex',
+      input: { ...base, backendId: 'codex' },
+      show: false
+    },
+    {
+      name: 'never for opencode',
+      input: { ...base, backendId: 'opencode' },
+      show: false
+    },
+    {
+      name: 'never for cline',
+      input: { ...base, backendId: 'cline' },
+      show: false
+    },
+    {
+      name: 'never when dismissed',
+      input: { ...base, dismissed: true },
+      show: false
+    },
+    {
+      name: 'never when workspace pin set',
+      input: { ...base, pinnedMode: 'default' },
+      show: false
+    },
+    {
+      name: 'never when auto is already pinned',
+      input: { ...base, pinnedMode: 'auto' },
+      show: false
+    },
+    {
+      name: 'never on resume/handoff/systemDriven',
+      input: { ...base, systemDriven: true },
+      show: false
+    },
+    {
+      name: 'missing backend',
+      input: { ...base, backendId: undefined },
+      show: false
+    }
+  ];
+  for (const row of table) {
+    assert.equal(shouldShowAutoEducateBanner(row.input), row.show, row.name);
+  }
 });

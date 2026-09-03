@@ -26,10 +26,13 @@ import {
 import { cleanCommandText } from '../shared/cleanCommandText';
 import { NowLineTracker } from '../shared/nowLine';
 import {
+  AUTO_EDUCATE_DISMISSED_KEY,
+  AUTO_MODE_DOCS_URL,
   isPermissionMode,
   PIN_UNSUPPORTED_WARNED_KEY,
   PINNED_PERMISSION_MODE_KEY,
-  resolveEffectivePermissionMode
+  resolveEffectivePermissionMode,
+  shouldShowAutoEducateBanner
 } from '../shared/permissionModes';
 import {
   parseVisClosePayload,
@@ -1916,8 +1919,9 @@ export class SessionManager {
     // Apply immediately on the live session when possible (spawn flags /
     // session/set_mode). Failure does not clear the pin — next new session
     // will still try; unsupported inventory warns once via reapply.
+    // systemDriven: pin write is the sticky choice; do not fire educate banner.
     if (this.meta && this.meta.mode !== target) {
-      this.setMode(target);
+      this.setMode(target, { systemDriven: true });
     }
   }
 
@@ -2826,12 +2830,13 @@ export class SessionManager {
     this.panel.post({ type: 'sessionMeta', session: this.meta });
   }
 
-  private setMode(mode: PermissionMode): void {
+  private setMode(mode: PermissionMode, opts?: { systemDriven?: boolean }): void {
     // Optimistic: update meta + chip immediately, but persist lastMode only
     // after the transport accepts the change. On rejection (ACP
     // session/set_mode error, unsupported mode id) revert both — persisting
     // a refused mode would silently re-apply it on every future session.
     const prevMode = this.meta?.mode;
+    const systemDriven = opts?.systemDriven === true;
     const applyMeta = (m: PermissionMode) => {
       if (!this.meta) return;
       this.meta.mode = m;
@@ -2840,7 +2845,10 @@ export class SessionManager {
     applyMeta(mode);
     const applied = this.session ? this.session.setMode(mode) : Promise.resolve();
     applied.then(
-      () => this.rememberConfig(),
+      () => {
+        this.rememberConfig();
+        this.maybeShowAutoEducateBanner(mode, systemDriven);
+      },
       (err: unknown) => {
         if (prevMode !== undefined) applyMeta(prevMode);
         this.panel.post({
@@ -2851,6 +2859,45 @@ export class SessionManager {
         });
       }
     );
+  }
+
+  /**
+   * P3 educate-on-select: once per workspace, the first time the user
+   * successfully picks Claude Auto, surface a short notice + docs link.
+   * Marks dismissed immediately so resume/reload cannot refire.
+   */
+  private maybeShowAutoEducateBanner(mode: PermissionMode, systemDriven: boolean): void {
+    const dismissed = this.context.workspaceState.get<boolean>(AUTO_EDUCATE_DISMISSED_KEY) === true;
+    if (
+      !shouldShowAutoEducateBanner({
+        selectedMode: mode,
+        backendId: this.meta?.backend,
+        pinnedMode: this.getPinnedMode(),
+        dismissed,
+        systemDriven
+      })
+    ) {
+      return;
+    }
+    void this.context.workspaceState.update(AUTO_EDUCATE_DISMISSED_KEY, true);
+    this.panel.post({
+      type: 'notice',
+      text:
+        "**Auto mode** uses Claude's classifier to approve tool calls. " +
+        'Pin a mode with 📍 if you want this sticky for the workspace.',
+      detail: `Docs: ${AUTO_MODE_DOCS_URL}`
+    });
+    void vscode.window
+      .showInformationMessage(
+        'Code Build: Claude Auto mode uses a classifier to approve tools. Learn more in the permission-modes docs.',
+        'Open docs',
+        'Got it'
+      )
+      .then((choice) => {
+        if (choice === 'Open docs') {
+          void vscode.env.openExternal(vscode.Uri.parse(AUTO_MODE_DOCS_URL));
+        }
+      });
   }
 
   /** Apply a new model selection. Persists onto meta so the picker stays

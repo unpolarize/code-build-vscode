@@ -6,6 +6,15 @@ export const PINNED_PERMISSION_MODE_KEY = 'codeBuild.pinnedPermissionMode';
 /** workspaceState flag — one-shot warn when a pin is not advertised by the agent. */
 export const PIN_UNSUPPORTED_WARNED_KEY = 'codeBuild.pinnedPermissionMode.unsupportedWarned';
 
+/**
+ * workspaceState flag — P3 educate-on-select: once the Auto-mode notice has
+ * been shown (or explicitly dismissed) for this workspace, never refire.
+ */
+export const AUTO_EDUCATE_DISMISSED_KEY = 'codeBuild.autoModeEducateDismissed';
+
+/** Claude permission-modes docs linked from the educate-on-select notice. */
+export const AUTO_MODE_DOCS_URL = 'https://code.claude.com/docs/en/permission-modes.md';
+
 const PERMISSION_MODES: readonly PermissionMode[] = [
   'default',
   'plan',
@@ -121,4 +130,43 @@ export function permissionModeSupportedByInventory(
   const wire = acpIdForPermissionMode(mode);
   if (availableModeIds.includes(wire)) return true;
   return availableModeIds.some((id) => permissionModeFromAcpId(id) === mode);
+}
+
+/**
+ * Claude is the only backend whose permission vocabulary includes Auto
+ * (classifier). Other backends either lack permission modes or use
+ * non-permission mode ids (opencode roles, codex presets).
+ */
+export function isClaudePermissionBackend(backendId: string | null | undefined): boolean {
+  return backendId === 'claude';
+}
+
+export interface AutoEducateBannerInput {
+  /** Selected mode the user just applied (post-success). */
+  selectedMode: PermissionMode;
+  /** Active session backend id. */
+  backendId: string | null | undefined;
+  /** workspaceState pin — any pin means the user already made a sticky choice. */
+  pinnedMode?: PermissionMode | null;
+  /** workspaceState dismiss / already-shown flag. */
+  dismissed: boolean;
+  /**
+   * True for resume / handoff / switchBackend / pin-reapply paths that must
+   * never surface the notice (even if the resulting mode is auto).
+   */
+  systemDriven?: boolean;
+}
+
+/**
+ * P3 educate-on-select predicate (redefined — vendor-inherit Auto-default
+ * banner is dead under CB-owned spawn defaults). Show once per workspace
+ * the first time the user successfully picks `auto` on Claude.
+ */
+export function shouldShowAutoEducateBanner(input: AutoEducateBannerInput): boolean {
+  if (input.dismissed) return false;
+  if (input.systemDriven) return false;
+  if (input.selectedMode !== 'auto') return false;
+  if (!isClaudePermissionBackend(input.backendId)) return false;
+  if (input.pinnedMode != null) return false;
+  return true;
 }
