@@ -26,6 +26,12 @@ import {
 import { cleanCommandText } from '../shared/cleanCommandText';
 import { NowLineTracker } from '../shared/nowLine';
 import {
+  isPermissionMode,
+  PIN_UNSUPPORTED_WARNED_KEY,
+  PINNED_PERMISSION_MODE_KEY,
+  resolveEffectivePermissionMode
+} from '../shared/permissionModes';
+import {
   parseVisClosePayload,
   visClosePrompt,
   visFacilitationPreamble,
@@ -518,6 +524,12 @@ export class SessionManager {
       case 'setMode':
         this.setMode(msg.mode);
         break;
+      case 'pinMode':
+        this.pinMode(msg.mode);
+        break;
+      case 'unpinMode':
+        this.unpinMode();
+        break;
       case 'setModel':
         this.setModel(msg.model);
         break;
@@ -1002,7 +1014,8 @@ export class SessionManager {
       showActiveQuestionBanner: this.config.get<boolean>('showActiveQuestionBanner', true),
       perfDebug: this.perfDebugMode(),
       voice: this.voiceHydrateConfig(),
-      stallAutoCancelSeconds: this.effectiveStallAutoCancelSeconds()
+      stallAutoCancelSeconds: this.effectiveStallAutoCancelSeconds(),
+      pinnedPermissionMode: this.getPinnedMode() ?? null
     };
     this.perf.setMode(base.perfDebug ?? 'off');
     this.ensurePerfHudTimer();
@@ -1457,7 +1470,9 @@ export class SessionManager {
     // carries the pack (openSession does not clear pendingPrimer).
     this.pendingPrimer = primer;
 
-    await this.openSession(pick.backend);
+    // skipPin: handoff must not re-apply a Claude permission pin onto the
+    // destination backend (agent-role / approval inventories differ).
+    await this.openSession(pick.backend, { skipPin: true });
     this.persistBackendMap();
 
     this.panel.post({
@@ -1589,7 +1604,9 @@ export class SessionManager {
       });
     }
 
-    await this.openSession(backend);
+    // skipPin: cross-backend switch must not force the workspace Claude pin
+    // onto grok/opencode/codex mode inventories (relabel/hide instead).
+    await this.openSession(backend, { skipPin: true });
     // The freshly-spawned session inherits the conversation's per-backend
     // native-session memory so a later flip back here resumes natively.
     this.persistBackendMap();
@@ -1828,15 +1845,20 @@ export class SessionManager {
     return [];
   }
 
-  /** Sticky config remembered across sessions in globalState. The user's
-   * last mode / model / effort selection is restored on every new session
-   * so they don't have to re-pick bypass + model each time. Bypass is only
-   * restored when the escape hatch is still enabled in settings. */
-  private rememberedConfig(): { mode: PermissionMode; model?: string; effort: SessionMeta['effort'] } {
+  /** Sticky config remembered across sessions. Mode precedence for NEW
+   * sessions: workspace pin > globalState.lastMode > initialPermissionMode
+   * (bypass gated by allowDangerouslySkipPermissions). Pass `skipPin` on
+   * resume/handoff so a Claude pin is not forced onto a different backend. */
+  private rememberedConfig(opts?: {
+    skipPin?: boolean;
+  }): { mode: PermissionMode; model?: string; effort: SessionMeta['effort']; modeSource: string } {
     const g = this.context.globalState;
-    let mode = g.get<PermissionMode>('lastMode')
-      ?? this.config.get<PermissionMode>('initialPermissionMode', 'default');
-    if (mode === 'bypass' && !this.allowBypass) mode = 'default';
+    const resolved = resolveEffectivePermissionMode({
+      pin: opts?.skipPin ? null : this.getPinnedMode(),
+      lastMode: g.get<PermissionMode>('lastMode'),
+      initialPermissionMode: this.config.get<PermissionMode>('initialPermissionMode', 'default'),
+      allowBypass: this.allowBypass
+    });
     const model =
       g.get<string>('lastModel')
       ?? (this.config.get<string>('defaultModel', '') || undefined);
@@ -1844,7 +1866,103 @@ export class SessionManager {
       g.get<SessionMeta['effort']>('lastEffort')
       ?? this.config.get<SessionMeta['effort']>('defaultEffort', 'default')
       ?? 'default';
-    return { mode, model: model || undefined, effort };
+    return {
+      mode: resolved.mode,
+      model: model || undefined,
+      effort,
+      modeSource: resolved.source
+    };
+  }
+
+  /** Read the per-workspace permission-mode pin, or undefined when unset/invalid. */
+  private getPinnedMode(): PermissionMode | undefined {
+    const raw = this.context.workspaceState.get<unknown>(PINNED_PERMISSION_MODE_KEY);
+    return isPermissionMode(raw) ? raw : undefined;
+  }
+
+  /** Persist or clear the workspace pin; notifies the webview. */
+  private writePinnedMode(mode: PermissionMode | null): void {
+    void this.context.workspaceState.update(PINNED_PERMISSION_MODE_KEY, mode ?? undefined);
+    // Clearing the pin also clears the one-shot unsupported warn so a
+    // future pin can warn again if the agent inventory rejects it.
+    if (mode == null) {
+      void this.context.workspaceState.update(PIN_UNSUPPORTED_WARNED_KEY, undefined);
+    }
+    this.panel.post({ type: 'pinnedMode', mode });
+  }
+
+  /** Pin the given mode (or the current session mode) for this workspace. */
+  private pinMode(mode?: PermissionMode): void {
+    const target = mode ?? this.meta?.mode;
+    if (!target || !isPermissionMode(target)) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Nothing to pin — pick a permission mode first.'
+      });
+      return;
+    }
+    if (target === 'bypass' && !this.allowBypass) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Cannot pin **bypass** — enable `codeBuild.allowDangerouslySkipPermissions` first.'
+      });
+      return;
+    }
+    this.writePinnedMode(target);
+    this.panel.post({
+      type: 'notice',
+      text: `Pinned permission mode **${target}** for this workspace.`
+    });
+    // Apply immediately on the live session when possible (spawn flags /
+    // session/set_mode). Failure does not clear the pin — next new session
+    // will still try; unsupported inventory warns once via reapply.
+    if (this.meta && this.meta.mode !== target) {
+      this.setMode(target);
+    }
+  }
+
+  private unpinMode(): void {
+    if (!this.getPinnedMode()) {
+      this.panel.post({ type: 'notice', text: 'No workspace permission-mode pin to clear.' });
+      return;
+    }
+    this.writePinnedMode(null);
+    this.panel.post({ type: 'notice', text: 'Cleared workspace permission-mode pin.' });
+  }
+
+  /**
+   * After a fresh session start, push the pin through session/set_mode when
+   * the agent came up in a different mode (ACP session/new vendor default).
+   * Warns once per workspace when the agent inventory rejects the pin.
+   */
+  private async reapplyPinnedModeAfterStart(skipPin: boolean): Promise<void> {
+    if (skipPin) return;
+    const pin = this.getPinnedMode();
+    if (!pin || !this.session) return;
+    if (pin === 'bypass' && !this.allowBypass) return;
+    if (this.meta?.mode === pin) {
+      // Stream-json already spawned with the pin; ACP may still need set_mode
+      // if ingestModes overwrote transport-local mode to vendor current.
+      // Calling setMode when already matching is cheap (local + optional RPC).
+    }
+    try {
+      await this.session.setMode(pin);
+      if (this.meta && this.meta.mode !== pin) {
+        this.meta.mode = pin;
+        this.store.updateMeta(this.meta);
+        this.panel.post({ type: 'sessionMeta', session: this.meta });
+      }
+    } catch (err) {
+      const already = this.context.workspaceState.get<boolean>(PIN_UNSUPPORTED_WARNED_KEY);
+      if (!already) {
+        void this.context.workspaceState.update(PIN_UNSUPPORTED_WARNED_KEY, true);
+        this.panel.post({
+          type: 'notice',
+          text: `Pinned mode **${pin}** is not supported by this agent — left vendor default. Unpin or pick another mode.`,
+          detail: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
   }
 
   /** Persist the current selection so the next session restores it. */
@@ -1855,7 +1973,10 @@ export class SessionManager {
     void this.context.globalState.update('lastEffort', this.meta.effort ?? 'default');
   }
 
-  private async openSession(backend?: BackendId): Promise<void> {
+  private async openSession(
+    backend?: BackendId,
+    opts?: { skipPin?: boolean }
+  ): Promise<void> {
     this.teardownSession();
     // Reset per-session classifier state so a fresh chat starts the
     // turn counter at 0.
@@ -1872,6 +1993,7 @@ export class SessionManager {
     const id = crypto.randomUUID();
     const be = backend ?? this.defaultBackend();
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
+    const skipPin = opts?.skipPin === true;
 
     // Startup timing markers — see postStartupNotice() for the detail
     // tooltip + 30s follow-up nudge. Long --resume loads can sit silent
@@ -1883,7 +2005,8 @@ export class SessionManager {
       be,
       text: `Starting **${be}** agent…`,
       cwd: this.cwd,
-      spawnStart
+      spawnStart,
+      skipPin
     });
     let firstEventAt = 0;
 
@@ -1904,9 +2027,10 @@ export class SessionManager {
       });
     });
 
-    // Restore the user's last-used mode / model / effort so a fresh session
-    // picks up where they left off (bypass stays sticky when still enabled).
-    const remembered = this.rememberedConfig();
+    // Restore sticky mode / model / effort. Pin applies only on ordinary
+    // new sessions — resume/handoff pass skipPin so Claude pins do not
+    // force-apply onto grok/opencode agent-role inventories.
+    const remembered = this.rememberedConfig({ skipPin });
     // A model remembered from a different backend (e.g. 'opus' carried into
     // grok) won't be valid — drop to the backend's default in that case.
     // Validate against the DISCOVERED list (matches the picker) so a
@@ -1947,6 +2071,7 @@ export class SessionManager {
         openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation',
       onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
     });
+    await this.reapplyPinnedModeAfterStart(skipPin);
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -3383,6 +3508,7 @@ export class SessionManager {
     cwd: string;
     resumeId?: string;
     spawnStart: number;
+    skipPin?: boolean;
   }): () => void {
     // Resolve the same spawn command the transport will use, so the
     // tooltip is the actual argv (not a generic description). Mirrors
@@ -3393,7 +3519,7 @@ export class SessionManager {
     const overrides = this.config.get<Record<string, string>>('binPaths', {});
     const spec = BACKENDS[opts.be];
     const bin = resolveBin(spec, overrides);
-    const remembered = this.rememberedConfig();
+    const remembered = this.rememberedConfig({ skipPin: opts.skipPin });
     const args = spec.buildArgs({
       cwd: opts.cwd,
       mode: remembered.mode,
@@ -3408,7 +3534,9 @@ export class SessionManager {
       `Command: ${cmdLine}`,
       `Cwd: ${opts.cwd}`,
       opts.resumeId ? `Resume: ${opts.resumeId}` : `Resume: (none — fresh session)`,
-      `Mode: ${remembered.mode}` + (remembered.model ? ` · model: ${remembered.model}` : '') +
+      `Mode: ${remembered.mode}` +
+        (remembered.modeSource === 'pin' ? ' (pinned)' : '') +
+        (remembered.model ? ` · model: ${remembered.model}` : '') +
         (remembered.effort && remembered.effort !== 'default' ? ` · effort: ${remembered.effort}` : ''),
       `Started: ${startedAt}`,
       `Phase: spawn + waiting for first event from agent`

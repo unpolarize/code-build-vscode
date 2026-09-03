@@ -171,6 +171,8 @@ export interface HydrateState {
   voice?: VoiceHydrateConfig;
   /** Effective stall auto-cancel for this session (seconds). `0` = warn-only. */
   stallAutoCancelSeconds?: number;
+  /** Per-workspace sticky permission-mode pin (`workspaceState`). Null when unpinned. */
+  pinnedPermissionMode?: PermissionMode | null;
 }
 
 /** Voice settings + capability flags sent on hydrate. */
@@ -216,6 +218,11 @@ export type WebviewToHost =
   | { type: 'prompt'; blocks: ContentBlock[]; interjected?: boolean }
   | { type: 'cancel' }
   | { type: 'setMode'; mode: PermissionMode }
+  /** Pin (or replace) the workspace sticky permission mode. Omit `mode` to
+   * pin the current session mode. Does not erase globalState.lastMode. */
+  | { type: 'pinMode'; mode?: PermissionMode }
+  /** Clear the workspace permission-mode pin. */
+  | { type: 'unpinMode' }
   | { type: 'pickBackend'; backend: BackendId }
   /** Change the active model for the current session. Triggers a respawn
    * with the new --model flag at the next prompt (or immediately if the
@@ -383,6 +390,8 @@ export interface PerfSnapshotMsg {
 
 export type HostToWebview =
   | { type: 'hydrate'; state: HydrateState }
+  /** Live update when the workspace permission-mode pin changes. */
+  | { type: 'pinnedMode'; mode: PermissionMode | null }
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
   /** Batched stream updates (IPC coalesce, 16–32ms window). */
   | { type: 'sessionUpdates'; sessionId: string; updates: SessionUpdate[] }
