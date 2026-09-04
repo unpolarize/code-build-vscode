@@ -1,4 +1,5 @@
 import type { ContentBlock, SessionUpdate, ToolCall } from '../../../shared/acpTypes';
+import { classifyBackendError } from '../../../shared/backendErrorClass';
 
 /**
  * Normalizes OpenAI Codex `codex exec --json` NDJSON events into ACP-shaped
@@ -82,11 +83,21 @@ export class CodexNormalizer {
         ];
       case 'turn.failed':
         return [
-          { kind: 'error', message: cleanMsg(ev.error?.message ?? 'turn failed') },
+          {
+            kind: 'error',
+            message: cleanMsg(ev.error?.message ?? 'turn failed'),
+            errorClass: classifyBackendError(ev.error ?? '')
+          },
           { kind: 'result', stopReason: 'failed' }
         ];
       case 'error':
-        return [{ kind: 'error', message: cleanMsg(ev.message ?? 'error') }];
+        return [
+          {
+            kind: 'error',
+            message: cleanMsg(ev.message ?? 'error'),
+            errorClass: classifyBackendError(ev.message ?? '')
+          }
+        ];
       case 'item.started':
       case 'item.updated':
       case 'item.completed':

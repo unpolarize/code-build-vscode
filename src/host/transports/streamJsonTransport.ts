@@ -9,6 +9,7 @@ import type {
 import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { ClaudeNormalizer } from './normalizers/claude';
+import { classifyBackendError } from '../../shared/backendErrorClass';
 
 /**
  * Drives stream-json / NDJSON backends. P1 supports the persistent-stdin model
@@ -185,7 +186,8 @@ export class StreamJsonTransport extends BaseAgentSession {
           detailParts.length > 0 ? `\n\n\`\`\`\n${detailParts.join('\n').replace(/`/g, "'")}\n\`\`\`` : '';
         this.emit({
           kind: 'error',
-          message: `\`${bin}\` exited with code ${code}.${hint}${detail}`
+          message: `\`${bin}\` exited with code ${code}.${hint}${detail}`,
+          errorClass: classifyBackendError(`${stderr} ${stdoutErr}`)
         });
       } else {
         // Clean exit (code 0 / null). Claude in `-p` mode normally emits

@@ -13,6 +13,7 @@ import { BaseAgentSession, type StartOpts } from '../agentSession';
 import { BACKENDS, resolveBin } from '../backendRegistry';
 import { JsonRpcEndpoint } from './acp/jsonRpc';
 import { normalizeAcpUpdate } from './normalizers/acp';
+import { classifyBackendError } from '../../shared/backendErrorClass';
 import { acpIdForPermissionMode, permissionModeFromAcpId } from '../../shared/permissionModes';
 import { settleAcpProcessExit } from './acpProcessExit';
 import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
@@ -584,7 +585,17 @@ export class AcpTransport extends BaseAgentSession {
       // this request. The exit handler already emitted error/result — do
       // not double-emit a "JSON-RPC endpoint disposed" bubble.
       if (this.exitSettled) return;
-      this.emit({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
+      // Live RPC reject (process still up) is where ACP backends surface
+      // overload/unavailable mid-turn — the exit path never sees these.
+      const message = err instanceof Error ? err.message : String(err);
+      this.emit({
+        kind: 'error',
+        message,
+        errorClass: classifyBackendError({
+          message,
+          code: (err as { code?: number | string }).code
+        })
+      });
     }
   }
 

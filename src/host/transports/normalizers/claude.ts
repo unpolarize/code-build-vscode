@@ -1,4 +1,5 @@
 import type { ContentBlock, SessionUpdate } from '../../../shared/acpTypes';
+import { classifyBackendError } from '../../../shared/backendErrorClass';
 import {
   evaluateSpendLimitChip,
   type SpendLimitStatusFields
@@ -99,7 +100,8 @@ export class ClaudeNormalizer {
           const reason = (obj.error || obj.result || obj.subtype || 'unknown').toString();
           updates.push({
             kind: 'error',
-            message: `Claude returned an error mid-turn: ${reason}`
+            message: `Claude returned an error mid-turn: ${reason}`,
+            errorClass: classifyBackendError(reason)
           });
         }
         return updates;
