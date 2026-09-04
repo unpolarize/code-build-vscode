@@ -65,14 +65,17 @@ function statusOf(input: string | BackendErrorLike): number | undefined {
 // Real-world messages mix vocabularies ("429 Too Many Requests: server
 // overloaded") and misclassifying a quota wall as overload would
 // auto-offer a failover that violates the item's constraints.
+// Matched against noisy stderr tails as well as clean API envelopes, so
+// generic words stay scoped: no bare `billing`/`credential`, and bare
+// `unavailable` only counts within a few words of a backend-ish noun.
 const QUOTA_RE =
-  /\b429\b|rate.?limit|too many requests|quota|usage limit|spend limit|out of credits|insufficient[_ ]quota|billing|limit (?:reached|exceeded)/i;
+  /\b429\b|rate.?limit|too many requests|quota|usage limit|spend limit|out of credits|billing (?:error|issue|problem)|limit (?:reached|exceeded)/i;
 const AUTH_RE =
-  /\b401\b|\b403\b|unauthorized|forbidden|invalid (?:api )?key|authentication|auth(?:orization)? (?:failed|error)|expired token|not logged in|login required|credential/i;
+  /\b401\b|\b403\b|unauthorized|forbidden|invalid (?:api )?key|authentication|auth(?:orization)? (?:failed|error)|expired token|not logged in|login required|credentials? (?:invalid|expired|rejected|missing)/i;
 const OVERLOAD_RE =
   /\b529\b|overloaded(?:_error)?\b|over.?capacity|capacity (?:exceeded|constraints?)|server (?:is )?overloaded/i;
 const UNAVAILABLE_RE =
-  /\b503\b|\b502\b|model[_ ](?:is[_ ])?(?:currently[_ ])?unavailable|model[_ ]not[_ ]available|service unavailable|temporarily unavailable|\bunavailable\b|upstream connect error|no healthy upstream/i;
+  /\b503\b|\b502\b|model[_ ](?:is[_ ])?(?:currently[_ ])?unavailable|model[_ ]not[_ ]available|service unavailable|temporarily unavailable|\b(?:model|backend|service|api|endpoint|server)\b[^,;\n]{0,60}\bunavailable\b|upstream connect error|no healthy upstream/i;
 
 /** Classify one backend error into the failover taxonomy. */
 export function classifyBackendError(

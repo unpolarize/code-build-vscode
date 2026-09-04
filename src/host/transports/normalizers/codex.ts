@@ -86,7 +86,7 @@ export class CodexNormalizer {
           {
             kind: 'error',
             message: cleanMsg(ev.error?.message ?? 'turn failed'),
-            errorClass: classifyBackendError(ev.error?.message ?? '')
+            errorClass: classifyBackendError(ev.error ?? '')
           },
           { kind: 'result', stopReason: 'failed' }
         ];

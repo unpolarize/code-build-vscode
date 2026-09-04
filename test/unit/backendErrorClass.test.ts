@@ -87,6 +87,14 @@ test('unrelated errors → other', () => {
   assert.equal(classifyBackendError(''), 'other');
 });
 
+test('stderr-tail noise words do not misclassify', () => {
+  // Scoped regexes: generic tool chatter must not look like auth/quota/
+  // unavailable (these strings show up in real stderr tails).
+  assert.equal(classifyBackendError('git: credential helper not found'), 'other');
+  assert.equal(classifyBackendError('see billing docs at https://example.com'), 'other');
+  assert.equal(classifyBackendError('warning: feature unavailable in this build'), 'other');
+});
+
 test('isFailoverClass gates to overload|unavailable only', () => {
   assert.equal(isFailoverClass('overload'), true);
   assert.equal(isFailoverClass('unavailable'), true);
