@@ -13,6 +13,7 @@
 // spawning a real agent or mocking vscode.
 
 import type { SessionUpdate } from '../../shared/acpTypes';
+import { classifyBackendError } from '../../shared/backendErrorClass';
 
 export interface AcpExitSettlement {
   /** Child process exit code (`null` when killed by signal). */
@@ -59,7 +60,8 @@ export function settleAcpProcessExit(s: AcpExitSettlement): void {
       kind: 'error',
       message: `${s.bin} exited (${reason})${
         tail ? `\n\n\`\`\`\n${tail}\n\`\`\`` : ''
-      }`
+      }`,
+      errorClass: classifyBackendError(tail)
     });
   }
 

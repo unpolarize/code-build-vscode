@@ -2,6 +2,8 @@
 // native backends (Claude stream-json, Codex NDJSON) are normalized INTO these types,
 // and real ACP backends (Grok, opencode, Cline) map onto them directly.
 
+import type { BackendErrorClass } from './backendErrorClass';
+
 export type BackendId = 'claude' | 'grok' | 'codex' | 'opencode' | 'cline';
 
 /** Host permission vocabulary. Superset of Claude Code's wire ids so the
@@ -106,7 +108,7 @@ export type SessionUpdate =
    * this drives the expanded tooltip in the UI. */
   | { kind: 'usage_breakdown'; entries: UsageInfo[] }
   | { kind: 'result'; stopReason: string; usage?: UsageInfo }
-  | { kind: 'error'; message: string }
+  | { kind: 'error'; message: string; errorClass?: BackendErrorClass }
   /** Backend reported its native session id at startup. Claude assigns
    * its own session id (independent of our local UUID) and writes the
    * transcript under that id in ~/.claude/projects. We capture it on
