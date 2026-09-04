@@ -157,6 +157,16 @@ export interface ChatState {
     sourceBackendId: string;
     llmSummarySupported: boolean;
   } | null;
+  /** Pending overload/unavailable failover confirm (null when idle). */
+  failoverOffer: {
+    errorClass: 'overload' | 'unavailable';
+    fromBackend: string;
+    fromLabel: string;
+    suggestedBackend: string;
+    suggestedLabel: string;
+    alternatives: Array<{ id: string; label: string }>;
+    message: string;
+  } | null;
   /** Memory inventory snapshot piped through `hydrate`. Drives the
    * small Memory chip in the Header (clickable to open Code Sessions
    * Memory tab where available). */
@@ -260,6 +270,7 @@ export const initialState: ChatState = {
   fileSuggestions: [],
   sessions: [],
   primerPrompt: null,
+  failoverOffer: null,
   memoryEntries: 0,
   memoryFiles: 0,
   memoryByProvider: {},
@@ -342,6 +353,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         },
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
         stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
+        failoverOffer: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -356,6 +368,21 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
     case 'mediaToolTax':
       return { ...state, mediaToolTax: msg.chip };
+    case 'failoverOffer':
+      return {
+        ...state,
+        failoverOffer: {
+          errorClass: msg.errorClass,
+          fromBackend: msg.fromBackend,
+          fromLabel: msg.fromLabel,
+          suggestedBackend: msg.suggestedBackend,
+          suggestedLabel: msg.suggestedLabel,
+          alternatives: msg.alternatives,
+          message: msg.message
+        }
+      };
+    case 'failoverOfferClear':
+      return { ...state, failoverOffer: null };
     case 'perfHud':
       return { ...state, perfHud: msg.hud };
     case 'activityStrip':

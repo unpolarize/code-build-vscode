@@ -180,6 +180,15 @@ export function Header({
         </span>
       )}
 
+      {state.session?.failoverFrom && state.session.failoverReason && (
+        <span
+          className="failover-chip"
+          title={formatFailoverTooltip(state.session)}
+        >
+          failover←{state.session.failoverFrom}
+        </span>
+      )}
+
       {state.spendLimit && (
         <span
           className={
@@ -349,6 +358,21 @@ export function Header({
       </button>
     </div>
   );
+}
+
+function formatFailoverTooltip(session: NonNullable<ChatState['session']>): string {
+  const lines = [
+    `Failed over from ${session.failoverFrom}`,
+    `Reason: ${session.failoverReason}`
+  ];
+  if (session.failoverAt != null && session.failoverAt > 0) {
+    try {
+      lines.push(`At: ${new Date(session.failoverAt).toLocaleString()}`);
+    } catch {
+      /* ignore */
+    }
+  }
+  return lines.join('\n');
 }
 
 function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): string {
