@@ -7,6 +7,7 @@ import {
   cancelPause,
   resumeChipLabel,
   shouldWake,
+  takeManualResume,
   takeWake
 } from '../../src/shared/resumeAfterReset';
 import { classifyBackendError } from '../../src/shared/backendErrorClass';
@@ -124,6 +125,28 @@ test('resume primer carries KP id, goal snapshot, done/remaining/verify, no back
   assert.match(primer, /Verify with: npm run test:unit/);
 });
 
+test('takeManualResume — fires while parked (even with unknown reset), single fire', () => {
+  const unknown = buildPauseForReset({
+    errorClass: 'quota',
+    backend: 'claude',
+    now: NOW,
+    kpItemId: 'ideas/cb-host-resume-after-reset-coordinator-park-goal'
+  })!;
+  const fired = takeManualResume(unknown, NOW + 500);
+  assert.ok(fired);
+  assert.equal(fired!.pause.state, 'resumed');
+  assert.equal(fired!.pause.resumedAt, NOW + 500);
+  assert.match(fired!.primer, /same backend/i);
+  assert.equal(takeManualResume(fired!.pause, NOW + 600), null);
+
+  // Also allowed before resumeAt on a known-reset park (user override).
+  const known = pausedWithReset();
+  assert.ok(takeManualResume(known, NOW + 1));
+
+  // But never on a cancelled stamp.
+  assert.equal(takeManualResume(cancelPause(known, NOW), NOW + 1), null);
+});
+
 test('cancelPause — cancel and switch_backend both close the park', () => {
   const p = pausedWithReset();
   const c = cancelPause(p, NOW + 10);
@@ -134,6 +157,12 @@ test('cancelPause — cancel and switch_backend both close the park', () => {
 
   const s = cancelPause(p, NOW + 20, 'switch_backend');
   assert.equal(s.cancelReason, 'switch_backend');
+
+  // A late click cannot rewrite a resumed stamp.
+  const fired = takeWake(p, p.resumeAt!)!;
+  const late = cancelPause(fired.pause, p.resumeAt! + 60_000);
+  assert.equal(late.state, 'resumed');
+  assert.equal(late.cancelReason, undefined);
 });
 
 test('canAutoWake — requires explicit flag AND away window; default notify-only', () => {

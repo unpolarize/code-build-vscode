@@ -12,7 +12,12 @@
 // - Only 'quota' errors park; overload/unavailable/auth/other return null.
 // - Never invent a reset time: no usage signal → resumeAt null → the chip
 //   says "unknown reset" and only a manual Resume can wake the session.
-// - Wake fires at most once (takeWake consumes the paused state).
+// - Wake fires at most once per stamp (takeWake / takeManualResume return
+//   a closed copy and refuse non-paused input). The module is pure, so the
+//   host MUST persist the returned stamp before injecting the primer —
+//   two timers holding the same paused snapshot could otherwise both fire.
+// - Consumers must key on `state === 'paused_for_reset'`, never on the
+//   stamp being truthy: resumed/cancelled stamps stay on SessionMeta.
 // - Auto-wake requires an explicit config flag AND a declared away window;
 //   the default is notify-only.
 
@@ -134,12 +139,32 @@ export function takeWake(
   };
 }
 
-/** User pressed Cancel or Switch-backend-now on the chip. */
+/**
+ * Manual Resume (chip button) — the only wake path when the reset time is
+ * unknown, and always allowed while parked even before resumeAt. Same
+ * single-fire contract as takeWake: null unless currently paused.
+ */
+export function takeManualResume(
+  pause: ResumeAfterResetPause,
+  nowMs: number,
+  opts: ResumePrimerOptions = {}
+): { pause: ResumeAfterResetPause; primer: string } | null {
+  if (pause.state !== 'paused_for_reset') return null;
+  return {
+    pause: { ...pause, state: 'resumed', resumedAt: nowMs },
+    primer: buildResumePrimer(pause, opts)
+  };
+}
+
+/** User pressed Cancel or Switch-backend-now on the chip. Only a live park
+ * can be cancelled — a resumed/cancelled stamp is returned unchanged so a
+ * late click can't rewrite history. */
 export function cancelPause(
   pause: ResumeAfterResetPause,
   nowMs: number,
   cancelReason: 'cancel' | 'switch_backend' = 'cancel'
 ): ResumeAfterResetPause {
+  if (pause.state !== 'paused_for_reset') return pause;
   return { ...pause, state: 'cancelled', cancelledAt: nowMs, cancelReason };
 }
 
