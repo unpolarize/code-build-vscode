@@ -41,6 +41,12 @@ export interface StartOpts {
    * error; host emits a timeline deny/grant event). Absent = allow all.
    */
   onFsReadCheck?: (absPath: string, bytes: number) => boolean;
+  /**
+   * Small-effort ScopeFence write gate (kp: cb-small-effort-scope-fence).
+   * Called after path confinement, before `fs/write_text_file` lands.
+   * Return false to reject the write. Absent = allow all.
+   */
+  onFsWriteCheck?: (absPath: string) => boolean;
 }
 
 /**

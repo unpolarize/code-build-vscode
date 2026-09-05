@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.24.1 — 2026-09-05
+
+### Small-effort ScopeFence (KP implement_effort binding)
+
+- New `src/shared/scopeFence.ts`: when a session is primed from a KP item with
+  `implement_effort: small|tiny`, host write policy applies a soft path budget
+  (default 5), denies `CLAUDE.md` / `AGENTS.md` / `.grok/**`, and pauses writes
+  on architecture-digression heuristics until expand-effort.
+- Wired into ACP `fs/write_text_file` via `onFsWriteCheck`; `/kp` arms the fence
+  from implementable-row effort (pack-text fallback). Timeline notices for deny /
+  digression / enable; `scopeFenceDecision` host message for override / expand /
+  disable.
+- Config: `codeBuild.scopeFence.maxWritePaths`, `codeBuild.scopeFence.force`.
+- Unit tests cover enable classifier, protected paths, budget, digression pause,
+  Write/Bash detectors, and a fixture small-effort session.
+
 ## 0.24.0 — 2026-09-05
 
 ### /kp — start a session from a knowledge-planning item

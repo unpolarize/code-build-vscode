@@ -146,6 +146,11 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
    (default 100 KiB, notice only) and `codeBuild.toolRead.maxBytesBlock` (default 1 MiB, hard deny until
    Allow once / Allow session). Composes with post-read inject budgets — this blocks the invoice *before*
    bytes enter context. Night/unattended sessions inherit deny without an interactive grant.
+9. **Host governors (small-effort ScopeFence):** When `/kp` primes a session from a KP item with
+   `implement_effort: small|tiny`, ACP `fs/write_text_file` is budgeted (`codeBuild.scopeFence.maxWritePaths`,
+   default 5 distinct paths) and denied for `CLAUDE.md` / `AGENTS.md` / `.grok/**` unless overridden.
+   Architecture-digression phrases latch a write pause until expand-effort. Advisory + deny-list only —
+   never rewrites prompts; human override always available.
 
 Sessions are persisted under `~/.codebuild/` and exported in a Code-Sessions-readable
 JSONL format.

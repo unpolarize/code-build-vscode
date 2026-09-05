@@ -21,6 +21,7 @@ describe('parseImplementableJson', () => {
         title: 'CB: foo',
         project: 'projects/code-build',
         target_repo: 'code-build-vscode',
+        implement_effort: 'small',
         extra: 'ignored'
       },
       { id: 'tasks/kp-bar', priority: null, title: 'KP: bar', project: null, target_repo: null }
@@ -33,10 +34,12 @@ describe('parseImplementableJson', () => {
       priority: 'p1',
       title: 'CB: foo',
       project: 'projects/code-build',
-      targetRepo: 'code-build-vscode'
+      targetRepo: 'code-build-vscode',
+      implementEffort: 'small'
     });
     assert.equal(out.rows[1].priority, null);
     assert.equal(out.rows[1].targetRepo, null);
+    assert.equal(out.rows[1].implementEffort, null);
   });
 
   it('parses the away shape ({away:true, rows:[]}) instead of crashing', () => {

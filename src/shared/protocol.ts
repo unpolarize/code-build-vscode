@@ -376,6 +376,17 @@ export type WebviewToHost =
       type: 'toolReadGateDecision';
       decision: 'allow_once' | 'allow_session' | 'deny';
       path?: string;
+    }
+  /**
+   * User decision on a small-effort ScopeFence block
+   * (kp: cb-small-effort-scope-fence). `override_path` grants one protected
+   * path (or `*` for all); `expand_effort` clears digression pause;
+   * `disable` turns the fence off for the rest of the session.
+   */
+  | {
+      type: 'scopeFenceDecision';
+      decision: 'override_path' | 'expand_effort' | 'disable';
+      path?: string;
     };
 
 // ---- Host -> Webview events ----

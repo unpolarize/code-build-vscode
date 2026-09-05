@@ -456,6 +456,15 @@ export class AcpTransport extends BaseAgentSession {
       case 'fs/write_text_file': {
         const p = params as { path: string; content: string };
         const safe = this.resolveFsPath(p.path);
+        // Small-effort ScopeFence — deny protected paths / over-budget writes
+        // before bytes land (kp: ideas/cb-small-effort-scope-fence-bind-host-tool-polic).
+        if (this.startOpts?.onFsWriteCheck && !this.startOpts.onFsWriteCheck(safe)) {
+          throw new Error(
+            `Write blocked by Code Build ScopeFence: ${safe}. ` +
+              `Expand effort, grant a protected-path override, or stay within the path budget ` +
+              `(codeBuild.scopeFence.maxWritePaths).`
+          );
+        }
         try {
           // Pre-image capture must see the disk BEFORE this write lands;
           // a capture failure must never block the agent's write.
