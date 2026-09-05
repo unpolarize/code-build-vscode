@@ -1074,6 +1074,13 @@ export class SessionManager {
       await this.openSession(defaultBackend);
       this.openSpan?.mark('hydrate.openSession');
     }
+
+    // The webview's hydrate reducer resets failoverOffer to null, but the
+    // host latch survives a webview dispose/restore — without a re-post the
+    // banner is orphaned AND `if (this.pendingFailover) return` suppresses
+    // every future offer. Re-post LAST: both hydrate posts above wipe it,
+    // and if autoStart tore down a dead session the latch is already clear.
+    if (this.pendingFailover) this.postFailoverOffer(this.pendingFailover);
   }
 
   private defaultBackend(): BackendId {
@@ -3246,6 +3253,10 @@ export class SessionManager {
   }
 
   private teardownSession(): void {
+    // A pending failover offer belongs to the session being torn down; a
+    // stale latch would suppress every future offer on the replacement
+    // session (accept-path is safe: applyFailoverDecision clears first).
+    this.clearFailoverOffer();
     this.killReplayChild();
     this.historyOlderFrom = 0;
     this.historyOlderBusy = false;
@@ -3586,6 +3597,12 @@ export class SessionManager {
     if (!offer) return;
 
     this.pendingFailover = offer;
+    this.postFailoverOffer(offer);
+  }
+
+  /** Post a failover confirm banner. Also used to re-post the pending offer
+   * after a webview reload (hydrate resets the panel's failoverOffer). */
+  private postFailoverOffer(offer: FailoverOffer): void {
     this.panel.post({
       type: 'failoverOffer',
       errorClass: offer.errorClass,

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.3 — 2026-09-04
+
+### Failover offer survives webview reload
+
+- A pending overload/unavailable failover banner is re-posted after webview
+  hydrate (the reducer resets it), so a panel dispose/restore no longer
+  orphans the offer.
+- `teardownSession` clears the pending-offer latch — a stale latch no longer
+  suppresses every future failover offer on the replacement session.
+
 ## 0.23.2 — 2026-09-02
 
 ### Rename consistency (issue #16)
