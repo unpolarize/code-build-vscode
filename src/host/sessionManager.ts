@@ -96,7 +96,14 @@ import {
   exportHasTurns,
   type ExportRecord
 } from './persistence/jsonlExporter';
-import { spawn, fork, type ChildProcess } from 'node:child_process';
+import { spawn, fork, execFile, type ChildProcess } from 'node:child_process';
+import {
+  KpLinkLatch,
+  formatKpPackPrimer,
+  parseImplementableJson,
+  resolveKpCliPath,
+  type KpImplementableRow
+} from '../shared/kpClient';
 import {
   replayTranscriptFile,
   type ReplayEvent,
@@ -114,6 +121,12 @@ import {
   type MediaToolTaxChip,
   type MediaToolTaxConfig
 } from '../shared/mediaToolTax';
+import {
+  DEFAULT_TOOL_READ_GATE_CONFIG,
+  ToolReadGate,
+  type ToolReadGateConfig,
+  type ToolReadGateEvent
+} from '../shared/toolReadGate';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -284,6 +297,12 @@ export class SessionManager {
   private mediaTaxLastPosted: string | undefined;
   /** Session-sticky Prefer DOM/CLI host hint (armed by one-click action). */
   private preferDomHintArmed = false;
+  /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
+  private toolReadGate?: ToolReadGate;
+  /** Session id the current toolReadGate belongs to. */
+  private toolReadGateSessionId: string | undefined;
+  /** Last path denied by the gate — used when Allow once has no explicit path. */
+  private toolReadGateLastDeniedPath: string | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -414,6 +433,9 @@ export class SessionManager {
         // new chat doesn't accidentally inherit any prior thread.
         this.previousSessionByBackend.clear();
         this.clearFailoverOffer();
+        // A latch from a /kp pick whose spawn never produced a system_init
+        // must not link this unrelated fresh session to the item.
+        this.kpLinkLatch.clear();
         this.idleResume = false;
         await this.openSession(msg.backend);
         break;
@@ -425,6 +447,9 @@ export class SessionManager {
         break;
       case 'failoverDecision':
         void this.applyFailoverDecision(msg.accept, msg.backend);
+        break;
+      case 'toolReadGateDecision':
+        this.applyToolReadGateDecision(msg.decision, msg.path);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -644,6 +669,9 @@ export class SessionManager {
         break;
       case 'handoff':
         await this.writeHandoffPack();
+        break;
+      case 'kpPick':
+        void this.handleKpPick();
         break;
       case 'copyPerfReport': {
         const report = this.perf.formatFlightReport();
@@ -1529,6 +1557,221 @@ export class SessionManager {
     });
   }
 
+  /** One-shot deferred `kp link-session` latch — armed at /kp pick time,
+   * consumed exactly once when the backend-native id first lands (see
+   * captureBackendSessionId). Never re-armed on resume/reload/history. */
+  private kpLinkLatch = new KpLinkLatch();
+
+  /** Resolve the KP CLI spawn config, or post one clear error and return
+   * undefined. `codeBuild.kp.command` is the CLI *script* path (spawned via
+   * node — interactive `kp` may be shell-aliased); no baked-in default. */
+  private resolveKpConfig(opts?: { quiet?: boolean }): { cli: string; root: string } | undefined {
+    const cli = resolveKpCliPath(this.config.get<string>('kp.command'), process.execPath);
+    const root = (this.config.get<string>('kp.root') ?? '').trim();
+    if (!cli || !root) {
+      if (opts?.quiet) return undefined;
+      this.panel.post({
+        type: 'notice',
+        text: '`/kp` needs the knowledge-planning CLI configured — set **codeBuild.kp.command** (absolute path to the KP CLI entry) and **codeBuild.kp.root** (planning store root).',
+        detail: `kp.command=${this.config.get<string>('kp.command') ?? '(unset)'}; kp.root=${this.config.get<string>('kp.root') ?? '(unset)'}. The command must be the CLI script path, not 'node'.`,
+        key: 'kp-cli-unconfigured'
+      });
+      return undefined;
+    }
+    return { cli, root };
+  }
+
+  /** Run the KP CLI (node <cli> …args) with KP_ROOT, capturing stdout. */
+  private runKpCli(cli: string, root: string, args: string[], timeoutMs: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(
+        process.execPath,
+        [cli, ...args],
+        {
+          env: { ...process.env, KP_ROOT: root },
+          timeout: timeoutMs,
+          maxBuffer: 4 * 1024 * 1024
+        },
+        (err, stdout, stderr) => {
+          if (err) {
+            reject(new Error(`kp ${args[0]} failed: ${err.message}${stderr ? `\n${String(stderr).slice(0, 400)}` : ''}`));
+            return;
+          }
+          resolve(String(stdout));
+        }
+      );
+    });
+  }
+
+  /**
+   * /kp — QuickPick over `kp implementable --json`; picking an item opens a
+   * NEW session on the current backend with the item's `kp pack` latched as
+   * the one-shot first-prompt primer (same contract as /handoff — prepends
+   * to the user's first send, never auto-sent), stamps `meta.kpItemId`, and
+   * defers a link-once `kp link-session <id> <backend-native-uuid>`.
+   */
+  /** Re-entrancy guard for /kp — overlapping picks would race on the primer
+   * latch and openSession. */
+  private kpPickBusy = false;
+
+  private async handleKpPick(): Promise<void> {
+    if (this.kpPickBusy) return;
+    this.kpPickBusy = true;
+    try {
+      await this.handleKpPickInner();
+    } finally {
+      this.kpPickBusy = false;
+    }
+  }
+
+  private async handleKpPickInner(): Promise<void> {
+    const cfg = this.resolveKpConfig();
+    if (!cfg) return;
+
+    let rows: KpImplementableRow[];
+    let away = false;
+    try {
+      const raw = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Code Build: loading planning queue…' },
+        () => this.runKpCli(cfg.cli, cfg.root, ['implementable', '--json'], 5000)
+      );
+      const parsed = parseImplementableJson(raw);
+      rows = parsed.rows;
+      away = parsed.away;
+    } catch (err) {
+      this.panel.post({
+        type: 'notice',
+        text: `Couldn't load the planning queue — ${err instanceof Error ? err.message : String(err)}`,
+        key: 'kp-list-failed'
+      });
+      return;
+    }
+    if (rows.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: away
+          ? 'Planning store is in **away mode** — no implementable items are offered right now.'
+          : 'No implementable items in the planning queue.',
+        key: 'kp-list-empty'
+      });
+      return;
+    }
+
+    type KpPickItem = vscode.QuickPickItem & { kpId?: string };
+    const items: KpPickItem[] = rows.map((r) => ({
+      label: `$(circuit-board) ${r.priority ? `${r.priority} · ` : ''}${r.title}`,
+      description: r.id,
+      detail: [r.project, r.targetRepo].filter(Boolean).join(' · ') || undefined,
+      kpId: r.id
+    }));
+    const pick = await vscode.window.showQuickPick<KpPickItem>(items, {
+      title: 'Start a session from a knowledge-planning item',
+      placeHolder: 'Pick an implementable item — new session primed with its pack',
+      matchOnDescription: true,
+      matchOnDetail: true,
+      ignoreFocusOut: true
+    });
+    if (!pick?.kpId) return;
+    const itemId = pick.kpId;
+
+    let primer: string;
+    try {
+      const pack = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Code Build: packing ${itemId}…` },
+        () => this.runKpCli(cfg.cli, cfg.root, ['pack', itemId], 8000)
+      );
+      primer = formatKpPackPrimer(pack, itemId);
+      if (!primer) throw new Error('kp pack returned empty output');
+    } catch (err) {
+      this.panel.post({
+        type: 'notice',
+        text: `Couldn't build the item pack — ${err instanceof Error ? err.message : String(err)}`,
+        key: 'kp-pack-failed'
+      });
+      return;
+    }
+
+    const backend = this.meta?.backend;
+    if (!backend) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No active backend to open the primed session on — open a chat first, then rerun `/kp`.',
+        key: 'kp-no-backend'
+      });
+      return;
+    }
+
+    // Mirror /handoff: clear any in-flight cross-backend banner state, latch
+    // the pack as the ONLY primer BEFORE openSession (openSession never
+    // clears pendingPrimer), then open a fresh session on the current
+    // backend. skipPin: same rationale as handoff — no stale permission pin.
+    // The link latch is armed AFTER openSession, bound to the NEW session's
+    // local id — a failed spawn or a later session transition can then never
+    // link a foreign native uuid to the item.
+    this.handoffRecords = undefined;
+    this.primerPending = false;
+    this.queuedPromptBlocks = undefined;
+    this.pendingPrimer = primer;
+    await this.openSession(backend, { skipPin: true });
+
+    // Stamp the binding on the NEW SessionMeta before any link spawn, so
+    // consumers (failover primer) see it even if the deferred link is lost
+    // in the pre-system_init window (in-memory latch, documented v1 gap).
+    if (this.meta) {
+      this.meta.kpItemId = itemId;
+      this.kpLinkLatch.arm(itemId, this.meta.id);
+      try {
+        this.store.updateMeta(this.meta);
+      } catch {
+        /* best-effort */
+      }
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+      // Dead-code guard: if a native id is somehow already known for the
+      // fresh session, link immediately instead of waiting for system_init.
+      if (this.meta.backendSessionId) this.maybeFireKpLink();
+    }
+
+    this.panel.post({
+      type: 'notice',
+      text: `New session primed with **${itemId}** — the pack prepends to your first message. The session will be linked back to the item once the backend reports its native id.`,
+      detail: `Primer is one-shot (kp pack, carries the (kp: ${itemId}) trailer). Deferred kp link-session fires once on the first backend-native session id.`,
+      key: `kp-primed-${itemId}`
+    });
+  }
+
+  /** Fire the deferred `kp link-session` exactly once (latch consumed before
+   * the async spawn). Links the backend-NATIVE uuid — never the local id. */
+  private maybeFireKpLink(): void {
+    if (!this.kpLinkLatch.armed) return;
+    const uuid = this.meta?.backendSessionId;
+    if (!uuid) return;
+    // Resolve config BEFORE consuming: if kp.command was cleared mid-window,
+    // the latch survives for a later attempt instead of dropping the id.
+    const cfg = this.resolveKpConfig({ quiet: true });
+    if (!cfg) return;
+    // Session-bound consume: a mismatched local id (session transitioned
+    // since the pick) clears the latch without linking a foreign uuid.
+    const itemId = this.kpLinkLatch.consume(this.meta?.id);
+    if (!itemId) return;
+    void this.runKpCli(cfg.cli, cfg.root, ['link-session', itemId, uuid], 8000).then(
+      () => {
+        this.panel.post({
+          type: 'notice',
+          text: `Linked this session to **${itemId}** (\`${uuid.slice(0, 8)}…\`).`,
+          key: `kp-linked-${itemId}`
+        });
+      },
+      (err) => {
+        this.panel.post({
+          type: 'notice',
+          text: `Couldn't link the session to **${itemId}** — ${err instanceof Error ? err.message : String(err)}`,
+          detail: `Recover manually: kp link-session ${itemId} ${uuid}`,
+          key: `kp-link-failed-${itemId}`
+        });
+      }
+    );
+  }
+
   private async switchBackend(backend: BackendId): Promise<void> {
     // Preflight: never switch to a backend that isn't installed on this
     // machine. Without this guard, picking (e.g.) grok on a box where grok is
@@ -2114,7 +2357,7 @@ export class SessionManager {
       additionalTrustedDirs: this.trustedDirs(remembered.mode),
       forceKp:
         openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation',
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
     await this.reapplyPinnedModeAfterStart(skipPin);
   }
@@ -2753,6 +2996,9 @@ export class SessionManager {
     if (!applyBackendSessionId(this.meta, update.backendSessionId, reason, Date.now())) return;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+    // Deferred /kp binding: the backend-native uuid just landed (or rotated)
+    // for the first time since a pick — fire the link-once latch.
+    this.maybeFireKpLink();
   }
 
   /** Reason to stamp on the next backendSessionId rotation. Armed by
@@ -3209,7 +3455,7 @@ export class SessionManager {
       effort: this.meta?.effort,
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(mode),
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
   }
 
@@ -3287,6 +3533,100 @@ export class SessionManager {
     // feed the old counters (or trip against the wrong SessionMeta).
     this.governor = undefined;
     this.governorSessionId = undefined;
+    // Same for the big-file Read gate — grants must not leak across sessions.
+    this.toolReadGate = undefined;
+    this.toolReadGateSessionId = undefined;
+    this.toolReadGateLastDeniedPath = undefined;
+  }
+
+  /** Shared fs/* bridge hooks for every AgentSession.start call site. */
+  private fsBridgeHooks(): {
+    onFsPreWrite: (absPath: string) => void;
+    onFsReadCheck: (absPath: string, bytes: number) => boolean;
+  } {
+    return {
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
+      onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes)
+    };
+  }
+
+  private ensureToolReadGate(): ToolReadGate {
+    const sid = this.meta?.id;
+    if (!this.toolReadGate || this.toolReadGateSessionId !== sid) {
+      this.toolReadGate = new ToolReadGate(this.readToolReadGateConfig(), (e) =>
+        this.onToolReadGateEvent(e)
+      );
+      this.toolReadGateSessionId = sid;
+      this.toolReadGateLastDeniedPath = undefined;
+    } else {
+      this.toolReadGate.setConfig(this.readToolReadGateConfig());
+      this.toolReadGate.setOnEvent((e) => this.onToolReadGateEvent(e));
+    }
+    return this.toolReadGate;
+  }
+
+  private readToolReadGateConfig(): ToolReadGateConfig {
+    return {
+      maxBytesWarn: Math.max(
+        0,
+        this.config.get<number>('toolRead.maxBytesWarn', DEFAULT_TOOL_READ_GATE_CONFIG.maxBytesWarn)
+      ),
+      maxBytesBlock: Math.max(
+        0,
+        this.config.get<number>(
+          'toolRead.maxBytesBlock',
+          DEFAULT_TOOL_READ_GATE_CONFIG.maxBytesBlock
+        )
+      )
+    };
+  }
+
+  private onToolReadGateEvent(e: ToolReadGateEvent): void {
+    if (e.type === 'deny') {
+      this.toolReadGateLastDeniedPath = e.path;
+    }
+    const key = `tool-read-gate-${e.type}`;
+    this.panel.post({
+      type: 'notice',
+      text: e.message,
+      key,
+      detail:
+        e.type === 'deny'
+          ? 'Grant Allow once / Allow session, or raise codeBuild.toolRead.maxBytesBlock.'
+          : undefined
+    });
+  }
+
+  private applyToolReadGateDecision(
+    decision: 'allow_once' | 'allow_session' | 'deny',
+    path?: string
+  ): void {
+    const gate = this.ensureToolReadGate();
+    if (decision === 'allow_session') {
+      gate.grantSession();
+      return;
+    }
+    if (decision === 'deny') {
+      gate.deny(path);
+      this.panel.post({
+        type: 'notice',
+        text: path
+          ? `Oversized read denied for ${path}`
+          : 'Oversized read denied (default posture)',
+        key: 'tool-read-gate-deny'
+      });
+      return;
+    }
+    const target = (path && path.trim()) || this.toolReadGateLastDeniedPath;
+    if (!target) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Allow once needs a path (no prior denied read in this session).',
+        key: 'tool-read-gate-grant'
+      });
+      return;
+    }
+    gate.grantOnce(target);
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────
@@ -3653,13 +3993,14 @@ export class SessionManager {
 
     const prevBackend = this.meta?.backend ?? offer.fromBackend;
     const prevId = this.meta?.id;
+    const kpItemId = this.meta?.kpItemId;
     const fromLabel = backendLabel(prevBackend);
 
     // Capture transcript BEFORE tearing down so the hybrid primer has content.
     const records = prevId ? this.collectTranscriptRecords(prevId) : [];
     const summary =
       records.length > 0 ? clippedSummaryFallback(records, fromLabel) : '';
-    const primer =
+    let primer =
       records.length > 0 && summary
         ? serializeHybridConversation({
             records,
@@ -3668,6 +4009,30 @@ export class SessionManager {
             fromBackend: fromLabel
           })
         : undefined;
+
+    // KP binding (kp: tasks/cb-kp-task-picker…): when the failing session is
+    // bound to a planning item and the peer will be a FRESH spawn (no prior
+    // native thread to restore), prepend the item's pack so the peer keeps
+    // the task grounding, not just the last-N transcript. Best-effort — a
+    // slow/missing CLI never blocks the failover itself.
+    const willRestore = (() => {
+      const rid = this.previousSessionByBackend.get(target);
+      return Boolean(rid && rid !== this.meta?.id);
+    })();
+    if (kpItemId && !willRestore) {
+      const cfg = this.resolveKpConfig({ quiet: true });
+      if (cfg) {
+        try {
+          // Tight timeout — this sits on the failover critical path; a slow
+          // CLI must not stall overload recovery (hybrid-only is still valid).
+          const pack = await this.runKpCli(cfg.cli, cfg.root, ['pack', kpItemId], 4000);
+          const kpPrimer = formatKpPackPrimer(pack, kpItemId);
+          if (kpPrimer) primer = kpPrimer + (primer ?? '');
+        } catch {
+          /* hybrid-only primer is still a valid failover */
+        }
+      }
+    }
 
     if (prevBackend && prevId && prevBackend !== target) {
       this.previousSessionByBackend.set(prevBackend, prevId);
@@ -3698,6 +4063,17 @@ export class SessionManager {
       this.meta.failoverFrom = prevBackend;
       this.meta.failoverReason = offer.errorClass;
       this.meta.failoverAt = Date.now();
+      // Carry the /kp binding onto the peer session (restore branch keeps
+      // the binding too — it just skips the pack primer). A FRESH peer spawn
+      // gets a new native uuid, so re-arm the deferred link for it; the
+      // restored-thread branch keeps its already-linked native id.
+      if (kpItemId) {
+        this.meta.kpItemId = kpItemId;
+        if (!willRestore) {
+          this.kpLinkLatch.arm(kpItemId, this.meta.id);
+          if (this.meta.backendSessionId) this.maybeFireKpLink();
+        }
+      }
       try {
         this.store.updateMeta(this.meta);
       } catch {
@@ -4473,7 +4849,7 @@ export class SessionManager {
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(mode),
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
   }
 }

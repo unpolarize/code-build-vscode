@@ -17,6 +17,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: 'compact', description: 'Summarize this conversation and restart the agent with a compact context (optional focus text)', builtin: true },
   { name: 'perf', description: 'Toggle Session Performance panel (HUD / waterfall / events)', builtin: true },
   { name: 'handoff', description: 'Write a HANDOFF.md pack and optionally continue on another backend (Grok/Codex/…)', builtin: true },
+  { name: 'kp', description: 'Pick a knowledge-planning item — new session primed with its pack, session linked back to the item', builtin: true },
   { name: 'voice', description: 'Toggle hands-free voice mode (listen → send → speak reply)', builtin: true },
   { name: 'dictation', description: 'Toggle voice dictation into the composer', builtin: true },
   { name: 'vis', description: 'Start a Voice Ideation Session (ramble → KP ideas)', builtin: true },

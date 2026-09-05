@@ -115,6 +115,14 @@ export interface SessionMeta {
   failoverReason?: Extract<BackendErrorClass, 'overload' | 'unavailable'>;
   /** Epoch-ms when the failover continue was applied. */
   failoverAt?: number;
+  /**
+   * Knowledge-planning item bound to this session via the /kp picker
+   * (kp: tasks/cb-kp-task-picker-start-a-session-from-a-kp-item). Persisted
+   * so consumers (failover primer, future chips) read the binding from one
+   * place after reloads. The deferred `kp link-session` uses the backend-
+   * NATIVE uuid, never this session's local `id`.
+   */
+  kpItemId?: string;
 }
 
 /** Compact boundary marker — written to the transcript when a host-side
@@ -297,6 +305,10 @@ export type WebviewToHost =
   /** /handoff — write a structured HANDOFF.md pack for continuing this
    * work on another backend. */
   | { type: 'handoff' }
+  /** /kp — QuickPick over `kp implementable --json`; picking an item opens a
+   * NEW session primed with its `kp pack` and defers a one-shot
+   * `kp link-session <id> <backend-native-uuid>` to first system_init. */
+  | { type: 'kpPick' }
   /** /compact [focus] — summarize the transcript and respawn the backend at
    * the same CB session id with a summary primer (host-side for all
    * backends; never forwarded to the agent as prompt text). `focus` is the
@@ -334,6 +346,17 @@ export type WebviewToHost =
       type: 'failoverDecision';
       accept: boolean;
       backend?: BackendId;
+    }
+  /**
+   * User decision on a big-file Read gate block (kp: toolRead hard-block).
+   * `allow_once` consumes one lease for `path`; `allow_session` opens all
+   * oversized reads for the rest of the session; `deny` records the choice
+   * (default posture is already deny).
+   */
+  | {
+      type: 'toolReadGateDecision';
+      decision: 'allow_once' | 'allow_session' | 'deny';
+      path?: string;
     };
 
 // ---- Host -> Webview events ----

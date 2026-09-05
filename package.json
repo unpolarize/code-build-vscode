@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.23.3",
+  "version": "0.24.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -69,7 +69,7 @@
       },
       {
         "command": "codeBuild.handoff",
-        "title": "Code Build: Handoff Pack + Continue on…"
+        "title": "Code Build: Handoff Pack + Continue on\u2026"
       },
       {
         "command": "codeBuild.memory.refresh",
@@ -144,7 +144,7 @@
       },
       {
         "command": "codeBuild.exportConversation",
-        "title": "Code Build: Export Conversation…"
+        "title": "Code Build: Export Conversation\u2026"
       },
       {
         "command": "codeBuild.showFlightRecorder",
@@ -344,17 +344,17 @@
             "bypass"
           ],
           "default": "bypass",
-          "description": "Initial permission mode for new conversations. Defaults to 'bypass' — the agent runs autonomously without per-action approval prompts (Claude Code's --dangerously-skip-permissions / terminal 'YOLO' workflow). Requires codeBuild.allowDangerouslySkipPermissions to stay enabled, otherwise bypass is downgraded to 'default' at session start. Choose 'default', 'plan', or 'acceptEdits' for an approval-based flow."
+          "description": "Initial permission mode for new conversations. Defaults to 'bypass' \u2014 the agent runs autonomously without per-action approval prompts (Claude Code's --dangerously-skip-permissions / terminal 'YOLO' workflow). Requires codeBuild.allowDangerouslySkipPermissions to stay enabled, otherwise bypass is downgraded to 'default' at session start. Choose 'default', 'plan', or 'acceptEdits' for an approval-based flow."
         },
         "codeBuild.allowDangerouslySkipPermissions": {
           "type": "boolean",
           "default": true,
-          "description": "Permit the 'bypass' permission mode, which runs the agent with no confirmation prompts. Enabled by default so new conversations start in autonomous (bypass) mode. SECURITY-SENSITIVE: while on, the agent can read/write files and run commands without asking — and in bypass mode your home directory is trusted by default (see codeBuild.additionalTrustedDirs). Turn this off to disable bypass and fall back to approval-based modes."
+          "description": "Permit the 'bypass' permission mode, which runs the agent with no confirmation prompts. Enabled by default so new conversations start in autonomous (bypass) mode. SECURITY-SENSITIVE: while on, the agent can read/write files and run commands without asking \u2014 and in bypass mode your home directory is trusted by default (see codeBuild.additionalTrustedDirs). Turn this off to disable bypass and fall back to approval-based modes."
         },
         "codeBuild.showActiveQuestionBanner": {
           "type": "boolean",
           "default": true,
-          "description": "Show a sticky banner under the chat header surfacing the user's current (or most recent) question. Helps keep the prompt visible while a long reply scrolls — matches Claude Code's pattern. Banner has an inline × to dismiss for the current session; this setting controls the global on/off."
+          "description": "Show a sticky banner under the chat header surfacing the user's current (or most recent) question. Helps keep the prompt visible while a long reply scrolls \u2014 matches Claude Code's pattern. Banner has an inline \u00d7 to dismiss for the current session; this setting controls the global on/off."
         },
         "codeBuild.classifyTurns": {
           "type": "boolean",
@@ -388,7 +388,7 @@
           "type": "number",
           "default": 45,
           "minimum": 0,
-          "description": "Seconds of total silence (no agent output and no tokens) during a turn before CB warns that the agent may be stuck and offers a Stop. Catches the intermittent claude CLI 'error_during_execution' stall that leaves the 'working…' spinner frozen. Set to 0 to disable the stall watchdog entirely."
+          "description": "Seconds of total silence (no agent output and no tokens) during a turn before CB warns that the agent may be stuck and offers a Stop. Catches the intermittent claude CLI 'error_during_execution' stall that leaves the 'working\u2026' spinner frozen. Set to 0 to disable the stall watchdog entirely."
         },
         "codeBuild.stallAutoCancelSeconds": {
           "type": "number",
@@ -398,7 +398,11 @@
         },
         "codeBuild.governor.mode": {
           "type": "string",
-          "enum": ["off", "warn", "hard"],
+          "enum": [
+            "off",
+            "warn",
+            "hard"
+          ],
           "default": "warn",
           "description": "Stop governor: what happens when a session crosses a budget (tool calls / active time / estimated spend). 'warn' (default) shows a sticky banner and records the event but never interrupts; 'hard' also cancels the active stream (the session stays resumable); 'off' disables all budgets. Each budget fires at most once per session."
         },
@@ -423,18 +427,21 @@
         "codeBuild.governor.dupToolStop": {
           "type": "boolean",
           "default": false,
-          "description": "Stop governor: reserved — duplicate tool-signature loop detector (identical tool+args N times in a row). Not yet active; the detector ships as a follow-up slice."
+          "description": "Stop governor: reserved \u2014 duplicate tool-signature loop detector (identical tool+args N times in a row). Not yet active; the detector ships as a follow-up slice."
         },
         "codeBuild.governor.noProgressStop": {
           "type": "boolean",
           "default": false,
-          "description": "Stop governor: reserved — no-progress detector (subgoals unchanged across steps). Not yet active; the detector ships as a follow-up slice."
+          "description": "Stop governor: reserved \u2014 no-progress detector (subgoals unchanged across steps). Not yet active; the detector ships as a follow-up slice."
         },
         "codeBuild.mediaToolTax.mode": {
           "type": "string",
-          "enum": ["off", "warn"],
+          "enum": [
+            "off",
+            "warn"
+          ],
           "default": "warn",
-          "description": "Runtime media/pixel tool-tax governor: meters screenshot/image tool_result payloads (not MCP schema tokens). 'warn' (default) shows a header chip + sticky pause notice with one-click Prefer DOM/CLI after thresholds; 'off' disables. Advisory only — never rewrites or blocks tools."
+          "description": "Runtime media/pixel tool-tax governor: meters screenshot/image tool_result payloads (not MCP schema tokens). 'warn' (default) shows a header chip + sticky pause notice with one-click Prefer DOM/CLI after thresholds; 'off' disables. Advisory only \u2014 never rewrites or blocks tools."
         },
         "codeBuild.mediaToolTax.maxMediaResults": {
           "type": "number",
@@ -447,6 +454,18 @@
           "default": 15,
           "minimum": 0,
           "description": "Media tool-tax: soft-gate when estimated session media tokens exceed this percent of the model context window. 0 disables the window-% gate."
+        },
+        "codeBuild.toolRead.maxBytesWarn": {
+          "type": "number",
+          "default": 102400,
+          "minimum": 0,
+          "description": "Big-file Read gate: warn (timeline notice) when an ACP fs/read_text_file is at least this many bytes. Default 100 KiB. 0 disables the warn threshold. Read still proceeds until maxBytesBlock."
+        },
+        "codeBuild.toolRead.maxBytesBlock": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 0,
+          "description": "Big-file Read gate: hard-block ACP fs/read_text_file at or above this many bytes unless Allow once / Allow session was granted. Default 1 MiB. 0 disables the block. Night/unattended sessions deny without interactive grant."
         },
         "codeBuild.defaultModel": {
           "type": "string",
@@ -474,7 +493,7 @@
             "full"
           ],
           "default": "hud",
-          "description": "Session performance debug. 'off' = no HUD/sampling. 'hud' = header chip (TTFT · host tax · ev/s · paint) + activity strip while busy + /perf panel. 'full' = also appends a flight report to the 'Code Build: Flight Recorder' output channel after every turn. Use this to separate model latency from CB host/webview tax."
+          "description": "Session performance debug. 'off' = no HUD/sampling. 'hud' = header chip (TTFT \u00b7 host tax \u00b7 ev/s \u00b7 paint) + activity strip while busy + /perf panel. 'full' = also appends a flight report to the 'Code Build: Flight Recorder' output channel after every turn. Use this to separate model latency from CB host/webview tax."
         },
         "codeBuild.progressiveActivity": {
           "type": "string",
@@ -484,7 +503,7 @@
             "off"
           ],
           "default": "auto",
-          "description": "Progressive tool-activity narration: a one-line 'now: <verb> <target> · <elapsed>s' strip above the composer while a tool call runs. 'auto' = on for quiet backends (Codex, Grok) and off for Claude, which already streams verbose text. Changes apply on the next tool call without a reload."
+          "description": "Progressive tool-activity narration: a one-line 'now: <verb> <target> \u00b7 <elapsed>s' strip above the composer while a tool call runs. 'auto' = on for quiet backends (Codex, Grok) and off for Claude, which already streams verbose text. Changes apply on the next tool call without a reload."
         },
         "codeBuild.mcpServers": {
           "type": "array",
@@ -532,7 +551,7 @@
           "type": "number",
           "default": 6000,
           "minimum": 0,
-          "description": "Max estimated tool-schema tokens to inject on ACP session/new|load. Default stack costs: chrome-devtools ≈ 5811, playwright ≈ 4617. At the default 6000, playwright is deferred so the session starts under budget. Set to 0 to disable the filter and pass every resolved server (restore-all). Unknown-cost servers are included fail-open. The kp MCP entry is always exempt. See the 'Code Build: MCP' output channel for the included/deferred log line."
+          "description": "Max estimated tool-schema tokens to inject on ACP session/new|load. Default stack costs: chrome-devtools \u2248 5811, playwright \u2248 4617. At the default 6000, playwright is deferred so the session starts under budget. Set to 0 to disable the filter and pass every resolved server (restore-all). Unknown-cost servers are included fail-open. The kp MCP entry is always exempt. See the 'Code Build: MCP' output channel for the included/deferred log line."
         },
         "codeBuild.mcpPriority": {
           "type": "array",
@@ -545,11 +564,11 @@
         "codeBuild.kpMcp.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Inject the knowledge-planning MCP server (kp mcp: kp_search/kp_create/kp_link_session/…) into ACP sessions (Grok, Codex) with provenance env (KP_AGENT/KP_MODEL/KP_SESSION). Requires codeBuild.kp.command and codeBuild.kp.root; if either is missing the session starts without kp tools. Independent of the default browser MCP servers — works even with codeBuild.disableDefaultMcpServers or codeBuild.mcpServers: []. A user-supplied 'kp' entry in codeBuild.mcpServers always wins (no duplicate injected)."
+          "description": "Inject the knowledge-planning MCP server (kp mcp: kp_search/kp_create/kp_link_session/\u2026) into ACP sessions (Grok, Codex) with provenance env (KP_AGENT/KP_MODEL/KP_SESSION). Requires codeBuild.kp.command and codeBuild.kp.root; if either is missing the session starts without kp tools. Independent of the default browser MCP servers \u2014 works even with codeBuild.disableDefaultMcpServers or codeBuild.mcpServers: []. A user-supplied 'kp' entry in codeBuild.mcpServers always wins (no duplicate injected)."
         },
         "codeBuild.kp.command": {
           "type": "string",
-          "description": "Absolute path to the knowledge-planning CLI entry script (e.g. /Users/me/projects/knowledge-planning/src/cli/index.ts). Spawned as `<node> <this path> mcp` — set the script path, not 'node'."
+          "description": "Absolute path to the knowledge-planning CLI entry script (e.g. /Users/me/projects/knowledge-planning/src/cli/index.ts). Spawned as `<node> <this path> mcp` \u2014 set the script path, not 'node'."
         },
         "codeBuild.kp.root": {
           "type": "string",
@@ -603,7 +622,7 @@
             "off"
           ],
           "default": "auto",
-          "description": "Speech-to-text engine. 'auto' prefers 'xai' (Quill-style streaming STT against wss://api.x.ai/v1/stt using the grok CLI login in ~/.grok/auth.json or codeBuild.voice.xaiApiKey; macOS), then 'transcribe' (Amazon Transcribe streaming with your AWS credential chain — the same creds Claude-on-Bedrock uses; macOS), then 'host' (VS Code Speech extension bridge), then webview Web Speech (often blocked by the chat iframe sandbox). Forcing an engine that is unavailable disables STT with guidance."
+          "description": "Speech-to-text engine. 'auto' prefers 'xai' (Quill-style streaming STT against wss://api.x.ai/v1/stt using the grok CLI login in ~/.grok/auth.json or codeBuild.voice.xaiApiKey; macOS), then 'transcribe' (Amazon Transcribe streaming with your AWS credential chain \u2014 the same creds Claude-on-Bedrock uses; macOS), then 'host' (VS Code Speech extension bridge), then webview Web Speech (often blocked by the chat iframe sandbox). Forcing an engine that is unavailable disables STT with guidance."
         },
         "codeBuild.voice.xaiApiKey": {
           "type": "string",
@@ -618,7 +637,7 @@
         "codeBuild.voice.awsProfile": {
           "type": "string",
           "default": "",
-          "description": "Optional AWS profile for the 'transcribe' STT engine. Empty = default credential chain (env, SSO, ~/.aws) — the same chain Claude Code on Bedrock uses."
+          "description": "Optional AWS profile for the 'transcribe' STT engine. Empty = default credential chain (env, SSO, ~/.aws) \u2014 the same chain Claude Code on Bedrock uses."
         }
       }
     }
