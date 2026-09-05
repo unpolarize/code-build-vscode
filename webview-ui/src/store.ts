@@ -179,6 +179,8 @@ export interface ChatState {
     alternatives: Array<{ id: string; label: string }>;
     message: string;
   } | null;
+  /** Resume-after-reset park (quota/429 same-backend hold). Null when idle. */
+  resumePause: { label: string; resumeAt: number | null } | null;
   /** Memory inventory snapshot piped through `hydrate`. Drives the
    * small Memory chip in the Header (clickable to open Code Sessions
    * Memory tab where available). */
@@ -283,6 +285,7 @@ export const initialState: ChatState = {
   sessions: [],
   primerPrompt: null,
   failoverOffer: null,
+  resumePause: null,
   memoryEntries: 0,
   memoryFiles: 0,
   memoryByProvider: {},
@@ -366,6 +369,9 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
         stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
         failoverOffer: null,
+        // Host re-posts a live park after hydrate (same contract as
+        // failoverOffer) — reset here so a closed park never lingers.
+        resumePause: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -395,6 +401,13 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       };
     case 'failoverOfferClear':
       return { ...state, failoverOffer: null };
+    case 'resumePause':
+      return {
+        ...state,
+        resumePause: { label: msg.label, resumeAt: msg.pause.resumeAt }
+      };
+    case 'resumePauseClear':
+      return { ...state, resumePause: null };
     case 'perfHud':
       return { ...state, perfHud: msg.hud };
     case 'activityStrip':

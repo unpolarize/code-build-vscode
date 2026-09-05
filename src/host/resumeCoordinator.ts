@@ -64,11 +64,23 @@ export class ResumeCoordinator {
   constructor(private readonly host: ResumeCoordinatorHost) {}
 
   /** Latest 5-HOUR rate window resets_at (epoch sec) seen on the stream.
-   * This is the window a 429 park binds to — never spend_limit's. */
+   * This is the window a 429 park binds to — never spend_limit's.
+   * Explicit null CLEARS the cache (payload carried rate_limits but no
+   * usable five_hour — a stale value must not bind a later park);
+   * undefined is a no-op. A signal arriving while a park sits at
+   * "unknown reset" re-binds the live stamp and arms the timer. */
   noteRateWindowReset(resetsAtEpochSec: number | null | undefined): void {
-    if (resetsAtEpochSec != null && Number.isFinite(resetsAtEpochSec)) {
-      this.fiveHourResetsAt = resetsAtEpochSec;
+    if (resetsAtEpochSec === null) {
+      this.fiveHourResetsAt = null;
+      return;
     }
+    if (resetsAtEpochSec == null || !Number.isFinite(resetsAtEpochSec)) return;
+    this.fiveHourResetsAt = resetsAtEpochSec;
+    const pause = this.current;
+    if (pause?.state !== 'paused_for_reset' || pause.resumeAt != null) return;
+    const resumeAt = resetsAtEpochSec * 1000;
+    if (resumeAt <= this.host.now()) return; // stale signal — stay unknown
+    this.adopt({ ...pause, resumeAt });
   }
 
   /** Live park present (key on state, never stamp truthiness). */
@@ -143,10 +155,35 @@ export class ResumeCoordinator {
   }
 
   /** New/loaded session owns a fresh coordinator state. Persisted stamps on
-   * the OLD session's meta are left as history. */
+   * the OLD session's meta are left as history, and the cached rate-window
+   * reset dies with the session that observed it — a replacement session
+   * (possibly a different backend) must re-learn its own window. */
   clear(): void {
     this.disarm();
     this.current = undefined;
+    this.fiveHourResetsAt = null;
+  }
+
+  /**
+   * The primer injection the wake path handed off could not reach the
+   * backend (ensureSession failed). The stamp is already closed — re-park
+   * at "unknown reset" so the chip's manual Resume can retry, instead of
+   * stranding the session with a resumed stamp and no primer delivered.
+   */
+  notePrimerInjectFailed(): void {
+    const p = this.current;
+    if (p?.state !== 'resumed') return;
+    const reparked: ResumeAfterResetPause = {
+      state: 'paused_for_reset',
+      backend: p.backend,
+      pausedAt: this.host.now(),
+      resumeAt: null,
+      ...(p.kpItemId ? { kpItemId: p.kpItemId } : {}),
+      ...(p.goalSnapshot ? { goalSnapshot: p.goalSnapshot } : {}),
+      reason: 'resume primer injection failed'
+    };
+    this.adopt(reparked);
+    this.host.notify('Resume failed to reach the backend — press Resume to retry.');
   }
 
   private adopt(pause: ResumeAfterResetPause): void {

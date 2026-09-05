@@ -237,6 +237,64 @@ test('hydrate re-arms a live park; a past-due stamp notifies instead of auto-inj
   assert.equal(h3.timers.length, 0);
 });
 
+test('late usage signal re-binds an unknown-reset park and arms the timer', () => {
+  const h = makeHarness();
+  h.coord.onBackendError(classifyBackendError(CLAUDE_429), '429', { backend: 'claude' });
+  assert.equal(h.persisted[0].resumeAt, null);
+  assert.equal(h.timers.length, 0);
+
+  h.coord.noteRateWindowReset(RESET_SEC);
+  assert.equal(h.persisted.at(-1)?.resumeAt, RESET_SEC * 1000);
+  assert.equal(h.timers.length, 1);
+
+  // Stale (past) signals never re-bind.
+  const h2 = makeHarness();
+  h2.coord.onBackendError(classifyBackendError(CLAUDE_429), '429', { backend: 'claude' });
+  h2.coord.noteRateWindowReset(Math.floor(T0 / 1000) - 5);
+  assert.equal(h2.persisted.at(-1)?.resumeAt, null);
+  assert.equal(h2.timers.length, 0);
+});
+
+test('explicit null clears the cached window; clear() drops it across sessions', () => {
+  const h = makeHarness();
+  h.coord.noteRateWindowReset(RESET_SEC);
+  h.coord.noteRateWindowReset(null);
+  h.coord.onBackendError(classifyBackendError(CLAUDE_429), '429', { backend: 'claude' });
+  assert.equal(h.persisted[0].resumeAt, null);
+
+  const h2 = makeHarness();
+  h2.coord.noteRateWindowReset(RESET_SEC);
+  h2.coord.clear(); // session switch — next session must re-learn its window
+  h2.coord.onBackendError(classifyBackendError(CLAUDE_429), '429', { backend: 'grok' });
+  assert.equal(h2.persisted[0].resumeAt, null);
+});
+
+test('failed primer injection re-parks at unknown reset so manual Resume can retry', () => {
+  const h = makeHarness({ autoWake: true, away: true });
+  parkOn429(h);
+  h.advance(3600 * 1000 + 1);
+  h.fireDueTimers();
+  assert.equal(h.primers.length, 1);
+
+  // Host reports the injection never reached the backend.
+  h.coord.notePrimerInjectFailed();
+  assert.equal(h.coord.isPaused, true);
+  const reparked = h.persisted.at(-1)!;
+  assert.equal(reparked.state, 'paused_for_reset');
+  assert.equal(reparked.resumeAt, null);
+  assert.equal(reparked.kpItemId, 'ideas/cb-host-resume-after-reset-coordinator-park-goal');
+  assert.match(h.notices.at(-1) ?? '', /retry/i);
+
+  h.coord.manualResume();
+  assert.equal(h.primers.length, 2);
+
+  // No-op unless the stamp is freshly resumed.
+  h.coord.notePrimerInjectFailed();
+  h.coord.notePrimerInjectFailed();
+  assert.equal(h.persisted.at(-1)?.state, 'paused_for_reset');
+  assert.equal(h.persisted.filter((p) => p.state === 'paused_for_reset').length, 3);
+});
+
 test('clear() drops the park state and timer without rewriting the persisted stamp', () => {
   const h = makeHarness();
   parkOn429(h);

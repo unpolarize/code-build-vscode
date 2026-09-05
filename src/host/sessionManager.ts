@@ -345,7 +345,13 @@ export class SessionManager {
       autoWakeEnabled: this.config.get<boolean>('resumeAfterReset.autoWake', false),
       inAwayWindow: isInAwayWindow(this.config.get<string>('resumeAfterReset.awayWindow', ''))
     }),
-    primerOptions: () => ({})
+    primerOptions: () => ({
+      // Partial assistant output from the interrupted turn — the closest
+      // cheap "what was done before the stop" snapshot the host holds.
+      ...(this.currentAssistantBuf
+        ? { doneSummary: this.currentAssistantBuf.slice(-1500) }
+        : {})
+    })
   });
 
   constructor(
@@ -1148,6 +1154,15 @@ export class SessionManager {
     // every future offer. Re-post LAST: both hydrate posts above wipe it,
     // and if autoStart tore down a dead session the latch is already clear.
     if (this.pendingFailover) this.postFailoverOffer(this.pendingFailover);
+
+    // Same reload contract for the resume-after-reset chip: park + timer
+    // live on the host; re-post so the Resume affordance survives a
+    // webview dispose/restore (the hydrate reducer resets it to null).
+    const livePause = this.resumeCoordinator.pause;
+    if (livePause && this.resumeCoordinator.isPaused) {
+      const label = resumeChipLabel(livePause);
+      if (label) this.panel.post({ type: 'resumePause', pause: livePause, label });
+    }
   }
 
   private defaultBackend(): BackendId {
@@ -3973,11 +3988,17 @@ export class SessionManager {
     } catch (e) {
       this.panel.post({
         type: 'notice',
-        text: `Resume after reset: could not reconnect the backend (${e instanceof Error ? e.message : String(e)}). Send a message to retry.`
+        text: `Resume after reset: could not reconnect the backend (${e instanceof Error ? e.message : String(e)}).`
       });
+      // Re-open the park (unknown reset) so the chip's Resume can retry —
+      // the closed stamp alone would strand the session primer-less.
+      this.resumeCoordinator.notePrimerInjectFailed();
       return;
     }
-    if (!this.session || !this.meta) return;
+    if (!this.session || !this.meta) {
+      this.resumeCoordinator.notePrimerInjectFailed();
+      return;
+    }
     this.panel.post({ type: 'busy', busy: true });
     this.armWatchdog();
     this.perf.onPromptSent();
