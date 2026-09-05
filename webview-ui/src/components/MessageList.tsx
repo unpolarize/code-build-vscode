@@ -11,9 +11,9 @@ import { isNearBottom } from '../util/composerLayout';
 /** Hover copy for the error-class chip — tells the user what the class
  * implies for recovery (failover offer vs quota wall vs re-auth). */
 const ERROR_CLASS_HINTS: Record<string, string> = {
-  overload: 'Backend overloaded (529-class) — transient; failover to a healthy backend is offered.',
-  unavailable: 'Model/service unavailable — transient; failover to a healthy backend is offered.',
-  quota: 'Rate/usage limit (429-class) — failover is NOT offered; use limit-aware switch or wait for the window.',
+  overload: 'Backend overloaded (529-class) — transient; a failover offer may appear if a healthy backend is available.',
+  unavailable: 'Model/service unavailable — transient; a failover offer may appear if a healthy backend is available.',
+  quota: 'Rate/usage limit (429-class) — failover is never offered here; use limit-aware switch or wait for the window.',
   auth: 'Authentication problem — re-login or fix credentials for this backend.'
 };
 

@@ -526,11 +526,16 @@ body {
   letter-spacing: 0;
   padding: 1px 6px;
   border-radius: 3px;
+  color: var(--vscode-errorForeground);
   background: rgba(255, 0, 0, 0.1);
   border: 1px solid rgba(255, 0, 0, 0.3);
   cursor: help;
-  margin-right: 6px;
   white-space: nowrap;
+}
+/* The base role line sits at 0.6 opacity (quiet label); an error's role
+ * line carries the class chip, which needs to read — lift it a bit. */
+.msg-error .msg-role {
+  opacity: 0.85;
 }
 /* Soft amber notice — not an error, just an informational heads-up
  * (e.g. "session held by another panel; started fresh here"). */

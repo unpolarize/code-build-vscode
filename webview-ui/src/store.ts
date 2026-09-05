@@ -4,7 +4,10 @@ import type {
   ToolCall,
   UsageInfo
 } from '../../src/shared/acpTypes';
-import type { BackendErrorClass } from '../../src/shared/backendErrorClass';
+import {
+  classifyBackendError,
+  type BackendErrorClass
+} from '../../src/shared/backendErrorClass';
 import type {
   ActivitySegmentMsg,
   CompactMarker,
@@ -772,7 +775,9 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
         id: nextId(),
         createdAt: now(),
         text: u.message,
-        errorClass: u.errorClass
+        // Mirror the host's failover-offer path (`errorClass ?? classify`) so
+        // the chip and the banner can never disagree on an untagged error.
+        errorClass: u.errorClass ?? classifyBackendError(u.message)
       });
       return { ...state, items, busy: false };
     case 'permission_request':

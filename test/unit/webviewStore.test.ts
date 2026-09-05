@@ -667,14 +667,24 @@ describe('error bubble errorClass passthrough', () => {
     assert.equal(s.busy, false);
   });
 
-  it('leaves errorClass undefined when the host did not classify', () => {
+  it('classifies locally when the host did not tag (mirrors the offer path)', () => {
+    const s = reduce(initialState, {
+      type: 'sessionUpdate',
+      update: { kind: 'error', message: 'API 529 overloaded_error' }
+    } as HostToWebview);
+    const err = s.items.find((it) => it.kind === 'error') as any;
+    assert.ok(err, 'error item exists');
+    assert.equal(err.errorClass, 'overload');
+  });
+
+  it('falls back to `other` (chip hidden) for unclassifiable messages', () => {
     const s = reduce(initialState, {
       type: 'sessionUpdate',
       update: { kind: 'error', message: 'something broke' }
     } as HostToWebview);
     const err = s.items.find((it) => it.kind === 'error') as any;
     assert.ok(err, 'error item exists');
-    assert.equal(err.errorClass, undefined);
+    assert.equal(err.errorClass, 'other');
   });
 
   it('carries quota class through (banner suppressed, chip still informs)', () => {
