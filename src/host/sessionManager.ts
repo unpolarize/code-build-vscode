@@ -1610,7 +1610,21 @@ export class SessionManager {
    * to the user's first send, never auto-sent), stamps `meta.kpItemId`, and
    * defers a link-once `kp link-session <id> <backend-native-uuid>`.
    */
+  /** Re-entrancy guard for /kp — overlapping picks would race on the primer
+   * latch and openSession. */
+  private kpPickBusy = false;
+
   private async handleKpPick(): Promise<void> {
+    if (this.kpPickBusy) return;
+    this.kpPickBusy = true;
+    try {
+      await this.handleKpPickInner();
+    } finally {
+      this.kpPickBusy = false;
+    }
+  }
+
+  private async handleKpPickInner(): Promise<void> {
     const cfg = this.resolveKpConfig();
     if (!cfg) return;
 
@@ -1678,17 +1692,26 @@ export class SessionManager {
     }
 
     const backend = this.meta?.backend;
-    if (!backend) return;
+    if (!backend) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No active backend to open the primed session on — open a chat first, then rerun `/kp`.',
+        key: 'kp-no-backend'
+      });
+      return;
+    }
 
     // Mirror /handoff: clear any in-flight cross-backend banner state, latch
     // the pack as the ONLY primer BEFORE openSession (openSession never
     // clears pendingPrimer), then open a fresh session on the current
     // backend. skipPin: same rationale as handoff — no stale permission pin.
+    // The link latch is armed AFTER openSession, bound to the NEW session's
+    // local id — a failed spawn or a later session transition can then never
+    // link a foreign native uuid to the item.
     this.handoffRecords = undefined;
     this.primerPending = false;
     this.queuedPromptBlocks = undefined;
     this.pendingPrimer = primer;
-    this.kpLinkLatch.arm(itemId);
     await this.openSession(backend, { skipPin: true });
 
     // Stamp the binding on the NEW SessionMeta before any link spawn, so
@@ -1696,6 +1719,7 @@ export class SessionManager {
     // in the pre-system_init window (in-memory latch, documented v1 gap).
     if (this.meta) {
       this.meta.kpItemId = itemId;
+      this.kpLinkLatch.arm(itemId, this.meta.id);
       try {
         this.store.updateMeta(this.meta);
       } catch {
@@ -1710,7 +1734,7 @@ export class SessionManager {
     this.panel.post({
       type: 'notice',
       text: `New session primed with **${itemId}** — the pack prepends to your first message. The session will be linked back to the item once the backend reports its native id.`,
-      detail: `Primer is one-shot (kp pack, ≤32KB, carries the (kp: ${itemId}) trailer). Deferred kp link-session fires once on the first backend-native session id.`,
+      detail: `Primer is one-shot (kp pack, carries the (kp: ${itemId}) trailer). Deferred kp link-session fires once on the first backend-native session id.`,
       key: `kp-primed-${itemId}`
     });
   }
@@ -1721,10 +1745,14 @@ export class SessionManager {
     if (!this.kpLinkLatch.armed) return;
     const uuid = this.meta?.backendSessionId;
     if (!uuid) return;
-    const itemId = this.kpLinkLatch.consume();
-    if (!itemId) return;
-    const cfg = this.resolveKpConfig();
+    // Resolve config BEFORE consuming: if kp.command was cleared mid-window,
+    // the latch survives for a later attempt instead of dropping the id.
+    const cfg = this.resolveKpConfig({ quiet: true });
     if (!cfg) return;
+    // Session-bound consume: a mismatched local id (session transitioned
+    // since the pick) clears the latch without linking a foreign uuid.
+    const itemId = this.kpLinkLatch.consume(this.meta?.id);
+    if (!itemId) return;
     void this.runKpCli(cfg.cli, cfg.root, ['link-session', itemId, uuid], 8000).then(
       () => {
         this.panel.post({
@@ -3995,7 +4023,9 @@ export class SessionManager {
       const cfg = this.resolveKpConfig({ quiet: true });
       if (cfg) {
         try {
-          const pack = await this.runKpCli(cfg.cli, cfg.root, ['pack', kpItemId], 8000);
+          // Tight timeout — this sits on the failover critical path; a slow
+          // CLI must not stall overload recovery (hybrid-only is still valid).
+          const pack = await this.runKpCli(cfg.cli, cfg.root, ['pack', kpItemId], 4000);
           const kpPrimer = formatKpPackPrimer(pack, kpItemId);
           if (kpPrimer) primer = kpPrimer + (primer ?? '');
         } catch {
@@ -4034,8 +4064,16 @@ export class SessionManager {
       this.meta.failoverReason = offer.errorClass;
       this.meta.failoverAt = Date.now();
       // Carry the /kp binding onto the peer session (restore branch keeps
-      // the binding too — it just skips the pack primer).
-      if (kpItemId) this.meta.kpItemId = kpItemId;
+      // the binding too — it just skips the pack primer). A FRESH peer spawn
+      // gets a new native uuid, so re-arm the deferred link for it; the
+      // restored-thread branch keeps its already-linked native id.
+      if (kpItemId) {
+        this.meta.kpItemId = kpItemId;
+        if (!willRestore) {
+          this.kpLinkLatch.arm(kpItemId, this.meta.id);
+          if (this.meta.backendSessionId) this.maybeFireKpLink();
+        }
+      }
       try {
         this.store.updateMeta(this.meta);
       } catch {

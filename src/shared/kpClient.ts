@@ -88,16 +88,28 @@ export function resolveKpCliPath(command: string | undefined, execPath: string):
  */
 export class KpLinkLatch {
   private itemId?: string;
+  private sessionId?: string;
 
-  arm(itemId: string): void {
+  /** Arm for ONE local session — a later session transition (switchBackend,
+   * history load, handoff) must not link its native uuid to the item. */
+  arm(itemId: string, sessionId: string): void {
     this.itemId = itemId;
+    this.sessionId = sessionId;
   }
 
-  /** Returns the armed item id exactly once, clearing the latch. */
-  consume(): string | undefined {
+  /**
+   * Returns the armed item id exactly once IF the latch was armed for
+   * `sessionId`, clearing the latch. A mismatched session clears the latch
+   * without firing (the pick's session is gone — dropping is safer than
+   * linking a foreign uuid).
+   */
+  consume(sessionId: string | undefined): string | undefined {
+    if (this.itemId === undefined) return undefined;
+    const match = sessionId !== undefined && sessionId === this.sessionId;
     const id = this.itemId;
     this.itemId = undefined;
-    return id;
+    this.sessionId = undefined;
+    return match ? id : undefined;
   }
 
   get armed(): boolean {
@@ -106,5 +118,6 @@ export class KpLinkLatch {
 
   clear(): void {
     this.itemId = undefined;
+    this.sessionId = undefined;
   }
 }

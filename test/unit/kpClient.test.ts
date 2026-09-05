@@ -79,25 +79,41 @@ describe('formatKpPackPrimer', () => {
   });
 });
 
-describe('KpLinkLatch (link-once guard)', () => {
-  it('consumes exactly once — resume/reload cannot re-link', () => {
+describe('KpLinkLatch (session-bound link-once guard)', () => {
+  it('consumes exactly once for the armed session — respawn/reload cannot re-link', () => {
     const latch = new KpLinkLatch();
-    latch.arm('ideas/cb-foo');
+    latch.arm('ideas/cb-foo', 'sess-1');
     assert.equal(latch.armed, true);
-    assert.equal(latch.consume(), 'ideas/cb-foo');
+    assert.equal(latch.consume('sess-1'), 'ideas/cb-foo');
     assert.equal(latch.armed, false);
     // Second native-id landing (respawn, reload) finds nothing to fire.
-    assert.equal(latch.consume(), undefined);
+    assert.equal(latch.consume('sess-1'), undefined);
   });
 
-  it('re-arming replaces the previous item; clear() disarms', () => {
+  it('a session transition clears the latch WITHOUT linking a foreign uuid', () => {
     const latch = new KpLinkLatch();
-    latch.arm('ideas/a');
-    latch.arm('ideas/b');
-    assert.equal(latch.consume(), 'ideas/b');
-    latch.arm('ideas/c');
+    latch.arm('ideas/cb-foo', 'sess-1');
+    // switchBackend / history-load opened a different session before init.
+    assert.equal(latch.consume('sess-2'), undefined);
+    // Latch is spent — the original session's later init can't fire either.
+    assert.equal(latch.armed, false);
+    assert.equal(latch.consume('sess-1'), undefined);
+  });
+
+  it('undefined session id never fires', () => {
+    const latch = new KpLinkLatch();
+    latch.arm('ideas/cb-foo', 'sess-1');
+    assert.equal(latch.consume(undefined), undefined);
+  });
+
+  it('re-arming replaces the previous binding; clear() disarms', () => {
+    const latch = new KpLinkLatch();
+    latch.arm('ideas/a', 's1');
+    latch.arm('ideas/b', 's2');
+    assert.equal(latch.consume('s2'), 'ideas/b');
+    latch.arm('ideas/c', 's3');
     latch.clear();
-    assert.equal(latch.consume(), undefined);
+    assert.equal(latch.consume('s3'), undefined);
   });
 });
 
