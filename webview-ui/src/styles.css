@@ -515,6 +515,28 @@ body {
   padding: 6px 10px;
   border-radius: 4px;
 }
+/* Error-class chip on the error bubble role line — host-side classification
+ * (overload/unavailable/quota/auth). Hover explains what the class means
+ * for recovery. `other` is not rendered (no signal). */
+.error-class-chip {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  color: var(--vscode-errorForeground);
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid rgba(255, 0, 0, 0.3);
+  cursor: help;
+  white-space: nowrap;
+}
+/* The base role line sits at 0.6 opacity (quiet label); an error's role
+ * line carries the class chip, which needs to read — lift it a bit. */
+.msg-error .msg-role {
+  opacity: 0.85;
+}
 /* Soft amber notice — not an error, just an informational heads-up
  * (e.g. "session held by another panel; started fresh here"). */
 .msg-notice .msg-role {
@@ -743,6 +765,56 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: 0.9em;
   opacity: 0.85;
+}
+
+/* Cross-ACP overload/unavailable failover confirm. */
+.failover-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 8px 12px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+  border-radius: 6px;
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.12));
+}
+.failover-banner-header {
+  font-size: 0.95em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.failover-banner-detail {
+  font-size: 0.85em;
+  line-height: 1.4;
+  opacity: 0.9;
+}
+.failover-banner-pick {
+  font-size: 0.85em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.failover-banner-pick select {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border));
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+.failover-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.failover-chip {
+  font-size: 0.75em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, #cca700);
+  background: var(--vscode-inputValidation-warningBackground, rgba(204, 167, 0, 0.1));
+  color: var(--vscode-foreground);
+  cursor: default;
+  white-space: nowrap;
 }
 
 /* Cross-backend carry-over banner. */

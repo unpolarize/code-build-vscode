@@ -9,6 +9,7 @@ import type {
   PermissionOutcome,
   SessionUpdate
 } from './acpTypes';
+import type { BackendErrorClass } from './backendErrorClass';
 import type { SessionKind, VoiceMode } from './voiceIdeation';
 
 export type { SessionKind, VoiceMode } from './voiceIdeation';
@@ -105,6 +106,15 @@ export interface SessionMeta {
   /** Index-sidecar flag: transcript has a user turn or substantive agent
    * output. `list()` uses this instead of scanning JSONL. */
   hasContent?: boolean;
+  /**
+   * Cross-ACP failover stamp (kp: host 529/overload failover). Set when the
+   * user confirms "continue on {backend}" after an overload|unavailable
+   * error. Visible as a header chip; CSV can join on these fields.
+   */
+  failoverFrom?: BackendId;
+  failoverReason?: Extract<BackendErrorClass, 'overload' | 'unavailable'>;
+  /** Epoch-ms when the failover continue was applied. */
+  failoverAt?: number;
 }
 
 /** Compact boundary marker — written to the transcript when a host-side
@@ -314,7 +324,17 @@ export type WebviewToHost =
    * One-click Prefer DOM/CLI from the media-tax pause notice or header chip.
    * Host arms a session-sticky prompt hint (advisory — never rewrites tools).
    */
-  | { type: 'preferDomHint' };
+  | { type: 'preferDomHint' }
+  /**
+   * User answer to the overload/unavailable failover confirm banner.
+   * `accept: true` + `backend` → spawn/resume that peer with a last-N
+   * hybrid primer and stamp failover_* meta. `accept: false` dismisses.
+   */
+  | {
+      type: 'failoverDecision';
+      accept: boolean;
+      backend?: BackendId;
+    };
 
 // ---- Host -> Webview events ----
 /** Compact HUD fields for the chat header. */
@@ -605,7 +625,25 @@ export type HostToWebview =
       type: 'sttStatus';
       status: 'idle' | 'listening' | 'error' | 'unsupported' | 'starting';
       detail?: string;
-    };
+    }
+  /**
+   * Cross-ACP failover confirm banner (overload|unavailable only — never
+   * quota/429). Webview shows "Primary overloaded — continue on {backend}?";
+   * answer comes back as `failoverDecision`. Distinct from primerPrompt
+   * (manual backend switch) and /handoff Continue-on QuickPick.
+   */
+  | {
+      type: 'failoverOffer';
+      errorClass: 'overload' | 'unavailable';
+      fromBackend: BackendId;
+      fromLabel: string;
+      suggestedBackend: BackendId;
+      suggestedLabel: string;
+      alternatives: Array<{ id: BackendId; label: string }>;
+      message: string;
+    }
+  /** Clear a pending failoverOffer (dismiss / after accept / new session). */
+  | { type: 'failoverOfferClear' };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {
   return typeof msg === 'object' && msg !== null && typeof (msg as { type?: unknown }).type === 'string';

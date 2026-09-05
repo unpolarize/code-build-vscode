@@ -4,6 +4,16 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import type { BackendId, ContentBlock, PermissionMode, SessionUpdate } from '../shared/acpTypes';
+import {
+  classifyBackendError,
+  isFailoverClass,
+  type BackendErrorClass
+} from '../shared/backendErrorClass';
+import {
+  buildFailoverOffer,
+  FAILOVER_DEFAULT_LAST_N,
+  type FailoverOffer
+} from '../shared/failoverOffer';
 import type {
   BackendSessionTransitionReason,
   HydrateState,
@@ -194,6 +204,13 @@ export class SessionManager {
   private primerPending = false;
   /** Blocks held while `primerPending` is true. Flushed on completion. */
   private queuedPromptBlocks?: ContentBlock[];
+
+  /**
+   * Pending overload/unavailable failover confirm (v1 always asks). Cleared
+   * on dismiss, accept, or new session. Debounces repeat offers for the
+   * same failing primary within one burst.
+   */
+  private pendingFailover?: FailoverOffer;
 
   /** Per-backend memory of the most recent session id used in THIS chat
    * panel. When the user flips claude → grok → claude, we restore the
@@ -396,6 +413,7 @@ export class SessionManager {
         // Fresh slate — clear the per-backend restore memory so the
         // new chat doesn't accidentally inherit any prior thread.
         this.previousSessionByBackend.clear();
+        this.clearFailoverOffer();
         this.idleResume = false;
         await this.openSession(msg.backend);
         break;
@@ -404,6 +422,9 @@ export class SessionManager {
         break;
       case 'primerDecision':
         void this.applyPrimerDecision(msg.choice, msg.lastNTurns);
+        break;
+      case 'failoverDecision':
+        void this.applyFailoverDecision(msg.accept, msg.backend);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -511,10 +532,13 @@ export class SessionManager {
         // overlapping session/prompt JSON-RPC calls (grok queues them at the
         // protocol layer). Errors still surface via .catch.
         this.session!.prompt(blocks).catch((err) => {
-          this.panel.post({
-            type: 'sessionUpdate',
-            sessionId: this.meta!.id,
-            update: { kind: 'error', message: String(err) }
+          // Route through the same path as transport-emitted errors so
+          // errorClass tagging + overload failover offer both fire.
+          const message = String(err);
+          this.routeAgentUpdate(this.meta!.id, {
+            kind: 'error',
+            message,
+            errorClass: classifyBackendError(message)
           });
         });
         break;
@@ -880,10 +904,11 @@ export class SessionManager {
       primer: primerUsed
     });
     this.session!.prompt(blocks).catch((err) => {
-      this.panel.post({
-        type: 'sessionUpdate',
-        sessionId: this.meta!.id,
-        update: { kind: 'error', message: String(err) }
+      const message = String(err);
+      this.routeAgentUpdate(this.meta!.id, {
+        kind: 'error',
+        message,
+        errorClass: classifyBackendError(message)
       });
     });
   }
@@ -915,10 +940,11 @@ export class SessionManager {
     });
     await this.session!.ready();
     this.session!.prompt([{ type: 'text', text: close }]).catch((err) => {
-      this.panel.post({
-        type: 'sessionUpdate',
-        sessionId: this.meta!.id,
-        update: { kind: 'error', message: String(err) }
+      const message = String(err);
+      this.routeAgentUpdate(this.meta!.id, {
+        kind: 'error',
+        message,
+        errorClass: classifyBackendError(message)
       });
     });
     this.panel.post({
@@ -3514,6 +3540,167 @@ export class SessionManager {
       const ec = this.perf.getCurrentTurn()?.eventCount;
       if (ec != null && ec > 0 && ec % 20 === 0) this.pushPerfHud();
     }
+
+    if (update.kind === 'error') {
+      void this.maybeOfferFailover(update.errorClass, update.message);
+    }
+  }
+
+  /**
+   * On overload|unavailable only: post a confirm banner offering the next
+   * healthy ACP peer. Quota/auth/other never offer (limit-aware switch /
+   * Continuity Relay own quota walls). Debounced while an offer is pending.
+   */
+  private async maybeOfferFailover(
+    errorClass: BackendErrorClass | undefined,
+    message: string
+  ): Promise<void> {
+    if (this.pendingFailover) return;
+    const fromBackend = this.meta?.backend;
+    if (!fromBackend) return;
+    const cls = errorClass ?? classifyBackendError(message);
+    if (!isFailoverClass(cls)) return;
+
+    // Fresh detect so a backend installed after hydrate still appears.
+    let backends = cachedBackends;
+    try {
+      const overrides = this.config.get<Record<string, string>>('binPaths', {});
+      backends = await detectAll(overrides);
+      cachedBackends = backends;
+    } catch {
+      /* keep cached snapshot */
+    }
+    if (this.pendingFailover) return; // raced with another offer
+    if (this.meta?.backend !== fromBackend) return; // session swapped meanwhile
+
+    const offer = buildFailoverOffer({
+      errorClass: cls,
+      fromBackend,
+      fromLabel: backendLabel(fromBackend),
+      backends: backends.map((b) => ({
+        id: b.id,
+        available: b.available,
+        label: b.label
+      }))
+    });
+    if (!offer) return;
+
+    this.pendingFailover = offer;
+    this.panel.post({
+      type: 'failoverOffer',
+      errorClass: offer.errorClass,
+      fromBackend: offer.fromBackend,
+      fromLabel: offer.fromLabel,
+      suggestedBackend: offer.suggestedBackend,
+      suggestedLabel: offer.suggestedLabel,
+      alternatives: offer.alternatives,
+      message: offer.message
+    });
+  }
+
+  /** Clear a pending failover confirm (dismiss / accept / new session). */
+  private clearFailoverOffer(): void {
+    if (!this.pendingFailover) return;
+    this.pendingFailover = undefined;
+    this.panel.post({ type: 'failoverOfferClear' });
+  }
+
+  /**
+   * User answered the failover banner. Accept → spawn/resume target with a
+   * last-N hybrid primer + stamp failover_* meta. Reject → dismiss only.
+   * Does NOT go through switchBackend's primer picker (one-click path).
+   */
+  private async applyFailoverDecision(
+    accept: boolean,
+    backend?: BackendId
+  ): Promise<void> {
+    const offer = this.pendingFailover;
+    this.clearFailoverOffer();
+    if (!accept || !offer) return;
+
+    const target = backend ?? offer.suggestedBackend;
+    if (target === offer.fromBackend) return;
+
+    const detectOverrides = this.config.get<Record<string, string>>('binPaths', {});
+    const spec = BACKENDS[target];
+    const available = spec ? await detectBackend(spec, detectOverrides) : false;
+    if (!available) {
+      this.panel.post({
+        type: 'notice',
+        text: `**${backendLabel(target)}** isn't installed — staying on **${offer.fromLabel}**.`,
+        detail: `Failover aborted: no \`${spec ? resolveBin(spec, detectOverrides) : target}\` on PATH.`,
+        key: `failover-unavailable-${target}`
+      });
+      return;
+    }
+
+    const prevBackend = this.meta?.backend ?? offer.fromBackend;
+    const prevId = this.meta?.id;
+    const fromLabel = backendLabel(prevBackend);
+
+    // Capture transcript BEFORE tearing down so the hybrid primer has content.
+    const records = prevId ? this.collectTranscriptRecords(prevId) : [];
+    const summary =
+      records.length > 0 ? clippedSummaryFallback(records, fromLabel) : '';
+    const primer =
+      records.length > 0 && summary
+        ? serializeHybridConversation({
+            records,
+            summary,
+            lastNTurns: FAILOVER_DEFAULT_LAST_N,
+            fromBackend: fromLabel
+          })
+        : undefined;
+
+    if (prevBackend && prevId && prevBackend !== target) {
+      this.previousSessionByBackend.set(prevBackend, prevId);
+      this.persistBackendMap();
+    }
+
+    // Drop any in-flight manual-switch primer latch — failover owns the primer.
+    this.handoffRecords = undefined;
+    this.primerPending = false;
+    this.queuedPromptBlocks = undefined;
+    this.pendingPrimer = primer;
+
+    // Prefer restoring a prior native thread on the target when one exists
+    // (same contract as switchBackend fast path) — native context needs no
+    // hybrid primer. Else fresh spawn + last-N hybrid primer.
+    const restoreId = this.previousSessionByBackend.get(target);
+    let usedPrimer = false;
+    if (restoreId && restoreId !== this.meta?.id) {
+      this.pendingPrimer = undefined;
+      await this.loadExistingSession(restoreId);
+    } else {
+      usedPrimer = Boolean(primer);
+      await this.openSession(target, { skipPin: true });
+    }
+    this.persistBackendMap();
+
+    if (this.meta) {
+      this.meta.failoverFrom = prevBackend;
+      this.meta.failoverReason = offer.errorClass;
+      this.meta.failoverAt = Date.now();
+      try {
+        this.store.updateMeta(this.meta);
+      } catch {
+        /* best-effort */
+      }
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+    }
+
+    this.panel.post({
+      type: 'notice',
+      text: `Failed over from **${fromLabel}** → **${backendLabel(target)}** (${offer.errorClass}).${
+        usedPrimer
+          ? ` Last-${FAILOVER_DEFAULT_LAST_N} hybrid primer will prepend to your next message.`
+          : restoreId
+            ? ' Restored your earlier thread on that backend — no carry-over primer needed.'
+            : ''
+      }`,
+      detail: `failover_from=${prevBackend}; failover_reason=${offer.errorClass}; failover_at=${this.meta?.failoverAt ?? ''}`,
+      key: `failover-applied-${target}`
+    });
   }
 
   private enqueueIpc(sessionId: string, update: SessionUpdate, immediate: boolean): void {

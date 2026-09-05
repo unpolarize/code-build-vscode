@@ -11,7 +11,9 @@ import { Composer } from './components/Composer';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
+import { FailoverBanner } from './components/FailoverBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
+import type { BackendId } from '../../src/shared/acpTypes';
 import { ActivityStrip } from './components/ActivityStrip';
 import { NowLine } from './components/NowLine';
 import { PerfPanel } from './components/PerfPanel';
@@ -30,6 +32,7 @@ type Action =
   | { kind: 'sendUser'; text: string; images?: ImageAttachment[]; interjected?: boolean }
   | { kind: 'resolvePermission'; requestId: string }
   | { kind: 'clearPrimer' }
+  | { kind: 'clearFailover' }
   | { kind: 'clearItems' }
   | { kind: 'askUserAnswered'; toolCallId: string; answers: Record<string, string> };
 
@@ -43,12 +46,20 @@ function appReducer(state: ChatState, action: Action): ChatState {
       permissionQueue: state.permissionQueue.filter((p) => p.requestId !== action.requestId)
     };
   if (action.kind === 'clearPrimer') return { ...state, primerPrompt: null };
+  if (action.kind === 'clearFailover') return { ...state, failoverOffer: null };
   if (action.kind === 'askUserAnswered')
     return markAskUserAnswered(state, action.toolCallId, action.answers);
   if (action.kind === 'clearItems')
     // Also drop queued permission prompts — the host disposes the old
     // session (cancelling their resolvers), so a kept modal would no-op.
-    return { ...state, items: [], usage: null, usageBreakdown: [], permissionQueue: [] };
+    return {
+      ...state,
+      items: [],
+      usage: null,
+      usageBreakdown: [],
+      permissionQueue: [],
+      failoverOffer: null
+    };
   return state;
 }
 
@@ -540,6 +551,26 @@ export function App() {
           onDecide={(choice, lastNTurns) => {
             post({ type: 'primerDecision', choice, lastNTurns });
             dispatch({ kind: 'clearPrimer' });
+          }}
+        />
+      )}
+      {state.failoverOffer && (
+        <FailoverBanner
+          offer={{
+            errorClass: state.failoverOffer.errorClass,
+            fromBackend: state.failoverOffer.fromBackend as BackendId,
+            fromLabel: state.failoverOffer.fromLabel,
+            suggestedBackend: state.failoverOffer.suggestedBackend as BackendId,
+            suggestedLabel: state.failoverOffer.suggestedLabel,
+            alternatives: state.failoverOffer.alternatives.map((a) => ({
+              id: a.id as BackendId,
+              label: a.label
+            })),
+            message: state.failoverOffer.message
+          }}
+          onDecide={(accept, backend) => {
+            post({ type: 'failoverDecision', accept, backend });
+            dispatch({ kind: 'clearFailover' });
           }}
         />
       )}

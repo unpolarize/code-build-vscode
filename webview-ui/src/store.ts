@@ -4,6 +4,10 @@ import type {
   ToolCall,
   UsageInfo
 } from '../../src/shared/acpTypes';
+import {
+  classifyBackendError,
+  type BackendErrorClass
+} from '../../src/shared/backendErrorClass';
 import type {
   ActivitySegmentMsg,
   CompactMarker,
@@ -92,7 +96,15 @@ export type ChatItem =
         newText?: string;
       }[];
     })
-  | (WithTimestamps & { kind: 'error'; id: string; text: string })
+  | (WithTimestamps & {
+      kind: 'error';
+      id: string;
+      text: string;
+      /** Host-side classification (overload|unavailable|quota|auth|other) —
+       * rendered as a chip on the bubble so the user can tell an overload
+       * blip from a quota wall at a glance. */
+      errorClass?: BackendErrorClass;
+    })
   | (WithTimestamps & { kind: 'notice'; id: string; text: string; detail?: string; key?: string })
   | (WithTimestamps & {
       kind: 'askUser';
@@ -156,6 +168,16 @@ export interface ChatState {
     toBackend: string;
     sourceBackendId: string;
     llmSummarySupported: boolean;
+  } | null;
+  /** Pending overload/unavailable failover confirm (null when idle). */
+  failoverOffer: {
+    errorClass: 'overload' | 'unavailable';
+    fromBackend: string;
+    fromLabel: string;
+    suggestedBackend: string;
+    suggestedLabel: string;
+    alternatives: Array<{ id: string; label: string }>;
+    message: string;
   } | null;
   /** Memory inventory snapshot piped through `hydrate`. Drives the
    * small Memory chip in the Header (clickable to open Code Sessions
@@ -260,6 +282,7 @@ export const initialState: ChatState = {
   fileSuggestions: [],
   sessions: [],
   primerPrompt: null,
+  failoverOffer: null,
   memoryEntries: 0,
   memoryFiles: 0,
   memoryByProvider: {},
@@ -342,6 +365,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         },
         visActive: msg.state.session?.sessionKind === 'voice-ideation',
         stallAutoCancelSeconds: msg.state.stallAutoCancelSeconds ?? 0,
+        failoverOffer: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -356,6 +380,21 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
     case 'mediaToolTax':
       return { ...state, mediaToolTax: msg.chip };
+    case 'failoverOffer':
+      return {
+        ...state,
+        failoverOffer: {
+          errorClass: msg.errorClass,
+          fromBackend: msg.fromBackend,
+          fromLabel: msg.fromLabel,
+          suggestedBackend: msg.suggestedBackend,
+          suggestedLabel: msg.suggestedLabel,
+          alternatives: msg.alternatives,
+          message: msg.message
+        }
+      };
+    case 'failoverOfferClear':
+      return { ...state, failoverOffer: null };
     case 'perfHud':
       return { ...state, perfHud: msg.hud };
     case 'activityStrip':
@@ -731,7 +770,15 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       };
     }
     case 'error':
-      items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message });
+      items.push({
+        kind: 'error',
+        id: nextId(),
+        createdAt: now(),
+        text: u.message,
+        // Mirror the host's failover-offer path (`errorClass ?? classify`) so
+        // the chip and the banner can never disagree on an untagged error.
+        errorClass: u.errorClass ?? classifyBackendError(u.message)
+      });
       return { ...state, items, busy: false };
     case 'permission_request':
       // Enqueue (idempotent on requestId — a re-emitted request must not
