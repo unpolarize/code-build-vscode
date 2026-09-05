@@ -142,6 +142,10 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
    That arms a session-sticky host hint to prefer text/DOM snapshots over pixel loops — it never rewrites or
    blocks tools. Prefer the personal Chrome Playwright path (`browser-personal` skill / Playwright MCP Bridge)
    over screenshot-heavy MCP servers when browsing authenticated pages. Config: `codeBuild.mediaToolTax.*`.
+8. **Host governors (Read size):** ACP `fs/read_text_file` is gated by `codeBuild.toolRead.maxBytesWarn`
+   (default 100 KiB, notice only) and `codeBuild.toolRead.maxBytesBlock` (default 1 MiB, hard deny until
+   Allow once / Allow session). Composes with post-read inject budgets — this blocks the invoice *before*
+   bytes enter context. Night/unattended sessions inherit deny without an interactive grant.
 
 Sessions are persisted under `~/.codebuild/` and exported in a Code-Sessions-readable
 JSONL format.

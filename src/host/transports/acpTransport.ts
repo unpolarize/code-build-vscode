@@ -434,6 +434,17 @@ export class AcpTransport extends BaseAgentSession {
       case 'fs/read_text_file': {
         const p = params as { path: string };
         const safe = this.resolveFsPath(p.path);
+        // Pre-read size gate — block oversized files before bytes hit the
+        // model invoice (kp: ideas/cb-big-file-read-hard-block-host-gate-warn-then).
+        if (this.startOpts?.onFsReadCheck) {
+          const st = await fs.stat(safe);
+          if (!this.startOpts.onFsReadCheck(safe, st.size)) {
+            throw new Error(
+              `Read blocked by Code Build toolRead gate: ${safe} is ${st.size} bytes. ` +
+                `Allow once / Allow session, or raise codeBuild.toolRead.maxBytesBlock.`
+            );
+          }
+        }
         const content = await fs.readFile(safe, 'utf8');
         return { content };
       }

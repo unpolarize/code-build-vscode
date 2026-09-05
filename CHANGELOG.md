@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.23.4 — 2026-09-05
+
+### Big-file Read hard-block host gate
+
+- New `src/shared/toolReadGate.ts`: pre-read size policy for ACP `fs/read_text_file`
+  (warn @ 100 KiB, hard-block @ 1 MiB by default) with Allow once / Allow session leases.
+- Wired into the ACP fs bridge (`onFsReadCheck`); denials and grants post timeline notices.
+- Config: `codeBuild.toolRead.maxBytesWarn`, `codeBuild.toolRead.maxBytesBlock`.
+- Unit tests cover block / grant-once / session-allow / warn-once / Read·Bash detectors.
+
 ## 0.23.3 — 2026-09-04
 
 ### Failover offer survives webview reload

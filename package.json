@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.23.3",
+  "version": "0.23.4",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -447,6 +447,18 @@
           "default": 15,
           "minimum": 0,
           "description": "Media tool-tax: soft-gate when estimated session media tokens exceed this percent of the model context window. 0 disables the window-% gate."
+        },
+        "codeBuild.toolRead.maxBytesWarn": {
+          "type": "number",
+          "default": 102400,
+          "minimum": 0,
+          "description": "Big-file Read gate: warn (timeline notice) when an ACP fs/read_text_file is at least this many bytes. Default 100 KiB. 0 disables the warn threshold. Read still proceeds until maxBytesBlock."
+        },
+        "codeBuild.toolRead.maxBytesBlock": {
+          "type": "number",
+          "default": 1048576,
+          "minimum": 0,
+          "description": "Big-file Read gate: hard-block ACP fs/read_text_file at or above this many bytes unless Allow once / Allow session was granted. Default 1 MiB. 0 disables the block. Night/unattended sessions deny without interactive grant."
         },
         "codeBuild.defaultModel": {
           "type": "string",

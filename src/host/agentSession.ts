@@ -34,6 +34,13 @@ export interface StartOpts {
    * engine's pre-image capture point for client-FS ACP backends. Must
    * never throw into the write path (callers guard). */
   onFsPreWrite?: (absPath: string) => void;
+  /**
+   * Big-file Read gate (kp: cb-big-file-read-hard-block). Called after
+   * path confinement + fs.stat, before the host reads file bytes for
+   * `fs/read_text_file`. Return false to reject the read (agent sees an
+   * error; host emits a timeline deny/grant event). Absent = allow all.
+   */
+  onFsReadCheck?: (absPath: string, bytes: number) => boolean;
 }
 
 /**

@@ -334,6 +334,17 @@ export type WebviewToHost =
       type: 'failoverDecision';
       accept: boolean;
       backend?: BackendId;
+    }
+  /**
+   * User decision on a big-file Read gate block (kp: toolRead hard-block).
+   * `allow_once` consumes one lease for `path`; `allow_session` opens all
+   * oversized reads for the rest of the session; `deny` records the choice
+   * (default posture is already deny).
+   */
+  | {
+      type: 'toolReadGateDecision';
+      decision: 'allow_once' | 'allow_session' | 'deny';
+      path?: string;
     };
 
 // ---- Host -> Webview events ----

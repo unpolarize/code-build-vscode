@@ -114,6 +114,12 @@ import {
   type MediaToolTaxChip,
   type MediaToolTaxConfig
 } from '../shared/mediaToolTax';
+import {
+  DEFAULT_TOOL_READ_GATE_CONFIG,
+  ToolReadGate,
+  type ToolReadGateConfig,
+  type ToolReadGateEvent
+} from '../shared/toolReadGate';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -284,6 +290,12 @@ export class SessionManager {
   private mediaTaxLastPosted: string | undefined;
   /** Session-sticky Prefer DOM/CLI host hint (armed by one-click action). */
   private preferDomHintArmed = false;
+  /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
+  private toolReadGate?: ToolReadGate;
+  /** Session id the current toolReadGate belongs to. */
+  private toolReadGateSessionId: string | undefined;
+  /** Last path denied by the gate — used when Allow once has no explicit path. */
+  private toolReadGateLastDeniedPath: string | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -425,6 +437,9 @@ export class SessionManager {
         break;
       case 'failoverDecision':
         void this.applyFailoverDecision(msg.accept, msg.backend);
+        break;
+      case 'toolReadGateDecision':
+        this.applyToolReadGateDecision(msg.decision, msg.path);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -2114,7 +2129,7 @@ export class SessionManager {
       additionalTrustedDirs: this.trustedDirs(remembered.mode),
       forceKp:
         openOpts.forceKp === true || openOpts.sessionKind === 'voice-ideation',
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
     await this.reapplyPinnedModeAfterStart(skipPin);
   }
@@ -3209,7 +3224,7 @@ export class SessionManager {
       effort: this.meta?.effort,
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(mode),
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
   }
 
@@ -3287,6 +3302,100 @@ export class SessionManager {
     // feed the old counters (or trip against the wrong SessionMeta).
     this.governor = undefined;
     this.governorSessionId = undefined;
+    // Same for the big-file Read gate — grants must not leak across sessions.
+    this.toolReadGate = undefined;
+    this.toolReadGateSessionId = undefined;
+    this.toolReadGateLastDeniedPath = undefined;
+  }
+
+  /** Shared fs/* bridge hooks for every AgentSession.start call site. */
+  private fsBridgeHooks(): {
+    onFsPreWrite: (absPath: string) => void;
+    onFsReadCheck: (absPath: string, bytes: number) => boolean;
+  } {
+    return {
+      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
+      onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes)
+    };
+  }
+
+  private ensureToolReadGate(): ToolReadGate {
+    const sid = this.meta?.id;
+    if (!this.toolReadGate || this.toolReadGateSessionId !== sid) {
+      this.toolReadGate = new ToolReadGate(this.readToolReadGateConfig(), (e) =>
+        this.onToolReadGateEvent(e)
+      );
+      this.toolReadGateSessionId = sid;
+      this.toolReadGateLastDeniedPath = undefined;
+    } else {
+      this.toolReadGate.setConfig(this.readToolReadGateConfig());
+      this.toolReadGate.setOnEvent((e) => this.onToolReadGateEvent(e));
+    }
+    return this.toolReadGate;
+  }
+
+  private readToolReadGateConfig(): ToolReadGateConfig {
+    return {
+      maxBytesWarn: Math.max(
+        0,
+        this.config.get<number>('toolRead.maxBytesWarn', DEFAULT_TOOL_READ_GATE_CONFIG.maxBytesWarn)
+      ),
+      maxBytesBlock: Math.max(
+        0,
+        this.config.get<number>(
+          'toolRead.maxBytesBlock',
+          DEFAULT_TOOL_READ_GATE_CONFIG.maxBytesBlock
+        )
+      )
+    };
+  }
+
+  private onToolReadGateEvent(e: ToolReadGateEvent): void {
+    if (e.type === 'deny') {
+      this.toolReadGateLastDeniedPath = e.path;
+    }
+    const key = `tool-read-gate-${e.type}`;
+    this.panel.post({
+      type: 'notice',
+      text: e.message,
+      key,
+      detail:
+        e.type === 'deny'
+          ? 'Grant Allow once / Allow session, or raise codeBuild.toolRead.maxBytesBlock.'
+          : undefined
+    });
+  }
+
+  private applyToolReadGateDecision(
+    decision: 'allow_once' | 'allow_session' | 'deny',
+    path?: string
+  ): void {
+    const gate = this.ensureToolReadGate();
+    if (decision === 'allow_session') {
+      gate.grantSession();
+      return;
+    }
+    if (decision === 'deny') {
+      gate.deny(path);
+      this.panel.post({
+        type: 'notice',
+        text: path
+          ? `Oversized read denied for ${path}`
+          : 'Oversized read denied (default posture)',
+        key: 'tool-read-gate-deny'
+      });
+      return;
+    }
+    const target = (path && path.trim()) || this.toolReadGateLastDeniedPath;
+    if (!target) {
+      this.panel.post({
+        type: 'notice',
+        text: 'Allow once needs a path (no prior denied read in this session).',
+        key: 'tool-read-gate-grant'
+      });
+      return;
+    }
+    gate.grantOnce(target);
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────
@@ -4473,7 +4582,7 @@ export class SessionManager {
       effort: this.meta.effort,
       allowBypass: this.allowBypass,
       additionalTrustedDirs: this.trustedDirs(mode),
-      onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath)
+      ...this.fsBridgeHooks()
     });
   }
 }
