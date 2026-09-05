@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.24.0 — 2026-09-05
+
+### /kp — start a session from a knowledge-planning item
+
+- New `/kp` builtin: QuickPick over `kp implementable --json` (handles the
+  away-mode shape); picking an item opens a NEW session on the current backend
+  with the item's `kp pack` latched as the one-shot first-prompt primer
+  (handoff-style — prepends to your first send, never auto-sent).
+- The binding persists as `SessionMeta.kpItemId`; a deferred
+  `kp link-session <item> <backend-native-uuid>` fires exactly once when the
+  native session id first lands (never the local id; never re-links on
+  resume/reload).
+- Failover consumer: when a bound session fails over to a FRESH peer spawn,
+  the KP pack is prepended to the hybrid primer; restoring a prior peer
+  thread keeps the binding but skips the pack.
+- Requires `codeBuild.kp.command` (absolute CLI script path) +
+  `codeBuild.kp.root`; missing config → one clear notice, no stuck UI.
+
 ## 0.23.4 — 2026-09-05
 
 ### Big-file Read hard-block host gate

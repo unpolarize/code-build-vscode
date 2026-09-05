@@ -358,6 +358,10 @@ export function App() {
       case 'handoff':
         post({ type: 'handoff' });
         break;
+      case 'kp':
+        // Host-side picker — never forwarded to the agent as prompt text.
+        post({ type: 'kpPick' });
+        break;
       case 'compact':
         // Built-in shadows any agent-advertised /compact (BUILTIN_NAMES
         // wins here); the host does the summarize→respawn, never the agent.
