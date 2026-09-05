@@ -8,6 +8,15 @@ import { post } from '../vscodeApi';
 import { formatRelative, formatHover } from '../util/time';
 import { isNearBottom } from '../util/composerLayout';
 
+/** Hover copy for the error-class chip — tells the user what the class
+ * implies for recovery (failover offer vs quota wall vs re-auth). */
+const ERROR_CLASS_HINTS: Record<string, string> = {
+  overload: 'Backend overloaded (529-class) — transient; failover to a healthy backend is offered.',
+  unavailable: 'Model/service unavailable — transient; failover to a healthy backend is offered.',
+  quota: 'Rate/usage limit (429-class) — failover is NOT offered; use limit-aware switch or wait for the window.',
+  auth: 'Authentication problem — re-login or fix credentials for this backend.'
+};
+
 interface Props {
   items: ChatItem[];
   /** Off-thread restore in progress — hide the empty-state pitch. */
@@ -306,6 +315,14 @@ const Item = memo(function Item({
         <div className="msg msg-error">
           <div className="msg-role">
             Error
+            {item.errorClass && item.errorClass !== 'other' ? (
+              <span
+                className="error-class-chip"
+                title={ERROR_CLASS_HINTS[item.errorClass]}
+              >
+                {item.errorClass}
+              </span>
+            ) : null}
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
           </div>
           <div className="msg-body">{item.text}</div>

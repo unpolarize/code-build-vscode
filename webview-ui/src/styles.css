@@ -515,6 +515,23 @@ body {
   padding: 6px 10px;
   border-radius: 4px;
 }
+/* Error-class chip on the error bubble role line — host-side classification
+ * (overload/unavailable/quota/auth). Hover explains what the class means
+ * for recovery. `other` is not rendered (no signal). */
+.error-class-chip {
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  font-weight: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(255, 0, 0, 0.1);
+  border: 1px solid rgba(255, 0, 0, 0.3);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
 /* Soft amber notice — not an error, just an informational heads-up
  * (e.g. "session held by another panel; started fresh here"). */
 .msg-notice .msg-role {

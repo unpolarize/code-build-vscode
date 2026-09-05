@@ -4,6 +4,7 @@ import type {
   ToolCall,
   UsageInfo
 } from '../../src/shared/acpTypes';
+import type { BackendErrorClass } from '../../src/shared/backendErrorClass';
 import type {
   ActivitySegmentMsg,
   CompactMarker,
@@ -92,7 +93,15 @@ export type ChatItem =
         newText?: string;
       }[];
     })
-  | (WithTimestamps & { kind: 'error'; id: string; text: string })
+  | (WithTimestamps & {
+      kind: 'error';
+      id: string;
+      text: string;
+      /** Host-side classification (overload|unavailable|quota|auth|other) —
+       * rendered as a chip on the bubble so the user can tell an overload
+       * blip from a quota wall at a glance. */
+      errorClass?: BackendErrorClass;
+    })
   | (WithTimestamps & { kind: 'notice'; id: string; text: string; detail?: string; key?: string })
   | (WithTimestamps & {
       kind: 'askUser';
@@ -758,7 +767,13 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       };
     }
     case 'error':
-      items.push({ kind: 'error', id: nextId(), createdAt: now(), text: u.message });
+      items.push({
+        kind: 'error',
+        id: nextId(),
+        createdAt: now(),
+        text: u.message,
+        errorClass: u.errorClass
+      });
       return { ...state, items, busy: false };
     case 'permission_request':
       // Enqueue (idempotent on requestId — a re-emitted request must not
