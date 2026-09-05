@@ -357,6 +357,16 @@ export type WebviewToHost =
       backend?: BackendId;
     }
   /**
+   * Resume-after-reset chip actions. `resume` wakes the SAME backend with
+   * the parked primer (the only wake when the reset time is unknown);
+   * `cancel` closes the park; `switch_backend` closes it recording the
+   * user chose to leave — the actual switch goes through the picker.
+   */
+  | {
+      type: 'resumePauseAction';
+      action: 'resume' | 'cancel' | 'switch_backend';
+    }
+  /**
    * User decision on a big-file Read gate block (kp: toolRead hard-block).
    * `allow_once` consumes one lease for `path`; `allow_session` opens all
    * oversized reads for the rest of the session; `deny` records the choice
@@ -675,7 +685,21 @@ export type HostToWebview =
       message: string;
     }
   /** Clear a pending failoverOffer (dismiss / after accept / new session). */
-  | { type: 'failoverOfferClear' };
+  | { type: 'failoverOfferClear' }
+  /**
+   * Resume-after-reset chip (kp: ideas/cb-host-resume-after-reset-
+   * coordinator-park-goal). Posted when a quota (429) soft-stop parks the
+   * session; `label` is the rendered copy ("Resume after reset · wakes
+   * HH:MM" / "· unknown reset"). Chip actions come back as
+   * `resumePauseAction`. Same-backend only — never a failover offer.
+   */
+  | {
+      type: 'resumePause';
+      pause: ResumeAfterResetPause;
+      label: string;
+    }
+  /** Clear the resume chip (resumed / cancelled / new session). */
+  | { type: 'resumePauseClear' };
 
 export function isWebviewToHost(msg: unknown): msg is WebviewToHost {
   return typeof msg === 'object' && msg !== null && typeof (msg as { type?: unknown }).type === 'string';

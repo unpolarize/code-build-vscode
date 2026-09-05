@@ -90,6 +90,24 @@ function readResetsAt(window: LimitWindow): number | null {
   return asEpochSeconds(window.resets_at ?? window.resetsAt);
 }
 
+/**
+ * Reset time (epoch seconds) of the 5-HOUR rate window, when present.
+ * The resume-after-reset park (kp: ideas/cb-host-resume-after-reset-
+ * coordinator-park-goal) must bind to THIS window — a 429 soft-stop
+ * clears when the rate window resets, which is not the spend period.
+ * Null when the payload lacks a usable five_hour.resets_at — callers
+ * must treat that as "unknown reset", never substitute spend_limit's.
+ */
+export function readFiveHourResetsAt(
+  status: SpendLimitStatusFields | null | undefined
+): number | null {
+  const limits = pickRateLimits(status);
+  if (!limits) return null;
+  const raw = limits.five_hour ?? (limits as Record<string, unknown>).fiveHour;
+  if (!raw || typeof raw !== 'object') return null;
+  return readResetsAt(raw as LimitWindow);
+}
+
 /** Format resets_at for tooltips; undefined when absent. */
 export function formatSpendLimitReset(resetsAt: number | null | undefined): string | undefined {
   if (resetsAt == null || !Number.isFinite(resetsAt) || resetsAt <= 0) return undefined;

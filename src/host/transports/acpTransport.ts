@@ -37,7 +37,7 @@ import {
   evaluateProtocolVersionPin,
   HOST_ACP_PROTOCOL_VERSION
 } from '../../shared/protocolVersionPin';
-import { evaluateSpendLimitChip } from '../../shared/spendLimitChip';
+import { evaluateSpendLimitChip, readFiveHourResetsAt } from '../../shared/spendLimitChip';
 
 export type { AcpMcpServer };
 
@@ -381,17 +381,22 @@ export class AcpTransport extends BaseAgentSession {
   private lastSpendLimitLabel?: string;
 
   private emitSpendLimit(status: unknown): void {
-    const chip = evaluateSpendLimitChip(
-      status && typeof status === 'object' ? (status as Record<string, unknown>) : null
-    );
-    if (chip.label === this.lastSpendLimitLabel) return;
-    this.lastSpendLimitLabel = chip.label;
+    const shaped =
+      status && typeof status === 'object' ? (status as Record<string, unknown>) : null;
+    const chip = evaluateSpendLimitChip(shaped);
+    const fiveHourResetsAt = readFiveHourResetsAt(shaped);
+    // Dedupe on label AND the 5h reset — a new rate window with an
+    // unchanged spend label must still reach the resume-after-reset park.
+    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}`;
+    if (dedupeKey === this.lastSpendLimitLabel) return;
+    this.lastSpendLimitLabel = dedupeKey;
     this.emit({
       kind: 'spend_limit_update',
       available: chip.available,
       usedPercentage: chip.usedPercentage,
       remainingPercentage: chip.remainingPercentage,
       resetsAt: chip.resetsAt,
+      fiveHourResetsAt,
       label: chip.label,
       warn: chip.warn,
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})

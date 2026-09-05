@@ -6,6 +6,7 @@ import {
   canAutoWake,
   cancelPause,
   resumeChipLabel,
+  isInAwayWindow,
   shouldWake,
   takeManualResume,
   takeWake
@@ -194,4 +195,32 @@ test('default chip time formatter renders local HH:MM', () => {
   const d = new Date(p.resumeAt!);
   const expected = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
   assert.equal(resumeChipLabel(p), `Resume after reset · wakes ${expected}`);
+});
+
+function at(h: number, m: number): Date {
+  const d = new Date(2026, 0, 15);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+test('isInAwayWindow — same-day span', () => {
+  assert.equal(isInAwayWindow('09:00-17:00', at(12, 0)), true);
+  assert.equal(isInAwayWindow('09:00-17:00', at(8, 59)), false);
+  assert.equal(isInAwayWindow('09:00-17:00', at(17, 0)), false); // end exclusive
+  assert.equal(isInAwayWindow('09:00-17:00', at(9, 0)), true); // start inclusive
+});
+
+test('isInAwayWindow — overnight span wraps midnight', () => {
+  assert.equal(isInAwayWindow('22:00-07:00', at(23, 30)), true);
+  assert.equal(isInAwayWindow('22:00-07:00', at(3, 0)), true);
+  assert.equal(isInAwayWindow('22:00-07:00', at(12, 0)), false);
+  assert.equal(isInAwayWindow('22:00-07:00', at(7, 0)), false);
+});
+
+test('isInAwayWindow — empty/malformed/zero-length specs fail closed', () => {
+  assert.equal(isInAwayWindow('', at(12, 0)), false);
+  assert.equal(isInAwayWindow(undefined, at(12, 0)), false);
+  assert.equal(isInAwayWindow('always', at(12, 0)), false);
+  assert.equal(isInAwayWindow('25:00-07:00', at(12, 0)), false);
+  assert.equal(isInAwayWindow('12:00-12:00', at(12, 0)), false);
 });

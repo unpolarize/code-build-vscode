@@ -12,6 +12,7 @@ import { PermissionPrompt } from './components/PermissionPrompt';
 import { MessageNav } from './components/MessageNav';
 import { PrimerBanner } from './components/PrimerBanner';
 import { FailoverBanner } from './components/FailoverBanner';
+import { ResumePauseBanner } from './components/ResumePauseBanner';
 import { ActiveQuestionBanner } from './components/ActiveQuestionBanner';
 import type { BackendId } from '../../src/shared/acpTypes';
 import { ActivityStrip } from './components/ActivityStrip';
@@ -58,7 +59,8 @@ function appReducer(state: ChatState, action: Action): ChatState {
       usage: null,
       usageBreakdown: [],
       permissionQueue: [],
-      failoverOffer: null
+      failoverOffer: null,
+      resumePause: null
     };
   return state;
 }
@@ -576,6 +578,13 @@ export function App() {
             post({ type: 'failoverDecision', accept, backend });
             dispatch({ kind: 'clearFailover' });
           }}
+        />
+      )}
+      {state.resumePause && (
+        <ResumePauseBanner
+          label={state.resumePause.label}
+          resumeAt={state.resumePause.resumeAt}
+          onAction={(action) => post({ type: 'resumePauseAction', action })}
         />
       )}
       <HistoryLoadBar load={state.historyLoad} />

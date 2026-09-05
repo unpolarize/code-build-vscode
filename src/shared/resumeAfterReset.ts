@@ -184,6 +184,28 @@ export function canAutoWake(cfg: AutoWakeConfig | null | undefined): boolean {
   return cfg?.autoWakeEnabled === true && cfg?.inAwayWindow === true;
 }
 
+/**
+ * Declared walkaway window check for the auto-wake gate. `spec` is
+ * "HH:MM-HH:MM" local time; an overnight span ("22:00-07:00") wraps
+ * midnight. Empty/`off`/malformed specs declare NO away window — the
+ * gate then fails closed to notify-only, never open.
+ */
+export function isInAwayWindow(
+  spec: string | null | undefined,
+  now: Date = new Date()
+): boolean {
+  if (!spec) return false;
+  const m = /^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$/.exec(spec);
+  if (!m) return false;
+  const [sh, sm, eh, em] = [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4])];
+  if (sh > 23 || eh > 23 || sm > 59 || em > 59) return false;
+  const start = sh * 60 + sm;
+  const end = eh * 60 + em;
+  if (start === end) return false; // zero-length window, not "always away"
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return start < end ? cur >= start && cur < end : cur >= start || cur < end;
+}
+
 /** Default HH:MM (local, 24h) for the chip; injectable for tests. */
 function defaultFormatTime(epochMs: number): string {
   const d = new Date(epochMs);

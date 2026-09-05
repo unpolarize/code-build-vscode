@@ -136,6 +136,10 @@ export type SessionUpdate =
       usedPercentage: number | null;
       remainingPercentage: number | null;
       resetsAt: number | null;
+      /** 5-HOUR rate window resets_at (epoch sec) from the same payload —
+       * the window the resume-after-reset park binds to (never spend).
+       * Null when the vendor omitted it: unknown reset, manual-resume only. */
+      fiveHourResetsAt?: number | null;
       label: string;
       warn: boolean;
       warnReason?: string;

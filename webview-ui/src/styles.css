@@ -806,6 +806,28 @@ body {
   gap: 8px;
   flex-wrap: wrap;
 }
+/* Resume-after-reset park — informational hold, NOT the warning-colored
+   failover incident styling (deliberate semantic split). */
+.resume-pause-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  margin: 8px 12px;
+  border: 1px solid var(--vscode-focusBorder, #007fd4);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.resume-pause-label {
+  font-size: 0.95em;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.resume-pause-detail {
+  font-size: 0.85em;
+  line-height: 1.4;
+  opacity: 0.9;
+}
 .failover-chip {
   font-size: 0.75em;
   padding: 1px 6px;
