@@ -574,6 +574,16 @@
           "type": "string",
           "description": "Planning store root passed to the kp MCP server as KP_ROOT (e.g. /Users/me/docs/planning)."
         },
+        "codeBuild.resumeAfterReset.autoWake": {
+          "type": "boolean",
+          "default": false,
+          "description": "Resume-after-reset: automatically re-prime the SAME backend when the 5-hour usage window resets after a 429 park. Requires codeBuild.resumeAfterReset.awayWindow too — auto-wake only fires inside the declared away window; otherwise the chip notifies and waits for a manual Resume."
+        },
+        "codeBuild.resumeAfterReset.awayWindow": {
+          "type": "string",
+          "default": "",
+          "description": "Declared walkaway window as HH:MM-HH:MM local time (e.g. 22:00-07:00, wraps midnight). Auto-wake after a usage-window reset is allowed only inside this window and only with codeBuild.resumeAfterReset.autoWake enabled. Empty = never auto-wake (notify only)."
+        },
         "codeBuild.voice.enabled": {
           "type": "boolean",
           "default": true,

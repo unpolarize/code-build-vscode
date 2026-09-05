@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   evaluateSpendLimitChip,
   formatSpendLimitReset,
+  readFiveHourResetsAt,
   SPEND_LIMIT_WARN_AT
 } from '../../src/shared/spendLimitChip';
 import { ClaudeNormalizer } from '../../src/host/transports/normalizers/claude';
@@ -198,4 +199,27 @@ test('historyLoaded clears stale spendLimit until a persisted update re-applies'
   });
   assert.equal(restored.spendLimit?.label, 'spend n/a');
   assert.equal(restored.spendLimit?.available, false);
+});
+
+test('readFiveHourResetsAt — binds the 5h RATE window, never spend_limit', () => {
+  const status = {
+    rate_limits: {
+      five_hour: { used_percentage: 23.5, resets_at: 1738425600 },
+      seven_day: { used_percentage: 41.2, resets_at: 1738857600 },
+      spend_limit: { used_percentage: 10, resets_at: 1739999999 }
+    }
+  };
+  assert.equal(readFiveHourResetsAt(status), 1738425600);
+  // ms accepted defensively → normalized to seconds
+  assert.equal(
+    readFiveHourResetsAt({ rate_limits: { five_hour: { resets_at: 1738425600000 } } }),
+    1738425600
+  );
+  // Missing five_hour (even with spend present) is unknown — null, never substituted.
+  assert.equal(
+    readFiveHourResetsAt({ rate_limits: { spend_limit: { resets_at: 1739999999 } } }),
+    null
+  );
+  assert.equal(readFiveHourResetsAt(null), null);
+  assert.equal(readFiveHourResetsAt({}), null);
 });

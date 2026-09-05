@@ -2,6 +2,7 @@ import type { ContentBlock, SessionUpdate } from '../../../shared/acpTypes';
 import { classifyBackendError } from '../../../shared/backendErrorClass';
 import {
   evaluateSpendLimitChip,
+  readFiveHourResetsAt,
   type SpendLimitStatusFields
 } from '../../../shared/spendLimitChip';
 
@@ -122,14 +123,19 @@ export class ClaudeNormalizer {
       (obj.rateLimits != null && typeof obj.rateLimits === 'object');
     if (!hasLimits) return undefined;
     const chip = evaluateSpendLimitChip(obj as SpendLimitStatusFields);
-    if (chip.label === this.lastSpendLimitLabel) return undefined;
-    this.lastSpendLimitLabel = chip.label;
+    const fiveHourResetsAt = readFiveHourResetsAt(obj as SpendLimitStatusFields);
+    // Dedupe on label AND the 5h reset — a new rate window with an
+    // unchanged spend label must still reach the resume-after-reset park.
+    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}`;
+    if (dedupeKey === this.lastSpendLimitLabel) return undefined;
+    this.lastSpendLimitLabel = dedupeKey;
     return {
       kind: 'spend_limit_update',
       available: chip.available,
       usedPercentage: chip.usedPercentage,
       remainingPercentage: chip.remainingPercentage,
       resetsAt: chip.resetsAt,
+      fiveHourResetsAt,
       label: chip.label,
       warn: chip.warn,
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})

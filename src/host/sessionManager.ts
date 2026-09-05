@@ -23,6 +23,8 @@ import type {
   WebviewToHost
 } from '../shared/protocol';
 import { applyBackendSessionId } from './backendIdentity';
+import { ResumeCoordinator } from './resumeCoordinator';
+import { isInAwayWindow, resumeChipLabel } from '../shared/resumeAfterReset';
 import {
   buildCompactMarker,
   buildCompactPrimer,
@@ -312,6 +314,40 @@ export class SessionManager {
   /** Host-side STT session (macOS Speech helper), if listening. */
   private hostStt: { stop(): void } | undefined;
 
+  /** Resume-after-reset coordinator (kp: ideas/cb-host-resume-after-reset-
+   * coordinator-park-goal): parks the session on a classified quota (429)
+   * soft-stop and re-primes the SAME backend after the 5h window resets.
+   * Quota never reaches the failover offer — see routeAgentUpdate. */
+  private readonly resumeCoordinator = new ResumeCoordinator({
+    now: () => Date.now(),
+    setTimer: (delayMs, fn) => {
+      const t = setTimeout(fn, delayMs);
+      return { dispose: () => clearTimeout(t) };
+    },
+    persist: (pause) => {
+      if (!this.meta) return;
+      this.meta.pausedForReset = pause;
+      try {
+        this.store.updateMeta(this.meta);
+      } catch {
+        /* best-effort */
+      }
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+    },
+    postChip: (pause) => {
+      const label = pause ? resumeChipLabel(pause) : null;
+      if (pause && label) this.panel.post({ type: 'resumePause', pause, label });
+      else this.panel.post({ type: 'resumePauseClear' });
+    },
+    injectPrimer: (primer) => void this.injectResumePrimer(primer),
+    notify: (text) => this.panel.post({ type: 'notice', text, key: 'resume-after-reset' }),
+    autoWakeConfig: () => ({
+      autoWakeEnabled: this.config.get<boolean>('resumeAfterReset.autoWake', false),
+      inAwayWindow: isInAwayWindow(this.config.get<string>('resumeAfterReset.awayWindow', ''))
+    }),
+    primerOptions: () => ({})
+  });
+
   constructor(
     private readonly panel: ChatSurface,
     private readonly context: vscode.ExtensionContext,
@@ -447,6 +483,9 @@ export class SessionManager {
         break;
       case 'failoverDecision':
         void this.applyFailoverDecision(msg.accept, msg.backend);
+        break;
+      case 'resumePauseAction':
+        this.applyResumePauseAction(msg.action);
         break;
       case 'toolReadGateDecision':
         this.applyToolReadGateDecision(msg.decision, msg.path);
@@ -3503,6 +3542,12 @@ export class SessionManager {
     // stale latch would suppress every future offer on the replacement
     // session (accept-path is safe: applyFailoverDecision clears first).
     this.clearFailoverOffer();
+    // The park (and its wake timer) belongs to the session being torn
+    // down; the stamp stays on that session's persisted meta, and a load
+    // path re-hydrates it. Without this, the old timer could inject a
+    // primer into the replacement session.
+    this.resumeCoordinator.clear();
+    this.panel.post({ type: 'resumePauseClear' });
     this.killReplayChild();
     this.historyOlderFrom = 0;
     this.historyOlderBusy = false;
@@ -3892,8 +3937,81 @@ export class SessionManager {
       if (ec != null && ec > 0 && ec % 20 === 0) this.pushPerfHud();
     }
 
+    if (update.kind === 'spend_limit_update') {
+      // Cache the 5h RATE window's reset for the resume-after-reset park —
+      // deliberately not the spend window this chip event is named after.
+      this.resumeCoordinator.noteRateWindowReset(update.fiveHourResetsAt ?? null);
+    }
+
     if (update.kind === 'error') {
-      void this.maybeOfferFailover(update.errorClass, update.message);
+      const cls = update.errorClass ?? classifyBackendError(update.message);
+      // Quota (429-class) parks the session for a SAME-backend resume;
+      // everything else stays on the cross-ACP failover path (which itself
+      // ignores quota — isFailoverClass — so there is no overlap).
+      const parked = this.meta
+        ? this.resumeCoordinator.onBackendError(cls, update.message, {
+            backend: this.meta.backend,
+            ...(this.meta.kpItemId ? { kpItemId: this.meta.kpItemId } : {}),
+            ...(this.lastUserText
+              ? { goalSnapshot: this.lastUserText.slice(0, 2000) }
+              : {})
+          })
+        : false;
+      if (!parked) void this.maybeOfferFailover(cls, update.message);
+    }
+  }
+
+  /**
+   * Wake path for resume-after-reset: inject the resume primer into the
+   * SAME backend session (ensureSession respawns it if the process died
+   * while parked — via --resume, so the native thread is kept). The
+   * coordinator has already persisted the closed stamp before this runs.
+   */
+  private async injectResumePrimer(primer: string): Promise<void> {
+    try {
+      await this.ensureSession();
+    } catch (e) {
+      this.panel.post({
+        type: 'notice',
+        text: `Resume after reset: could not reconnect the backend (${e instanceof Error ? e.message : String(e)}). Send a message to retry.`
+      });
+      return;
+    }
+    if (!this.session || !this.meta) return;
+    this.panel.post({ type: 'busy', busy: true });
+    this.armWatchdog();
+    this.perf.onPromptSent();
+    this.store.appendUserText(this.meta.id, primer);
+    this.lastUserText = primer;
+    this.currentAssistantBuf = '';
+    this.panel.post({
+      type: 'sessionUpdate',
+      sessionId: this.meta.id,
+      update: { kind: 'user_message_chunk', content: { type: 'text', text: primer } }
+    });
+    await this.session.ready();
+    this.session.prompt([{ type: 'text', text: primer }]).catch((err) => {
+      const message = String(err);
+      this.routeAgentUpdate(this.meta!.id, {
+        kind: 'error',
+        message,
+        errorClass: classifyBackendError(message)
+      });
+    });
+  }
+
+  /** Chip actions for the resume-after-reset park. */
+  private applyResumePauseAction(action: 'resume' | 'cancel' | 'switch_backend'): void {
+    if (action === 'resume') {
+      this.resumeCoordinator.manualResume();
+      return;
+    }
+    this.resumeCoordinator.cancel(action);
+    if (action === 'switch_backend') {
+      this.panel.post({
+        type: 'notice',
+        text: 'Park cancelled — pick a backend from the header to continue elsewhere.'
+      });
     }
   }
 
@@ -4760,6 +4878,9 @@ export class SessionManager {
     this.titled = true;
     this.panel.setTitle?.(this.meta.title);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
+    // Rebuild the park chip + wake timer from the persisted stamp. A stamp
+    // already past resumeAt notifies instead of auto-injecting on reload.
+    this.resumeCoordinator.hydrate(this.meta.pausedForReset);
     this.rememberLast(this.meta.id);
 
     if (!skipReplay) {
