@@ -10,6 +10,7 @@ import type {
   SessionUpdate
 } from './acpTypes';
 import type { BackendErrorClass } from './backendErrorClass';
+import type { ResumeAfterResetPause } from './resumeAfterReset';
 import type { SessionKind, VoiceMode } from './voiceIdeation';
 
 export type { SessionKind, VoiceMode } from './voiceIdeation';
@@ -123,6 +124,14 @@ export interface SessionMeta {
    * NATIVE uuid, never this session's local `id`.
    */
   kpItemId?: string;
+  /**
+   * Resume-after-reset park (kp: ideas/cb-host-resume-after-reset-
+   * coordinator-park-goal). Written when a quota (429-class) soft-stop
+   * parks the session until the usage window resets; the wake path
+   * re-primes the SAME backend — never a failover. Survives reloads so
+   * the chip and wake timer can be rebuilt from persisted meta.
+   */
+  pausedForReset?: ResumeAfterResetPause;
 }
 
 /** Compact boundary marker — written to the transcript when a host-side
