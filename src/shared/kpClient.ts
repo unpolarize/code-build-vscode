@@ -13,6 +13,8 @@ export interface KpImplementableRow {
   title: string;
   project: string | null;
   targetRepo: string | null;
+  /** KP `implement_effort` when present — arms ScopeFence for small|tiny. */
+  implementEffort: string | null;
 }
 
 export interface KpImplementableResult {
@@ -44,7 +46,9 @@ export function parseImplementableJson(raw: string): KpImplementableResult {
         priority: typeof r.priority === 'string' ? r.priority : null,
         title: typeof r.title === 'string' ? (r.title as string) : (r.id as string),
         project: typeof r.project === 'string' ? (r.project as string) : null,
-        targetRepo: typeof r.target_repo === 'string' ? (r.target_repo as string) : null
+        targetRepo: typeof r.target_repo === 'string' ? (r.target_repo as string) : null,
+        implementEffort:
+          typeof r.implement_effort === 'string' ? (r.implement_effort as string) : null
       }));
   if (Array.isArray(data)) return { away: false, rows: toRows(data) };
   if (data && typeof data === 'object' && (data as Record<string, unknown>).away === true) {

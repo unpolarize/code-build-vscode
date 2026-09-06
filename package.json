@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.24.0",
+  "version": "0.24.1",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -466,6 +466,17 @@
           "default": 1048576,
           "minimum": 0,
           "description": "Big-file Read gate: hard-block ACP fs/read_text_file at or above this many bytes unless Allow once / Allow session was granted. Default 1 MiB. 0 disables the block. Night/unattended sessions deny without interactive grant."
+        },
+        "codeBuild.scopeFence.maxWritePaths": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Small-effort ScopeFence: max distinct write paths when a session is primed from a KP item with implement_effort small|tiny. Default 5. 0 disables the path budget (protected-path deny-list still applies). Human override / expand-effort always available."
+        },
+        "codeBuild.scopeFence.force": {
+          "type": "boolean",
+          "default": false,
+          "description": "Force-enable ScopeFence for every session (testing). Normally the fence arms only when /kp primes from implement_effort small|tiny."
         },
         "codeBuild.defaultModel": {
           "type": "string",

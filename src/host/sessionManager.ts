@@ -129,6 +129,14 @@ import {
   type ToolReadGateConfig,
   type ToolReadGateEvent
 } from '../shared/toolReadGate';
+import {
+  DEFAULT_SCOPE_FENCE_CONFIG,
+  ScopeFence,
+  parseImplementEffortFromText,
+  shouldEnableScopeFence,
+  type ScopeFenceConfig,
+  type ScopeFenceEvent
+} from '../shared/scopeFence';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -305,6 +313,17 @@ export class SessionManager {
   private toolReadGateSessionId: string | undefined;
   /** Last path denied by the gate — used when Allow once has no explicit path. */
   private toolReadGateLastDeniedPath: string | undefined;
+  /** Per-session small-effort ScopeFence (ACP fs/write_text_file pre-write). */
+  private scopeFence?: ScopeFence;
+  /** Session id the current ScopeFence belongs to. */
+  private scopeFenceSessionId: string | undefined;
+  /** Last path denied by the fence — used when override has no explicit path. */
+  private scopeFenceLastDeniedPath: string | undefined;
+  /**
+   * KP implement_effort latched at /kp pick time so the fence can arm on
+   * the NEW session after openSession (meta + gate must match that session).
+   */
+  private pendingScopeFenceEffort?: string;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -495,6 +514,9 @@ export class SessionManager {
         break;
       case 'toolReadGateDecision':
         this.applyToolReadGateDecision(msg.decision, msg.path);
+        break;
+      case 'scopeFenceDecision':
+        this.applyScopeFenceDecision(msg.decision, msg.path);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -1711,12 +1733,15 @@ export class SessionManager {
       return;
     }
 
-    type KpPickItem = vscode.QuickPickItem & { kpId?: string };
+    type KpPickItem = vscode.QuickPickItem & { kpId?: string; implementEffort?: string | null };
     const items: KpPickItem[] = rows.map((r) => ({
       label: `$(circuit-board) ${r.priority ? `${r.priority} · ` : ''}${r.title}`,
       description: r.id,
-      detail: [r.project, r.targetRepo].filter(Boolean).join(' · ') || undefined,
-      kpId: r.id
+      detail: [r.project, r.targetRepo, r.implementEffort ? `effort=${r.implementEffort}` : null]
+        .filter(Boolean)
+        .join(' · ') || undefined,
+      kpId: r.id,
+      implementEffort: r.implementEffort
     }));
     const pick = await vscode.window.showQuickPick<KpPickItem>(items, {
       title: 'Start a session from a knowledge-planning item',
@@ -1729,11 +1754,13 @@ export class SessionManager {
     const itemId = pick.kpId;
 
     let primer: string;
+    let packText = '';
     try {
       const pack = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Code Build: packing ${itemId}…` },
         () => this.runKpCli(cfg.cli, cfg.root, ['pack', itemId], 8000)
       );
+      packText = pack;
       primer = formatKpPackPrimer(pack, itemId);
       if (!primer) throw new Error('kp pack returned empty output');
     } catch (err) {
@@ -1755,6 +1782,10 @@ export class SessionManager {
       return;
     }
 
+    // Prefer implementable-row effort; fall back to pack frontmatter text.
+    this.pendingScopeFenceEffort =
+      pick.implementEffort ?? parseImplementEffortFromText(packText) ?? undefined;
+
     // Mirror /handoff: clear any in-flight cross-backend banner state, latch
     // the pack as the ONLY primer BEFORE openSession (openSession never
     // clears pendingPrimer), then open a fresh session on the current
@@ -1766,7 +1797,12 @@ export class SessionManager {
     this.primerPending = false;
     this.queuedPromptBlocks = undefined;
     this.pendingPrimer = primer;
-    await this.openSession(backend, { skipPin: true });
+    try {
+      await this.openSession(backend, { skipPin: true });
+    } catch (err) {
+      this.pendingScopeFenceEffort = undefined;
+      throw err;
+    }
 
     // Stamp the binding on the NEW SessionMeta before any link spawn, so
     // consumers (failover primer) see it even if the deferred link is lost
@@ -1785,10 +1821,18 @@ export class SessionManager {
       if (this.meta.backendSessionId) this.maybeFireKpLink();
     }
 
+    // Arm ScopeFence on the NEW session when KP effort is small|tiny.
+    const effort = this.pendingScopeFenceEffort;
+    this.pendingScopeFenceEffort = undefined;
+    this.maybeArmScopeFence(effort, itemId);
+
     this.panel.post({
       type: 'notice',
       text: `New session primed with **${itemId}** — the pack prepends to your first message. The session will be linked back to the item once the backend reports its native id.`,
-      detail: `Primer is one-shot (kp pack, carries the (kp: ${itemId}) trailer). Deferred kp link-session fires once on the first backend-native session id.`,
+      detail: `Primer is one-shot (kp pack, carries the (kp: ${itemId}) trailer). Deferred kp link-session fires once on the first backend-native session id.` +
+        (this.scopeFence?.isActive()
+          ? ` ScopeFence active (${this.scopeFence.statusChip()}).`
+          : ''),
       key: `kp-primed-${itemId}`
     });
   }
@@ -3002,6 +3046,11 @@ export class SessionManager {
         const snap = this.currentAssistantBuf;
         void this.maybeWriteVisCloseFromAssistant(snap);
       }
+      // ScopeFence digression heuristic — latch write pause when the
+      // assistant proposes architecture redesign under small effort.
+      if (this.scopeFence?.isActive() && this.currentAssistantBuf) {
+        this.scopeFence.noteAssistantText(this.currentAssistantBuf);
+      }
     }
     if (update.kind !== 'result') return;
     if (!this.config.get<boolean>('classifyTurns', false)) return;
@@ -3597,16 +3646,22 @@ export class SessionManager {
     this.toolReadGate = undefined;
     this.toolReadGateSessionId = undefined;
     this.toolReadGateLastDeniedPath = undefined;
+    // Same for ScopeFence — path budget / overrides must not leak.
+    this.scopeFence = undefined;
+    this.scopeFenceSessionId = undefined;
+    this.scopeFenceLastDeniedPath = undefined;
   }
 
   /** Shared fs/* bridge hooks for every AgentSession.start call site. */
   private fsBridgeHooks(): {
     onFsPreWrite: (absPath: string) => void;
     onFsReadCheck: (absPath: string, bytes: number) => boolean;
+    onFsWriteCheck: (absPath: string) => boolean;
   } {
     return {
       onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
-      onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes)
+      onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes),
+      onFsWriteCheck: (absPath) => this.ensureScopeFence().allowWrite(absPath)
     };
   }
 
@@ -3687,6 +3742,89 @@ export class SessionManager {
       return;
     }
     gate.grantOnce(target);
+  }
+
+  private ensureScopeFence(): ScopeFence {
+    const sid = this.meta?.id;
+    if (!this.scopeFence || this.scopeFenceSessionId !== sid) {
+      this.scopeFence = new ScopeFence(this.readScopeFenceConfig(), (e) =>
+        this.onScopeFenceEvent(e)
+      );
+      this.scopeFenceSessionId = sid;
+      this.scopeFenceLastDeniedPath = undefined;
+    } else {
+      this.scopeFence.setConfig(this.readScopeFenceConfig());
+      this.scopeFence.setOnEvent((e) => this.onScopeFenceEvent(e));
+    }
+    // Testing escape hatch — arms without a KP small/tiny prime.
+    if (
+      this.config.get<boolean>('scopeFence.force', false) &&
+      !this.scopeFence.isActive()
+    ) {
+      this.scopeFence.enable('codeBuild.scopeFence.force');
+    }
+    return this.scopeFence;
+  }
+
+  private readScopeFenceConfig(): ScopeFenceConfig {
+    return {
+      maxWritePaths: Math.max(
+        0,
+        this.config.get<number>(
+          'scopeFence.maxWritePaths',
+          DEFAULT_SCOPE_FENCE_CONFIG.maxWritePaths
+        )
+      )
+    };
+  }
+
+  private onScopeFenceEvent(e: ScopeFenceEvent): void {
+    if (e.type === 'deny' && e.path) {
+      this.scopeFenceLastDeniedPath = e.path;
+    }
+    this.panel.post({
+      type: 'notice',
+      text: e.message,
+      key: `scope-fence-${e.type}`,
+      detail:
+        e.type === 'deny' || e.type === 'digression'
+          ? 'Override path / Expand effort / Disable fence (scopeFenceDecision).'
+          : e.remainingPaths !== undefined && e.remainingPaths !== null
+            ? this.ensureScopeFence().statusChip()
+            : undefined
+    });
+  }
+
+  private applyScopeFenceDecision(
+    decision: 'override_path' | 'expand_effort' | 'disable',
+    path?: string
+  ): void {
+    const fence = this.ensureScopeFence();
+    if (decision === 'disable') {
+      fence.disable();
+      return;
+    }
+    if (decision === 'expand_effort') {
+      fence.expandEffort();
+      return;
+    }
+    const target = (path && path.trim()) || this.scopeFenceLastDeniedPath || '*';
+    fence.grantOverride(target);
+  }
+
+  /**
+   * Arm ScopeFence when KP implement_effort is small|tiny (or force setting).
+   * Safe to call repeatedly; no-ops when effort does not qualify.
+   */
+  private maybeArmScopeFence(effort: string | null | undefined, source: string): void {
+    const force = this.config.get<boolean>('scopeFence.force', false);
+    if (!force && !shouldEnableScopeFence(effort)) return;
+    const fence = this.ensureScopeFence();
+    fence.enable(
+      force && !shouldEnableScopeFence(effort)
+        ? `force (${source})`
+        : `implement_effort=${effort ?? 'unknown'} (${source})`
+    );
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────
