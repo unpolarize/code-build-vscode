@@ -251,6 +251,16 @@ export interface ChatState {
     hint?: string;
     preferDomArmed?: boolean;
   } | null;
+  /** Agent-team idle-notice context-tax chip (null until events > 0). */
+  idleNoticeTax: {
+    label: string;
+    idleCount: number;
+    taskNoticeCount: number;
+    sessionNoticeTokens: number;
+    warn: boolean;
+    pause: boolean;
+    hint?: string;
+  } | null;
   /** Investigate-mode findings-first write lock chip (null = mode off). */
   investigate: {
     unlocked: boolean;
@@ -319,6 +329,7 @@ export const initialState: ChatState = {
   protocolPin: null,
   spendLimit: null,
   mediaToolTax: null,
+  idleNoticeTax: null,
   investigate: null,
   historyLoad: null,
   nowLine: null,
@@ -393,6 +404,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
     case 'mediaToolTax':
       return { ...state, mediaToolTax: msg.chip };
+    case 'idleNoticeTax':
+      return { ...state, idleNoticeTax: msg.chip };
     case 'investigateStatus':
       return {
         ...state,
@@ -1013,6 +1026,8 @@ function replayRecords(
           protocolPin: null,
           spendLimit: null,
           mediaToolTax: null,
+          // Idle-notice tax is live host state too — clear on switch.
+          idleNoticeTax: null,
           // Investigate lock is live host state — cleared on switch; the
           // host re-posts investigateStatus on the next transition.
           investigate: null,

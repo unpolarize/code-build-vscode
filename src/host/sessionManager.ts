@@ -124,6 +124,12 @@ import {
   type MediaToolTaxConfig
 } from '../shared/mediaToolTax';
 import {
+  IdleNoticeTaxTracker,
+  DEFAULT_IDLE_NOTICE_TAX_CONFIG,
+  type IdleNoticeTaxChip,
+  type IdleNoticeTaxConfig
+} from '../shared/idleNoticeTax';
+import {
   DEFAULT_TOOL_READ_GATE_CONFIG,
   ToolReadGate,
   type ToolReadGateConfig,
@@ -302,6 +308,9 @@ export class SessionManager {
   private governorSessionId: string | undefined;
   /** Runtime media/pixel tool-tax meter (post-tool payloads; not MCP schemas). */
   private mediaTax = new MediaToolTaxTracker();
+  private idleNoticeTax = new IdleNoticeTaxTracker();
+  private idleNoticeTaxSessionId: string | undefined;
+  private idleNoticeTaxLastPosted: string | undefined;
   /** Session id the current media-tax tracker belongs to. */
   private mediaTaxSessionId: string | undefined;
   /** Last media-tax chip signature posted to the webview (dedupe). */
@@ -2805,6 +2814,7 @@ export class SessionManager {
    * Runs on EVERY update (unlike the watchdog, which needs an armed turn). */
   private feedGovernor(update: SessionUpdate): void {
     this.feedMediaTax(update);
+    this.feedIdleNoticeTax(update);
     const gov = this.governor;
     if (!gov) return;
     // A replacement session's startup events must never feed a governor
@@ -2930,6 +2940,113 @@ export class SessionManager {
         detail
       });
     }
+  }
+
+  private readIdleNoticeTaxConfig(): IdleNoticeTaxConfig {
+    const mode = this.config.get<'off' | 'warn'>('idleNoticeTax.mode', 'warn');
+    return {
+      mode,
+      maxNotices: Math.max(
+        0,
+        this.config.get<number>(
+          'idleNoticeTax.maxNotices',
+          DEFAULT_IDLE_NOTICE_TAX_CONFIG.maxNotices
+        )
+      ),
+      maxWindowPct: Math.max(
+        0,
+        this.config.get<number>(
+          'idleNoticeTax.maxWindowPct',
+          DEFAULT_IDLE_NOTICE_TAX_CONFIG.maxWindowPct
+        )
+      )
+    };
+  }
+
+  /**
+   * Meter agent-team idle/notify_when_idle coordination chatter landing in
+   * the lead context (observe-only v1 — notices are never blocked). Feeds on
+   * user-injected chunks and tool-result text so peer-messaging traffic is
+   * counted regardless of which surface delivered it.
+   */
+  private feedIdleNoticeTax(update: SessionUpdate): void {
+    const sid = this.meta?.id;
+    if (sid && this.idleNoticeTaxSessionId !== sid) {
+      this.idleNoticeTax = new IdleNoticeTaxTracker();
+      this.idleNoticeTaxSessionId = sid;
+      this.idleNoticeTaxLastPosted = undefined;
+      this.panel.post({ type: 'idleNoticeTax', chip: null });
+    }
+    const cfg = this.readIdleNoticeTaxConfig();
+    if (cfg.mode === 'off') {
+      this.postIdleNoticeTaxChip(null);
+      return;
+    }
+
+    switch (update.kind) {
+      case 'user_message_chunk':
+        this.idleNoticeTax.noteText(update.content);
+        break;
+      case 'tool_call':
+      case 'tool_call_update': {
+        const tc = update.toolCall;
+        if (!tc.content || !Array.isArray(tc.content) || tc.content.length === 0) break;
+        for (const part of tc.content) {
+          this.idleNoticeTax.noteText(part, { toolCallId: tc.toolCallId });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+
+    const model = this.meta?.model ?? '';
+    const windowTokens = /claude|opus|sonnet|haiku/i.test(model)
+      ? 200_000
+      : /grok|gpt-5|o3|o4|codex|gpt-4|o1/i.test(model)
+        ? 128_000
+        : undefined;
+
+    const { chip, newlyWarned, pauseReasons } = this.idleNoticeTax.check(cfg, windowTokens);
+    if (chip.idleCount + chip.taskNoticeCount > 0) {
+      this.postIdleNoticeTaxChip(chip);
+    } else {
+      this.postIdleNoticeTaxChip(null);
+    }
+    if (newlyWarned) {
+      this.panel.post({
+        type: 'notice',
+        key: 'idle-notice-tax',
+        text: `⚠️ Idle-notice tax: team idle/notify chatter is filling the lead context (${chip.label}).`,
+        detail:
+          pauseReasons.join('; ') +
+          `\nSession estimate: ~${chip.sessionNoticeTokens} tok across ${chip.idleCount} idle + ${chip.taskNoticeCount} task notice(s) (chars÷4 heuristic).` +
+          `\nAdjust with codeBuild.idleNoticeTax.* (observe-only — notices are not blocked).`
+      });
+    }
+  }
+
+  /** Dedupe-post the idle-notice-tax header chip (or clear it). */
+  private postIdleNoticeTaxChip(chip: IdleNoticeTaxChip | null): void {
+    const sig = chip
+      ? `${chip.label}|${chip.warn ? 1 : 0}|${chip.pause ? 1 : 0}|${chip.idleCount}|${chip.taskNoticeCount}|${chip.sessionNoticeTokens}`
+      : 'null';
+    if (sig === this.idleNoticeTaxLastPosted) return;
+    this.idleNoticeTaxLastPosted = sig;
+    this.panel.post({
+      type: 'idleNoticeTax',
+      chip: chip
+        ? {
+            label: chip.label,
+            idleCount: chip.idleCount,
+            taskNoticeCount: chip.taskNoticeCount,
+            sessionNoticeTokens: chip.sessionNoticeTokens,
+            warn: chip.warn,
+            pause: chip.pause,
+            ...(chip.hint ? { hint: chip.hint } : {})
+          }
+        : null
+    });
   }
 
   /** Dedupe-post the media-tax header chip (or clear it). */

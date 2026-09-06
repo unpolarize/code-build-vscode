@@ -255,6 +255,19 @@ export function Header({
         </button>
       )}
 
+      {state.idleNoticeTax && (
+        <span
+          className={
+            state.idleNoticeTax.warn || state.idleNoticeTax.pause
+              ? 'media-tax-chip media-tax-chip-warn'
+              : 'media-tax-chip'
+          }
+          title={formatIdleNoticeTooltip(state.idleNoticeTax)}
+        >
+          {state.idleNoticeTax.label}
+        </span>
+      )}
+
       {onSetStallTimeout && (
         <select
           className="stall-picker"
@@ -425,6 +438,17 @@ function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): st
   }
   if (chip.warnReason) lines.push(chip.warnReason);
   lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
+}
+
+function formatIdleNoticeTooltip(chip: NonNullable<ChatState['idleNoticeTax']>): string {
+  const lines: string[] = [chip.label];
+  lines.push(
+    `Team coordination chatter: ${chip.idleCount} idle notice(s), ${chip.taskNoticeCount} task notice(s)`
+  );
+  lines.push(`Estimated context consumed: ~${chip.sessionNoticeTokens} tok (chars÷4 heuristic)`);
+  if (chip.hint) lines.push(chip.hint);
+  lines.push('Observe-only — idle notices are never blocked. codeBuild.idleNoticeTax.*');
   return lines.join('\n');
 }
 

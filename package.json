@@ -455,6 +455,27 @@
           "minimum": 0,
           "description": "Media tool-tax: soft-gate when estimated session media tokens exceed this percent of the model context window. 0 disables the window-% gate."
         },
+        "codeBuild.idleNoticeTax.mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn"
+          ],
+          "default": "warn",
+          "description": "Agent-team idle-notice context-tax meter: counts inbound idle/notify_when_idle-class peer notifications and task notices filling the lead session's context, with an estimated token cost (chars÷4 heuristic). 'warn' (default) shows a header chip + one-time notice past thresholds; 'off' disables. Observe-only — notices are never blocked."
+        },
+        "codeBuild.idleNoticeTax.maxNotices": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "description": "Idle-notice tax: warn after this many idle/notify events in the session. 0 disables the count gate."
+        },
+        "codeBuild.idleNoticeTax.maxWindowPct": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Idle-notice tax: warn when estimated idle-notice tokens exceed this percent of the model context window. 0 disables the window-% gate."
+        },
         "codeBuild.toolRead.maxBytesWarn": {
           "type": "number",
           "default": 102400,
