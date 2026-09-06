@@ -251,6 +251,12 @@ export interface ChatState {
     hint?: string;
     preferDomArmed?: boolean;
   } | null;
+  /** Investigate-mode findings-first write lock chip (null = mode off). */
+  investigate: {
+    unlocked: boolean;
+    findingsCount: number;
+    chip: string;
+  } | null;
   /** Off-thread full-transcript restore (issue #24). */
   historyLoad: {
     phase: 'loading' | 'done' | 'error';
@@ -313,6 +319,7 @@ export const initialState: ChatState = {
   protocolPin: null,
   spendLimit: null,
   mediaToolTax: null,
+  investigate: null,
   historyLoad: null,
   nowLine: null,
   hasOlder: false,
@@ -386,6 +393,13 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, daemon: { up: msg.up, version: msg.version, error: msg.error } };
     case 'mediaToolTax':
       return { ...state, mediaToolTax: msg.chip };
+    case 'investigateStatus':
+      return {
+        ...state,
+        investigate: msg.active
+          ? { unlocked: msg.unlocked, findingsCount: msg.findingsCount, chip: msg.chip }
+          : null
+      };
     case 'failoverOffer':
       return {
         ...state,
@@ -999,6 +1013,9 @@ function replayRecords(
           protocolPin: null,
           spendLimit: null,
           mediaToolTax: null,
+          // Investigate lock is live host state — cleared on switch; the
+          // host re-posts investigateStatus on the next transition.
+          investigate: null,
           modeOptions: null
         };
   for (const rec of records) {

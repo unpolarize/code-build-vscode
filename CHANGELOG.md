@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.24.2 — 2026-09-06
+
+### Investigate mode — findings-first write lock
+
+- New `src/shared/investigateMode.ts`: session mode for detect≠patch review
+  work. While armed, host fs writes are denied until the assistant produces a
+  structured `## Findings` block (≥1 entry with path + severity + observation)
+  and the user unlocks writes. Unlock is refused with zero findings; turning
+  the mode off (`disarm`) is the explicit no-evidence escape hatch.
+- Findings parser: `## Findings` heading or `Findings:` label, list entries,
+  multi-line folding, dedupe by path+severity; findings accumulate across
+  turns until unlock.
+- Host wiring: Investigate gate runs before ScopeFence in `onFsWriteCheck`
+  (a locked deny never consumes fence path budget); assistant result text is
+  scanned for findings; timeline notices on arm/deny/findings/unlock; state
+  cleared on session teardown.
+- Header chip (🔎): click to arm, click to unlock once findings exist
+  (alt-click to turn off), shows live finding count via `investigateStatus`.
+- Config: `codeBuild.investigate.force` starts every session locked.
+- v1 is a host gate only — no automatic patch agent; peer-backend findings
+  review remains a follow-up.
+
 ## 0.24.1 — 2026-09-05
 
 ### Small-effort ScopeFence (KP implement_effort binding)

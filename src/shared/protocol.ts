@@ -387,6 +387,17 @@ export type WebviewToHost =
       type: 'scopeFenceDecision';
       decision: 'override_path' | 'expand_effort' | 'disable';
       path?: string;
+    }
+  /**
+   * User decision on the Investigate-mode findings-first write lock
+   * (kp: cb-investigate-mode-findings-first-write-lock). `arm` locks host
+   * fs writes for the session; `unlock` opens writes (refused by the host
+   * until a structured Findings block has been recorded); `disarm` turns
+   * the mode off entirely (the explicit no-evidence escape hatch).
+   */
+  | {
+      type: 'investigateDecision';
+      decision: 'arm' | 'unlock' | 'disarm';
     };
 
 // ---- Host -> Webview events ----
@@ -593,6 +604,18 @@ export type HostToWebview =
    * timer that fired just before the agent woke up sat in the chat
    * forever and made it look like the turn never finished. */
   | { type: 'dismissNotice'; key: string }
+  /**
+   * Investigate-mode header chip state (kp: cb-investigate-mode
+   * findings-first write lock). Sent on every lock transition so the
+   * webview chip mirrors the host gate; `active: false` clears it.
+   */
+  | {
+      type: 'investigateStatus';
+      active: boolean;
+      unlocked: boolean;
+      findingsCount: number;
+      chip: string;
+    }
   /**
    * Runtime media/pixel tool-tax header chip. Null clears (new session /
    * mode off / zero tax). Distinct from MCP schema budget advisor.
