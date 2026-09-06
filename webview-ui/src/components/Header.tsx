@@ -125,6 +125,37 @@ export function Header({
         {state.pinnedPermissionMode ? '📌' : '📍'}
       </button>
 
+      <button
+        type="button"
+        className={
+          state.investigate
+            ? 'mode-pin-btn mode-pin-btn-active'
+            : 'mode-pin-btn'
+        }
+        title={
+          !state.investigate
+            ? 'Investigate mode: lock host writes until the agent reports a structured Findings block (path + severity + observation)'
+            : state.investigate.unlocked
+              ? `${state.investigate.chip}. Click to turn Investigate off.`
+              : `${state.investigate.chip}. Click to unlock writes (needs ≥1 finding); alt-click to turn Investigate off.`
+        }
+        onClick={(e) => {
+          if (!state.investigate) {
+            post({ type: 'investigateDecision', decision: 'arm' });
+          } else if (state.investigate.unlocked || e.altKey) {
+            post({ type: 'investigateDecision', decision: 'disarm' });
+          } else {
+            post({ type: 'investigateDecision', decision: 'unlock' });
+          }
+        }}
+      >
+        {!state.investigate
+          ? '🔎'
+          : state.investigate.unlocked
+            ? `🔎✓${state.investigate.findingsCount}`
+            : `🔎🔒${state.investigate.findingsCount}`}
+      </button>
+
       {modelOptions.length > 0 && (
         <select
           className="model-picker"

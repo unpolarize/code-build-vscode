@@ -137,6 +137,7 @@ import {
   type ScopeFenceConfig,
   type ScopeFenceEvent
 } from '../shared/scopeFence';
+import { InvestigateLock, type InvestigateEvent } from '../shared/investigateMode';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -324,6 +325,10 @@ export class SessionManager {
    * the NEW session after openSession (meta + gate must match that session).
    */
   private pendingScopeFenceEffort?: string;
+  /** Per-session Investigate findings-first write lock (fs/write_text_file pre-write). */
+  private investigateLock?: InvestigateLock;
+  /** Session id the current InvestigateLock belongs to. */
+  private investigateLockSessionId: string | undefined;
   /** Active Voice Ideation Session — forces KP MCP and close-payload parsing. */
   private voiceIdeationActive = false;
   /** After endVoiceIdeation, parse the next assistant result for KP JSON. */
@@ -517,6 +522,9 @@ export class SessionManager {
         break;
       case 'scopeFenceDecision':
         this.applyScopeFenceDecision(msg.decision, msg.path);
+        break;
+      case 'investigateDecision':
+        this.applyInvestigateDecision(msg.decision);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -3051,6 +3059,11 @@ export class SessionManager {
       if (this.scopeFence?.isActive() && this.currentAssistantBuf) {
         this.scopeFence.noteAssistantText(this.currentAssistantBuf);
       }
+      // Investigate mode — record structured Findings blocks so the human
+      // can unlock writes once evidence is on the table.
+      if (this.investigateLock?.isActive() && this.currentAssistantBuf) {
+        this.investigateLock.noteAssistantText(this.currentAssistantBuf);
+      }
     }
     if (update.kind !== 'result') return;
     if (!this.config.get<boolean>('classifyTurns', false)) return;
@@ -3650,6 +3663,16 @@ export class SessionManager {
     this.scopeFence = undefined;
     this.scopeFenceSessionId = undefined;
     this.scopeFenceLastDeniedPath = undefined;
+    // Same for the Investigate lock — findings / unlock must not leak.
+    this.investigateLock = undefined;
+    this.investigateLockSessionId = undefined;
+    this.panel.post({
+      type: 'investigateStatus',
+      active: false,
+      unlocked: true,
+      findingsCount: 0,
+      chip: 'Investigate off'
+    });
   }
 
   /** Shared fs/* bridge hooks for every AgentSession.start call site. */
@@ -3658,10 +3681,20 @@ export class SessionManager {
     onFsReadCheck: (absPath: string, bytes: number) => boolean;
     onFsWriteCheck: (absPath: string) => boolean;
   } {
+    // Eager: every session.start site passes these hooks, and meta is set by
+    // then — so investigate.force arms (and the chip syncs) at session start,
+    // not lazily on the first write. A lazy lock would silently drop findings
+    // from read-only turns that finish before any write check runs.
+    this.ensureInvestigateLock();
+    this.postInvestigateStatus();
     return {
       onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
       onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes),
-      onFsWriteCheck: (absPath) => this.ensureScopeFence().allowWrite(absPath)
+      // Investigate lock first: a findings-locked deny must not consume
+      // ScopeFence path budget for a write that never happens.
+      onFsWriteCheck: (absPath) =>
+        this.ensureInvestigateLock().allowWrite(absPath) &&
+        this.ensureScopeFence().allowWrite(absPath)
     };
   }
 
@@ -3810,6 +3843,54 @@ export class SessionManager {
     }
     const target = (path && path.trim()) || this.scopeFenceLastDeniedPath || '*';
     fence.grantOverride(target);
+  }
+
+  private ensureInvestigateLock(): InvestigateLock {
+    const sid = this.meta?.id;
+    if (!this.investigateLock || this.investigateLockSessionId !== sid) {
+      this.investigateLock = new InvestigateLock((e) => this.onInvestigateEvent(e));
+      this.investigateLockSessionId = sid;
+      // Testing / policy escape hatch: lock every session up front.
+      if (this.config.get<boolean>('investigate.force', false)) {
+        this.investigateLock.arm('codeBuild.investigate.force');
+      }
+    } else {
+      this.investigateLock.setOnEvent((e) => this.onInvestigateEvent(e));
+    }
+    return this.investigateLock;
+  }
+
+  private onInvestigateEvent(e: InvestigateEvent): void {
+    this.panel.post({
+      type: 'notice',
+      text: e.message,
+      key: `investigate-${e.type}`,
+      detail:
+        e.type === 'deny' || e.type === 'unlock_refused'
+          ? 'Unlock writes after a Findings block lands, or turn Investigate off (investigateDecision).'
+          : undefined
+    });
+    this.postInvestigateStatus();
+  }
+
+  private postInvestigateStatus(): void {
+    const lock = this.investigateLock;
+    this.panel.post({
+      type: 'investigateStatus',
+      active: lock?.isActive() ?? false,
+      unlocked: lock?.isUnlocked() ?? true,
+      findingsCount: lock?.findingsCount() ?? 0,
+      chip: lock?.statusChip() ?? 'Investigate off'
+    });
+  }
+
+  private applyInvestigateDecision(decision: 'arm' | 'unlock' | 'disarm'): void {
+    const lock = this.ensureInvestigateLock();
+    if (decision === 'arm') lock.arm('user');
+    else if (decision === 'unlock') lock.unlockWrites();
+    else lock.disarm();
+    // Events cover transitions; repost so no-op decisions still resync the chip.
+    this.postInvestigateStatus();
   }
 
   /**
