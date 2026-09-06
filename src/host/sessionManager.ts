@@ -3681,6 +3681,12 @@ export class SessionManager {
     onFsReadCheck: (absPath: string, bytes: number) => boolean;
     onFsWriteCheck: (absPath: string) => boolean;
   } {
+    // Eager: every session.start site passes these hooks, and meta is set by
+    // then — so investigate.force arms (and the chip syncs) at session start,
+    // not lazily on the first write. A lazy lock would silently drop findings
+    // from read-only turns that finish before any write check runs.
+    this.ensureInvestigateLock();
+    this.postInvestigateStatus();
     return {
       onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
       onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes),

@@ -5,10 +5,13 @@
 ### Investigate mode — findings-first write lock
 
 - New `src/shared/investigateMode.ts`: session mode for detect≠patch review
-  work. While armed, host fs writes are denied until the assistant produces a
-  structured `## Findings` block (≥1 entry with path + severity + observation)
-  and the user unlocks writes. Unlock is refused with zero findings; turning
-  the mode off (`disarm`) is the explicit no-evidence escape hatch.
+  work. While armed, ACP `fs/write_text_file` bridge writes are denied until
+  the assistant produces a structured `## Findings` block (≥1 entry with path +
+  severity + observation) and the user unlocks writes. Unlock is refused with
+  zero findings; turning the mode off (`disarm`) is the explicit no-evidence
+  escape hatch. Known v1 gap (shared with ScopeFence): backend-native
+  Write/Edit tools and Bash redirects don't route through the bridge and are
+  not gated yet.
 - Findings parser: `## Findings` heading or `Findings:` label, list entries,
   multi-line folding, dedupe by path+severity; findings accumulate across
   turns until unlock.
