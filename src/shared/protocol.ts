@@ -633,6 +633,23 @@ export type HostToWebview =
         preferDomArmed?: boolean;
       } | null;
     }
+  /**
+   * Agent-team idle-notice context-tax header chip (observe-only). Null
+   * clears (new session / mode off / zero events). Distinct from spawn-rate
+   * / nested-depth governors and from the media tool-tax.
+   */
+  | {
+      type: 'idleNoticeTax';
+      chip: {
+        label: string;
+        idleCount: number;
+        taskNoticeCount: number;
+        sessionNoticeTokens: number;
+        warn: boolean;
+        pause: boolean;
+        hint?: string;
+      } | null;
+    }
   /** Topic labels for a completed turn. The host's classifier fires
    * after each end-of-turn `result` event when `codeBuild.classifyTurns`
    * is enabled. `turnIndex` is the 0-based index of the user prompt
