@@ -42,10 +42,9 @@ describe('classifyIdleNoticeText', () => {
     assert.equal(c.byteLength, FIXTURE_TEAMMATE_IDLE_TAG.length);
   });
 
-  it('classifies notify_when_idle markers as idle', () => {
+  it('does not classify notify_when_idle spawn echoes (config text, not a notice)', () => {
     const c = classifyIdleNoticeText(FIXTURE_NOTIFY_MARKER);
-    assert.equal(c.kind, 'idle');
-    assert.equal(c.reason, 'notify-when-idle-marker');
+    assert.equal(c.kind, 'none');
   });
 
   it('classifies "teammate is now idle" phrasing as idle', () => {
@@ -90,6 +89,24 @@ describe('classifyIdleNoticeText', () => {
     assert.equal(c.kind, 'none');
   });
 
+  it('taxes only the notice span inside a large unrelated payload', () => {
+    const bigPayload =
+      `${'x'.repeat(20_000)}\nBackground task "lint" has completed with exit code 0.\n${'y'.repeat(20_000)}`;
+    const c = classifyIdleNoticeText(bigPayload);
+    assert.equal(c.kind, 'task_notice');
+    // span = the containing line, not the 40k payload
+    assert.ok(c.byteLength < 200, `span too large: ${c.byteLength}`);
+    assert.ok(c.estimatedTokens < 50);
+  });
+
+  it('taxes the wrapper body through its close tag', () => {
+    const body = 'z'.repeat(1_000);
+    const text = `prefix log line\n<task-notification>${body}</task-notification>\ntrailing`;
+    const c = classifyIdleNoticeText(text);
+    assert.equal(c.kind, 'task_notice');
+    assert.ok(c.byteLength >= body.length && c.byteLength < text.length);
+  });
+
   it('never throws on non-string input', () => {
     for (const bad of [undefined, null, 42, {}, []]) {
       const c = classifyIdleNoticeText(bad);
@@ -112,6 +129,13 @@ describe('extractNoticeText', () => {
       ]
     });
     assert.equal(t, 'a\nb');
+  });
+
+  it('reads tool_result blocks whose content is a plain string', () => {
+    assert.equal(
+      extractNoticeText({ type: 'tool_result', content: FIXTURE_TEAMMATE_IDLE_TAG }),
+      FIXTURE_TEAMMATE_IDLE_TAG
+    );
   });
 
   it('returns undefined for unrecognized shapes', () => {
@@ -138,6 +162,13 @@ describe('IdleNoticeTaxTracker', () => {
     const t = new IdleNoticeTaxTracker();
     t.noteText(FIXTURE_TASK_NOTIFICATION_TAG, { toolCallId: 'tc1' });
     t.noteText(FIXTURE_TASK_NOTIFICATION_TAG, { toolCallId: 'tc1' });
+    assert.equal(t.getEventCount(), 1);
+  });
+
+  it('dedupes redelivered user chunks with identical text', () => {
+    const t = new IdleNoticeTaxTracker();
+    t.noteText(FIXTURE_TEAMMATE_IDLE_TAG);
+    t.noteText(FIXTURE_TEAMMATE_IDLE_TAG);
     assert.equal(t.getEventCount(), 1);
   });
 

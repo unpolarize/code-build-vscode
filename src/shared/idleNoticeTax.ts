@@ -52,12 +52,21 @@ export const IDLE_NOTICE_TAX_HINT =
  * stock phrasings, not vendor UI pixels. Each pattern gets a stable reason
  * string so fixtures can pin classifications.
  */
-const IDLE_PATTERNS: Array<{ re: RegExp; kind: IdleNoticeKind; reason: string }> = [
-  { re: /\bnotify_when_idle\b/i, kind: 'idle', reason: 'notify-when-idle-marker' },
+const IDLE_PATTERNS: Array<{
+  re: RegExp;
+  kind: IdleNoticeKind;
+  reason: string;
+  /** Closing tag for wrapper shapes — span runs through it when present. */
+  closeTag?: RegExp;
+}> = [
+  // NOTE: no standalone `notify_when_idle` matcher — that token also appears
+  // in spawn echoes / config text, which are not idle notifications and must
+  // not burn the notice budget. Actual notifications match the shapes below.
   {
     re: /<teammate[-_]?(idle|status)[^>]*>/i,
     kind: 'idle',
-    reason: 'teammate-idle-tag'
+    reason: 'teammate-idle-tag',
+    closeTag: /<\/teammate[-_]?(idle|status)>/i
   },
   {
     re: /\bidle[-_ ]notification\b/i,
@@ -72,7 +81,8 @@ const IDLE_PATTERNS: Array<{ re: RegExp; kind: IdleNoticeKind; reason: string }>
   {
     re: /<task-notification\b[^>]*>/i,
     kind: 'task_notice',
-    reason: 'task-notification-tag'
+    reason: 'task-notification-tag',
+    closeTag: /<\/task-notification>/i
   },
   {
     re: /\b(background\s+)?(task|agent|subagent|teammate)\b[^.\n]{0,120}\b(has (completed|finished)|completed successfully|finished running)\b/i,
@@ -80,6 +90,30 @@ const IDLE_PATTERNS: Array<{ re: RegExp; kind: IdleNoticeKind; reason: string }>
     reason: 'task-complete-phrase'
   }
 ];
+
+/** Span cap for unterminated wrappers / phrase lines — keeps one false hit
+ * inside a large tool payload from taxing the whole payload. */
+const MAX_SPAN_CHARS = 2_000;
+
+/** The notice span: wrapper body through its close tag, else the containing
+ * line — never the whole surrounding payload. */
+function noticeSpan(
+  text: string,
+  m: RegExpMatchArray,
+  closeTag?: RegExp
+): string {
+  const start = m.index ?? 0;
+  if (closeTag) {
+    const rest = text.slice(start);
+    const close = closeTag.exec(rest);
+    if (close) return rest.slice(0, close.index + close[0].length);
+    return rest.slice(0, MAX_SPAN_CHARS);
+  }
+  const lineStart = text.lastIndexOf('\n', start) + 1;
+  const lineEndRaw = text.indexOf('\n', start + m[0].length);
+  const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw;
+  return text.slice(lineStart, Math.min(lineEnd, lineStart + MAX_SPAN_CHARS));
+}
 
 export function estimateNoticeTokens(text: string): number {
   if (!text) return 0;
@@ -89,16 +123,21 @@ export function estimateNoticeTokens(text: string): number {
 /**
  * Classify one inbound text payload. Idle-class matches win over
  * task-notice matches (idle chatter is the tax this meter exists for).
+ * Tax is attributed to the notice span only — a phrase hit inside a large
+ * unrelated tool payload must not tax the whole payload.
  * Never throws — non-string / unmatched input → kind 'none'.
  */
 export function classifyIdleNoticeText(text: unknown): ClassifiedIdleNotice {
   if (typeof text !== 'string' || text.length === 0) {
     return { kind: 'none', byteLength: 0, estimatedTokens: 0, reason: 'empty' };
   }
-  let hit: { kind: IdleNoticeKind; reason: string } | undefined;
+  let hit:
+    | { kind: IdleNoticeKind; reason: string; span: string }
+    | undefined;
   for (const p of IDLE_PATTERNS) {
-    if (p.re.test(text)) {
-      hit = { kind: p.kind, reason: p.reason };
+    const m = p.re.exec(text);
+    if (m) {
+      hit = { kind: p.kind, reason: p.reason, span: noticeSpan(text, m, p.closeTag) };
       if (p.kind === 'idle') break;
     }
   }
@@ -107,8 +146,8 @@ export function classifyIdleNoticeText(text: unknown): ClassifiedIdleNotice {
   }
   return {
     kind: hit.kind,
-    byteLength: text.length,
-    estimatedTokens: estimateNoticeTokens(text),
+    byteLength: hit.span.length,
+    estimatedTokens: estimateNoticeTokens(hit.span),
     reason: hit.reason
   };
 }
@@ -119,6 +158,8 @@ export function extractNoticeText(part: unknown): string | undefined {
   if (part && typeof part === 'object') {
     const o = part as Record<string, unknown>;
     if (typeof o.text === 'string') return o.text;
+    // tool_result blocks carry `content` as a plain string
+    if (typeof o.content === 'string') return o.content;
     if (Array.isArray(o.content)) {
       const nested = o.content
         .map((c) => extractNoticeText(c))
@@ -186,6 +227,7 @@ export class IdleNoticeTaxTracker {
   private taskNoticeCount = 0;
   private sessionNoticeTokens = 0;
   private seenToolIds = new Set<string>();
+  private seenChunkTexts = new Set<string>();
   private pauseFired = false;
 
   /**
@@ -193,12 +235,18 @@ export class IdleNoticeTaxTracker {
    * text). Returns the classification when it contributed tax.
    */
   noteText(text: unknown, opts?: { toolCallId?: string }): ClassifiedIdleNotice | undefined {
-    const c = classifyIdleNoticeText(extractNoticeText(text) ?? text);
+    const raw = extractNoticeText(text) ?? text;
+    const c = classifyIdleNoticeText(raw);
     if (c.kind === 'none') return undefined;
     const id = opts?.toolCallId;
     if (id) {
       if (this.seenToolIds.has(id)) return undefined;
       this.seenToolIds.add(id);
+    } else if (typeof raw === 'string') {
+      // Chunk redelivery (reconnect/replay) must not double-count. Bounded:
+      // identical re-sent notices past the cap count again — acceptable v1.
+      if (this.seenChunkTexts.has(raw)) return undefined;
+      if (this.seenChunkTexts.size < 512) this.seenChunkTexts.add(raw);
     }
     if (c.kind === 'idle') this.idleCount += 1;
     else this.taskNoticeCount += 1;
