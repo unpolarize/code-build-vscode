@@ -211,6 +211,19 @@ export function Header({
         </span>
       )}
 
+      {state.sessionStopCapability && (
+        <span
+          className={
+            state.sessionStopCapability.hostTeardown
+              ? 'protocol-pin-chip protocol-pin-chip-warn'
+              : 'protocol-pin-chip'
+          }
+          title={state.sessionStopCapability.reason}
+        >
+          {state.sessionStopCapability.label}
+        </span>
+      )}
+
       {state.session?.failoverFrom && state.session.failoverReason && (
         <span
           className="failover-chip"

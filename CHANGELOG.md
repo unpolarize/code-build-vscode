@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.25.0 — 2026-09-07
+
+### ACP session/stop force-teardown shim
+
+- New `src/shared/sessionStopCapability.ts`: after ACP `initialize`, decide
+  whether the agent advertised `session/close` or `session/stop`. Matrix
+  majority lacks both → **host-teardown** path (never claim a protocol stop).
+- `AcpTransport` emits `session_stop_capability_update` (header chip:
+  `stop host` / `stop close` / `stop rpc`); spawns agents `detached` so host
+  kill can SIGTERM/SIGKILL the process group; dispose uses
+  `hostKillAgentProcess` with SIGKILL escalation.
+- Unit tests on registry-like fixtures; webview reducer stores the chip.
+
 ## 0.24.2 — 2026-09-06
 
 ### Investigate mode — findings-first write lock

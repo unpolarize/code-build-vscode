@@ -240,6 +240,13 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** ACP session/stop capability chip — host-teardown vs agent-stop/close. */
+  sessionStopCapability: {
+    path: 'agent-close' | 'agent-stop' | 'host-teardown';
+    hostTeardown: boolean;
+    label: string;
+    reason: string;
+  } | null;
   /** Runtime media/pixel tool-tax chip (null until tax > 0 or Prefer-DOM armed). */
   mediaToolTax: {
     label: string;
@@ -328,6 +335,7 @@ export const initialState: ChatState = {
   checkpointIds: [],
   protocolPin: null,
   spendLimit: null,
+  sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
   investigate: null,
@@ -867,6 +875,16 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
           ...(u.warnReason ? { warnReason: u.warnReason } : {})
         }
       };
+    case 'session_stop_capability_update':
+      return {
+        ...state,
+        sessionStopCapability: {
+          path: u.path,
+          hostTeardown: u.hostTeardown,
+          label: u.label,
+          reason: u.reason
+        }
+      };
     default:
       return state;
   }
@@ -1025,6 +1043,7 @@ function replayRecords(
           // Media-tax is live-only (not persisted) — clear on session switch.
           protocolPin: null,
           spendLimit: null,
+          sessionStopCapability: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.
           idleNoticeTax: null,
