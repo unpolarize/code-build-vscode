@@ -89,8 +89,14 @@ import {
   serializeSelfResumePrimer,
   buildTranscriptForSummary,
   countUserTurns,
+  extractTurns,
   type PrimerMode
 } from './persistence/conversationSerializer';
+import {
+  collectDesignArtboards,
+  formatArtboardAcceptanceBullets,
+  type DesignArtboardRef
+} from '../shared/designArtboard';
 import { buildHandoffPack, formatHandoffPackPrimer } from './persistence/handoffPack';
 import {
   exportToClaudeJsonl,
@@ -1885,6 +1891,187 @@ export class SessionManager {
         });
       }
     );
+  }
+
+  /** Run the KP CLI with a piped stdin body (edit --body - reads stdin;
+   * runKpCli's execFile has no stdin channel). */
+  private runKpCliStdin(
+    cli: string,
+    root: string,
+    args: string[],
+    stdinBody: string,
+    timeoutMs: number
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [cli, ...args], {
+        env: { ...process.env, KP_ROOT: root },
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        child.kill('SIGKILL');
+        reject(new Error(`kp ${args[0]} timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      child.stdout.on('data', (d) => (stdout += String(d)));
+      child.stderr.on('data', (d) => (stderr += String(d)));
+      child.on('error', (e) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(e);
+      });
+      child.on('close', (code) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (code === 0) resolve(stdout);
+        else
+          reject(
+            new Error(
+              `kp ${args[0]} failed (exit ${code})${stderr ? `: ${String(stderr).slice(0, 400)}` : ''}`
+            )
+          );
+      });
+      child.stdin.on('error', () => {
+        /* EPIPE on early exit — close handler reports the real failure */
+      });
+      child.stdin.end(stdinBody);
+    });
+  }
+
+  /** Re-entrancy guard for the artboard bind — overlapping picks would race
+   * on the two sequential QuickPicks and double-append the bullet. */
+  private designBindBusy = false;
+
+  /** Design-artboard pick binder (kp: ideas/cb-design-artboard-pick-binder-
+   * capture-claude-de): scan this conversation for Claude /design artboard
+   * URLs, let the user confirm the chosen one + the target KP item, and
+   * append the pick as an Acceptance bullet — so Codex/Grok implement runs
+   * inherit the visual contract from the KP item, not the Claude transcript.
+   * v1 is transcript capture only: no Design MCP calls, nothing uploaded. */
+  async handleDesignArtboardBind(): Promise<void> {
+    if (this.designBindBusy) return;
+    this.designBindBusy = true;
+    try {
+      await this.handleDesignArtboardBindInner();
+    } finally {
+      this.designBindBusy = false;
+    }
+  }
+
+  private async handleDesignArtboardBindInner(): Promise<void> {
+    const cfg = this.resolveKpConfig();
+    if (!cfg) return;
+
+    // User turns are scanned too — the artboard link often arrives pasted
+    // back by the user ("implement this one: <url>").
+    const turns = extractTurns(this.collectTranscriptRecords());
+    const refs = collectDesignArtboards(turns.map((t) => t.text));
+    if (refs.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No /design artboard URLs found in this conversation — run Claude `/design`, pick an artboard, then bind it.',
+        key: 'design-bind-none'
+      });
+      return;
+    }
+
+    let chosen: DesignArtboardRef | undefined = refs[0];
+    if (refs.length > 1) {
+      type ArtboardPickItem = vscode.QuickPickItem & { ref: DesignArtboardRef };
+      const pick = await vscode.window.showQuickPick<ArtboardPickItem>(
+        refs.map((r) => ({
+          label: `$(layout) ${r.label ?? 'Unlabeled artboard'}`,
+          description: r.url,
+          ref: r
+        })),
+        {
+          title: 'Bind design artboard — which artboard won?',
+          placeHolder: 'Pick the chosen /design artboard',
+          matchOnDescription: true,
+          ignoreFocusOut: true
+        }
+      );
+      chosen = pick?.ref;
+    }
+    if (!chosen) return;
+
+    // Target KP item: the session-linked item leads, then the implementable
+    // queue. The human always confirms — a wrong bind pollutes Acceptance.
+    let rows: KpImplementableRow[] = [];
+    try {
+      rows = parseImplementableJson(
+        await this.runKpCli(cfg.cli, cfg.root, ['implementable', '--json'], 5000)
+      ).rows;
+    } catch {
+      /* queue unavailable — the linked item (if any) is still offered */
+    }
+    type KpTargetItem = vscode.QuickPickItem & { kpId?: string };
+    const linkedId = this.meta?.kpItemId;
+    const targets: KpTargetItem[] = [];
+    if (linkedId) {
+      targets.push({
+        label: `$(link) ${linkedId}`,
+        description: 'linked to this session',
+        kpId: linkedId
+      });
+    }
+    for (const r of rows) {
+      if (r.id === linkedId) continue;
+      targets.push({
+        label: `$(circuit-board) ${r.priority ? `${r.priority} · ` : ''}${r.title}`,
+        description: r.id,
+        kpId: r.id
+      });
+    }
+    if (targets.length === 0) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No KP item to bind to — this session is not linked to an item and the implementable queue is empty.',
+        key: 'design-bind-no-target'
+      });
+      return;
+    }
+    const target = await vscode.window.showQuickPick<KpTargetItem>(targets, {
+      title: `Bind “${chosen.label ?? chosen.url}” to which KP item?`,
+      placeHolder: 'The artboard URL is appended to the item’s ## Acceptance',
+      matchOnDescription: true,
+      ignoreFocusOut: true
+    });
+    if (!target?.kpId) return;
+    const itemId = target.kpId;
+
+    const bullet = formatArtboardAcceptanceBullets(chosen, {
+      boundAt: new Date().toISOString().slice(0, 10),
+      sessionId: this.meta?.id
+    });
+    try {
+      await this.runKpCliStdin(
+        cfg.cli,
+        cfg.root,
+        ['edit', itemId, '--append-section', '## Acceptance', '--body', '-'],
+        `${bullet}\n`,
+        8000
+      );
+    } catch (err) {
+      this.panel.post({
+        type: 'notice',
+        text: `Couldn't bind the artboard to **${itemId}** — ${err instanceof Error ? err.message : String(err)}`,
+        detail: `Recover manually: echo '${bullet.replace(/'/g, "'\\''")}' | kp edit ${itemId} --append-section "## Acceptance" --body -`,
+        key: `design-bind-failed-${itemId}`
+      });
+      return;
+    }
+    this.panel.post({
+      type: 'notice',
+      text: `Bound design artboard ${chosen.label ? `**${chosen.label}** ` : ''}to **${itemId}** — the URL now lives under the item's Acceptance, so any backend can implement against it.`,
+      detail: chosen.url,
+      key: `design-bound-${itemId}`
+    });
   }
 
   private async switchBackend(backend: BackendId): Promise<void> {

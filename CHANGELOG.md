@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.25.1 — 2026-09-07
+
+### Design-artboard pick binder (capture + bind v1)
+
+- New pure module `src/shared/designArtboard.ts`: extracts Claude `/design`
+  artboard/artifact URLs (with markdown-link or "Variant X" labels) from
+  transcript text; dedupes across turns, first labeled introduction wins.
+- New command **Code Build: Bind Design Artboard to KP Item**
+  (`codeBuild.bindDesignArtboard`): scans the active conversation, the user
+  confirms the winning artboard and the target KP item (session-linked item
+  offered first, then the implementable queue), and the pick is appended as
+  a self-contained bullet under the item's `## Acceptance` via
+  `kp edit --append-section` — the design contract becomes git-backed and
+  vendor-portable (Codex/Grok implement from KP, not the Claude transcript).
+- v1 is transcript capture only: no Claude Design MCP calls, no uploads.
+- Unit tests on a fixture `/design` transcript (`test/unit/designArtboard.test.ts`).
+
 ## 0.25.0 — 2026-09-07
 
 ### ACP session/stop force-teardown shim
