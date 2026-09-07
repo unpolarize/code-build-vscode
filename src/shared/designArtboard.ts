@@ -22,7 +22,7 @@ export interface DesignArtboardRef {
  * purpose — /design is a moving research preview; anchoring on the host +
  * a known family segment beats pinning today's exact route shape. */
 const ARTBOARD_URL_RE =
-  /https:\/\/claude\.ai\/(?:public\/)?(?:artifacts?|design|artboards?)\/[A-Za-z0-9][A-Za-z0-9\-_/]*/g;
+  /https:\/\/claude\.ai\/(?:public\/)?(?:artifacts?|design|artboards?)\/[A-Za-z0-9][A-Za-z0-9\-_/.]*/g;
 
 /** Markdown link whose target is an artboard URL: `[label](url)`. */
 const MD_LINK_RE = /\[([^\]\n]{1,120})\]\(\s*(https:\/\/claude\.ai\/[^)\s]+)\s*\)/g;
@@ -98,7 +98,15 @@ export function formatArtboardAcceptanceBullets(
   ref: DesignArtboardRef,
   opts?: { boundAt?: string; sessionId?: string }
 ): string {
-  const label = ref.label ? `**${ref.label}** — ` : '';
+  // Labels come from transcript text — strip markdown metacharacters and
+  // newlines so a hostile/odd label can't malform the Acceptance bullet
+  // that later implement runs parse.
+  const safeLabel = ref.label
+    ?.replace(/[*_`\[\]()]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+  const label = safeLabel ? `**${safeLabel}** — ` : '';
   const prov = [
     'bound from Code Build /design pick',
     opts?.boundAt,

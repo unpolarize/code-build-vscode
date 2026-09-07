@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.25.1 — 2026-09-07
+## 0.26.0 — 2026-09-07
 
 ### Design-artboard pick binder (capture + bind v1)
 
@@ -14,7 +14,14 @@
   a self-contained bullet under the item's `## Acceptance` via
   `kp edit --append-section` — the design contract becomes git-backed and
   vendor-portable (Codex/Grok implement from KP, not the Claude transcript).
+- Review hardening: the artboard is always human-confirmed (even a single
+  hit), re-binding the same URL to the same item is a no-op, queue-load
+  failures and away mode are reported distinctly from an empty queue, labels
+  are markdown-sanitized before entering the store, and artboard URL paths
+  may contain dots.
 - v1 is transcript capture only: no Claude Design MCP calls, no uploads.
+  Known v1 gap: only user/assistant turn text is scanned — URLs that appear
+  solely inside tool results are not captured yet.
 - Unit tests on a fixture `/design` transcript (`test/unit/designArtboard.test.ts`).
 
 ## 0.25.0 — 2026-09-07

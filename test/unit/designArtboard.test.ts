@@ -95,6 +95,22 @@ describe('formatArtboardAcceptanceBullets', () => {
     );
   });
 
+  it('sanitizes markdown metacharacters and newlines out of the label', () => {
+    const bullet = formatArtboardAcceptanceBullets({
+      url: 'https://claude.ai/artifacts/abc123',
+      label: '**Variant\n[B]** `(final)`'
+    });
+    assert.equal(
+      bullet,
+      '- Implement against the chosen design artboard: **Variant B final** — https://claude.ai/artifacts/abc123 (bound from Code Build /design pick)'
+    );
+  });
+
+  it('keeps dots inside artboard URL paths', () => {
+    const refs = extractDesignArtboards('See https://claude.ai/artifacts/v1.2/board-a.');
+    assert.deepEqual(refs.map((r) => r.url), ['https://claude.ai/artifacts/v1.2/board-a']);
+  });
+
   it('omits the label segment when unlabeled', () => {
     const bullet = formatArtboardAcceptanceBullets({ url: 'https://claude.ai/artifacts/abc123' });
     assert.equal(

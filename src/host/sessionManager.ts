@@ -1980,35 +1980,40 @@ export class SessionManager {
       return;
     }
 
-    let chosen: DesignArtboardRef | undefined = refs[0];
-    if (refs.length > 1) {
-      type ArtboardPickItem = vscode.QuickPickItem & { ref: DesignArtboardRef };
-      const pick = await vscode.window.showQuickPick<ArtboardPickItem>(
-        refs.map((r) => ({
-          label: `$(layout) ${r.label ?? 'Unlabeled artboard'}`,
-          description: r.url,
-          ref: r
-        })),
-        {
-          title: 'Bind design artboard — which artboard won?',
-          placeHolder: 'Pick the chosen /design artboard',
-          matchOnDescription: true,
-          ignoreFocusOut: true
-        }
-      );
-      chosen = pick?.ref;
-    }
+    // Always confirm the artboard — the URL matcher is deliberately liberal,
+    // so even a single hit needs a human eye before it enters Acceptance.
+    type ArtboardPickItem = vscode.QuickPickItem & { ref: DesignArtboardRef };
+    const pick = await vscode.window.showQuickPick<ArtboardPickItem>(
+      refs.map((r) => ({
+        label: `$(layout) ${r.label ?? 'Unlabeled artboard'}`,
+        description: r.url,
+        ref: r
+      })),
+      {
+        title: 'Bind design artboard — which artboard won?',
+        placeHolder: 'Pick the chosen /design artboard',
+        matchOnDescription: true,
+        ignoreFocusOut: true
+      }
+    );
+    const chosen = pick?.ref;
     if (!chosen) return;
 
     // Target KP item: the session-linked item leads, then the implementable
     // queue. The human always confirms — a wrong bind pollutes Acceptance.
     let rows: KpImplementableRow[] = [];
+    let queueAway = false;
+    let queueError: string | undefined;
     try {
-      rows = parseImplementableJson(
+      const parsed = parseImplementableJson(
         await this.runKpCli(cfg.cli, cfg.root, ['implementable', '--json'], 5000)
-      ).rows;
-    } catch {
-      /* queue unavailable — the linked item (if any) is still offered */
+      );
+      rows = parsed.rows;
+      queueAway = parsed.away;
+    } catch (err) {
+      // Queue unavailable — the linked item (if any) is still offered, but
+      // never report a CLI failure as "queue is empty".
+      queueError = err instanceof Error ? err.message : String(err);
     }
     type KpTargetItem = vscode.QuickPickItem & { kpId?: string };
     const linkedId = this.meta?.kpItemId;
@@ -2031,7 +2036,11 @@ export class SessionManager {
     if (targets.length === 0) {
       this.panel.post({
         type: 'notice',
-        text: 'No KP item to bind to — this session is not linked to an item and the implementable queue is empty.',
+        text: queueError
+          ? `No KP item to bind to — this session is not linked to an item and the queue couldn't be loaded: ${queueError}`
+          : queueAway
+            ? 'No KP item to bind to — the planning store is in **away mode** and this session is not linked to an item.'
+            : 'No KP item to bind to — this session is not linked to an item and the implementable queue is empty.',
         key: 'design-bind-no-target'
       });
       return;
@@ -2044,6 +2053,25 @@ export class SessionManager {
     });
     if (!target?.kpId) return;
     const itemId = target.kpId;
+
+    // Idempotency: re-running the bind (retry, mis-click) must not stack
+    // duplicate Acceptance bullets for the same URL on the same item.
+    try {
+      const shown = JSON.parse(await this.runKpCli(cfg.cli, cfg.root, ['show', itemId], 5000)) as {
+        body?: string;
+      };
+      if (typeof shown.body === 'string' && shown.body.includes(chosen.url)) {
+        this.panel.post({
+          type: 'notice',
+          text: `**${itemId}** already references this artboard — nothing appended.`,
+          detail: chosen.url,
+          key: `design-bound-${itemId}`
+        });
+        return;
+      }
+    } catch {
+      /* show failed — fall through; the append itself will surface a real error */
+    }
 
     const bullet = formatArtboardAcceptanceBullets(chosen, {
       boundAt: new Date().toISOString().slice(0, 10),
