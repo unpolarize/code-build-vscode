@@ -144,6 +144,16 @@ export type SessionUpdate =
       warn: boolean;
       warnReason?: string;
     }
+  /** Session stop path from initialize (session/stop|close vs host teardown).
+   * Chip shows `stop host` when the agent cannot stop itself — host kill
+   * only; never claim a protocol stop was sent. */
+  | {
+      kind: 'session_stop_capability_update';
+      path: 'agent-close' | 'agent-stop' | 'host-teardown';
+      hostTeardown: boolean;
+      label: string;
+      reason: string;
+    }
   /** Native resume failed and the transport fell back to a fresh
    * session (e.g. Grok ACP session/load rejected because the on-disk
    * session was deleted or the grok version regressed). The host uses

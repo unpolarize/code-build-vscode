@@ -88,6 +88,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await mgr.writeHandoffPack();
     }),
+    vscode.commands.registerCommand('codeBuild.bindDesignArtboard', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to bind a design artboard from.'
+        );
+        return;
+      }
+      await mgr.handleDesignArtboardBind();
+    }),
     vscode.commands.registerCommand('codeBuild.exportConversation', async () => {
       const mgr = lastManager(managers);
       if (!mgr) {

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.26.0 — 2026-09-07
+
+### Design-artboard pick binder (capture + bind v1)
+
+- New pure module `src/shared/designArtboard.ts`: extracts Claude `/design`
+  artboard/artifact URLs (with markdown-link or "Variant X" labels) from
+  transcript text; dedupes across turns, first labeled introduction wins.
+- New command **Code Build: Bind Design Artboard to KP Item**
+  (`codeBuild.bindDesignArtboard`): scans the active conversation, the user
+  confirms the winning artboard and the target KP item (session-linked item
+  offered first, then the implementable queue), and the pick is appended as
+  a self-contained bullet under the item's `## Acceptance` via
+  `kp edit --append-section` — the design contract becomes git-backed and
+  vendor-portable (Codex/Grok implement from KP, not the Claude transcript).
+- Review hardening: the artboard is always human-confirmed (even a single
+  hit), re-binding the same URL to the same item is a no-op, queue-load
+  failures and away mode are reported distinctly from an empty queue, labels
+  are markdown-sanitized before entering the store, and artboard URL paths
+  may contain dots.
+- v1 is transcript capture only: no Claude Design MCP calls, no uploads.
+  Known v1 gap: only user/assistant turn text is scanned — URLs that appear
+  solely inside tool results are not captured yet.
+- Unit tests on a fixture `/design` transcript (`test/unit/designArtboard.test.ts`).
+
+## 0.25.0 — 2026-09-07
+
+### ACP session/stop force-teardown shim
+
+- New `src/shared/sessionStopCapability.ts`: after ACP `initialize`, decide
+  whether the agent advertised `session/close` or `session/stop`. Matrix
+  majority lacks both → **host-teardown** path (never claim a protocol stop).
+- `AcpTransport` emits `session_stop_capability_update` (header chip:
+  `stop host` / `stop close` / `stop rpc`); spawns agents `detached` so host
+  kill can SIGTERM/SIGKILL the process group; dispose uses
+  `hostKillAgentProcess` with SIGKILL escalation.
+- Unit tests on registry-like fixtures; webview reducer stores the chip.
+
 ## 0.24.2 — 2026-09-06
 
 ### Investigate mode — findings-first write lock

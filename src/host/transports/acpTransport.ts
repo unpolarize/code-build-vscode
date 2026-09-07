@@ -38,6 +38,11 @@ import {
   HOST_ACP_PROTOCOL_VERSION
 } from '../../shared/protocolVersionPin';
 import { evaluateSpendLimitChip, readFiveHourResetsAt } from '../../shared/spendLimitChip';
+import {
+  decideSessionStopPath,
+  hostKillAgentProcess,
+  type SessionStopDecision
+} from '../../shared/sessionStopCapability';
 
 export type { AcpMcpServer };
 
@@ -62,7 +67,19 @@ function getMcpOutput(): vscode.OutputChannel {
 
 interface InitializeResult {
   protocolVersion: number;
-  agentCapabilities?: { loadSession?: boolean };
+  agentCapabilities?: {
+    loadSession?: boolean;
+    sessionCapabilities?: { close?: unknown; stop?: unknown; [k: string]: unknown };
+    [k: string]: unknown;
+  };
+  methods?: unknown;
+  /** Loose _meta — protocol pin + stop-capability both read optional flags. */
+  _meta?: {
+    experimental?: unknown;
+    protocolExperimental?: unknown;
+    sessionStop?: unknown;
+    sessionClose?: unknown;
+  };
 }
 /** `modes` object on the ACP session/new | session/load RESPONSE. There is
  * no available_modes_update event — this response is the only inventory. */
@@ -192,6 +209,11 @@ export class AcpTransport extends BaseAgentSession {
    * child and the exit handler also fires; also lets prompt() swallow
    * the "endpoint disposed" rejection after a mid-turn exit. */
   private exitSettled = false;
+  /** Stop path from initialize — host-teardown when agent lacks
+   * session/stop|close. Defaults to host-teardown until handshake. */
+  private stopDecision: SessionStopDecision = decideSessionStopPath(null);
+  /** Pending SIGKILL escalation after host-teardown SIGTERM. */
+  private teardownEscalation?: ReturnType<typeof setTimeout>;
 
   constructor(
     public readonly id: string,
@@ -208,6 +230,11 @@ export class AcpTransport extends BaseAgentSession {
     this.pathGuard = undefined;
     this.pathGuardCwd = undefined;
     this.exitSettled = false;
+    this.stopDecision = decideSessionStopPath(null);
+    if (this.teardownEscalation) {
+      clearTimeout(this.teardownEscalation);
+      this.teardownEscalation = undefined;
+    }
     const spec = BACKENDS[this.backend];
     const bin = resolveBin(spec, this.binOverrides);
     const args = spec.buildArgs({
@@ -218,7 +245,15 @@ export class AcpTransport extends BaseAgentSession {
       allowBypass: opts.allowBypass
     });
 
-    this.proc = spawn(bin, args, { cwd: opts.cwd, env: { ...process.env }, stdio: ['pipe', 'pipe', 'pipe'] });
+    // detached:true → child is its own process-group leader so host
+    // teardown can SIGTERM/SIGKILL the whole tree (MCP grandchildren)
+    // without touching the extension host group.
+    this.proc = spawn(bin, args, {
+      cwd: opts.cwd,
+      env: { ...process.env },
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: true
+    });
     this.proc.on('error', (err) =>
       this.emit({ kind: 'error', message: `Failed to start ${bin}: ${err.message}` })
     );
@@ -268,6 +303,16 @@ export class AcpTransport extends BaseAgentSession {
         // chip shows n/a (never fake 100%). If initialize carries Claude-shaped
         // rate_limits.spend_limit (or camelCase), surface remaining %.
         this.emitSpendLimit(init);
+        // Session/stop capability — matrix majority lacks stop/close; chip
+        // shows host-teardown so Kill never claims a protocol stop.
+        this.stopDecision = decideSessionStopPath(init);
+        this.emit({
+          kind: 'session_stop_capability_update',
+          path: this.stopDecision.path,
+          hostTeardown: this.stopDecision.hostTeardown,
+          label: this.stopDecision.label,
+          reason: this.stopDecision.reason
+        });
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
@@ -655,9 +700,54 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   cancel(): void {
+    // Turn interrupt — session/cancel is widely supported and distinct
+    // from session/stop (end session). Always soft-cancel the turn.
     if (this.rpc && this.acpSessionId) {
       this.rpc.notify('session/cancel', { sessionId: this.acpSessionId });
     }
+  }
+
+  /** Capability-aware session end. Prefer session/close|stop when the
+   * agent advertised them; otherwise host-kill only and never claim a
+   * protocol stop was sent. */
+  forceTeardown(): void {
+    const decision = this.stopDecision;
+    if (!decision.hostTeardown && this.rpc && this.acpSessionId) {
+      try {
+        if (decision.path === 'agent-close') {
+          void this.rpc.request('session/close', { sessionId: this.acpSessionId }).catch(() => {
+            /* agent refused — host kill below still runs via dispose */
+          });
+        } else if (decision.path === 'agent-stop') {
+          void this.rpc.request('session/stop', { sessionId: this.acpSessionId }).catch(() => {});
+        }
+      } catch {
+        /* fall through to host kill */
+      }
+    }
+    // Always reap the process tree — even after a protocol stop, MCP
+    // grandchildren can linger. Host-teardown path skips the RPC claim.
+    this.hostReap(decision);
+  }
+
+  private hostReap(decision: SessionStopDecision): void {
+    const proc = this.proc;
+    if (!proc) return;
+    const mode = hostKillAgentProcess(proc, 'SIGTERM');
+    if (decision.hostTeardown) {
+      // Surface status without claiming protocol stop.
+      this.emit({
+        kind: 'result',
+        stopReason: `host-teardown:${mode}`
+      });
+    }
+    if (this.teardownEscalation) clearTimeout(this.teardownEscalation);
+    this.teardownEscalation = setTimeout(() => {
+      this.teardownEscalation = undefined;
+      if (this.proc === proc) {
+        hostKillAgentProcess(proc, 'SIGKILL');
+      }
+    }, 1500);
   }
 
   /** Ingest the `modes` object from a session/new|load response: remember
@@ -722,10 +812,32 @@ export class AcpTransport extends BaseAgentSession {
     // Mark settled before kill so the 'exit' handler does not re-emit
     // synthetic result/error into a disposed session.
     this.exitSettled = true;
+    // Capability-aware stop: try session/close|stop when advertised, then
+    // always host-reap. When the agent lacks stop, we never claim RPC stop.
+    const decision = this.stopDecision;
+    if (!decision.hostTeardown && this.rpc && this.acpSessionId) {
+      try {
+        if (decision.path === 'agent-close') {
+          this.rpc.notify('session/close', { sessionId: this.acpSessionId });
+        } else if (decision.path === 'agent-stop') {
+          this.rpc.notify('session/stop', { sessionId: this.acpSessionId });
+        }
+      } catch {
+        /* host reap below */
+      }
+    }
     super.dispose();
     this.rpc?.dispose();
     this.rpc = undefined;
-    this.proc?.kill();
+    if (this.proc) {
+      hostKillAgentProcess(this.proc, 'SIGTERM');
+      const proc = this.proc;
+      if (this.teardownEscalation) clearTimeout(this.teardownEscalation);
+      this.teardownEscalation = setTimeout(() => {
+        this.teardownEscalation = undefined;
+        hostKillAgentProcess(proc, 'SIGKILL');
+      }, 1500);
+    }
     this.proc = undefined;
     // Cancel (not drop) every outstanding request — a bare .clear() left
     // the agent's request_permission promises hanging forever.
