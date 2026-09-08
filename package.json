@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -74,6 +74,10 @@
       {
         "command": "codeBuild.bindDesignArtboard",
         "title": "Code Build: Bind Design Artboard to KP Item"
+      },
+      {
+        "command": "codeBuild.compactTeammateContext",
+        "title": "Code Build: Compact Teammate Context"
       },
       {
         "command": "codeBuild.memory.refresh",
@@ -479,6 +483,36 @@
           "default": 5,
           "minimum": 0,
           "description": "Idle-notice tax: warn when estimated idle-notice tokens exceed this percent of the model context window. 0 disables the window-% gate."
+        },
+        "codeBuild.teammateCompact.mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn",
+            "auto"
+          ],
+          "default": "warn",
+          "description": "Teammate-context compact proxy (Claude #49786 class): detect Agent Team / Agent-tool / Task children approaching their context limit and offer host summarize / park-handoff. 'warn' (default) shows a header chip + one-shot notice and waits for the Compact Teammate Context command; 'auto' uses the same detect path (callers may auto-fire); 'off' disables."
+        },
+        "codeBuild.teammateCompact.thresholdPct": {
+          "type": "number",
+          "default": 75,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Teammate compact proxy: context fill % that marks a child as approaching and recommends summarize / vendor compact. Default 75."
+        },
+        "codeBuild.teammateCompact.criticalPct": {
+          "type": "number",
+          "default": 90,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Teammate compact proxy: context fill % that prefers park + KP handoff cartridge of last N tool results over summarize. Default 90."
+        },
+        "codeBuild.teammateCompact.lastNToolResults": {
+          "type": "number",
+          "default": 8,
+          "minimum": 0,
+          "description": "Teammate compact proxy: how many recent tool results to keep in a park-handoff cartridge. Default 8."
         },
         "codeBuild.toolRead.maxBytesWarn": {
           "type": "number",

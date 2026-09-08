@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.27.0 — 2026-09-08
+
+### Teammate-context compact proxy (Claude #49786 class)
+
+- New pure module `src/shared/teammateCompactProxy.ts`: detect Agent Team /
+  Agent-tool / Task children approaching a configurable context fill %
+  (default 75), decide summarize vs vendor-compact vs park-handoff, build a
+  recoverable summarize primer or last-N tool-result handoff cartridge, and
+  aggregate a lead-session chip (`team near N · compact M · fail K`).
+- Host wiring in `SessionManager`: registers children from Agent/Task/
+  Teammate tool titles, applies `context_pct` / `context N%` reports from
+  teammate-status text, posts the header chip, and one-shot warns when a
+  child newly crosses the threshold.
+- Command **Code Build: Compact Teammate Context**
+  (`codeBuild.compactTeammateContext`) + chip click: QuickPick a child, then
+  stage a summarize primer markdown artifact or park-handoff cartridge
+  (untitled editor) — never a silent history wipe.
+- Settings: `codeBuild.teammateCompact.mode` (`off`|`warn`|`auto`),
+  `thresholdPct` (75), `criticalPct` (90), `lastNToolResults` (8).
+- Unit tests on a near-limit fixture transcript (`test/unit/teammateCompactProxy.test.ts`).
+
 ## 0.26.0 — 2026-09-07
 
 ### Design-artboard pick binder (capture + bind v1)

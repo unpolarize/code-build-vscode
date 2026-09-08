@@ -132,9 +132,26 @@ import {
 import {
   IdleNoticeTaxTracker,
   DEFAULT_IDLE_NOTICE_TAX_CONFIG,
+  extractNoticeText,
   type IdleNoticeTaxChip,
   type IdleNoticeTaxConfig
 } from '../shared/idleNoticeTax';
+import {
+  DEFAULT_TEAMMATE_COMPACT_CONFIG,
+  TEAMMATE_COMPACT_HINT,
+  TeammateCompactProxyTracker,
+  buildTeammateParkHandoffCartridge,
+  buildTeammateSummarizePrimer,
+  classifyTeammateToolTitle,
+  evaluateTeammateChild,
+  guessContextWindowTokens,
+  parseTeammateContextPct,
+  resolveTeammateChildId,
+  teammateChildLabel,
+  type TeammateChildEvaluation,
+  type TeammateCompactChip,
+  type TeammateCompactConfig
+} from '../shared/teammateCompactProxy';
 import {
   DEFAULT_TOOL_READ_GATE_CONFIG,
   ToolReadGate,
@@ -317,6 +334,12 @@ export class SessionManager {
   private idleNoticeTax = new IdleNoticeTaxTracker();
   private idleNoticeTaxSessionId: string | undefined;
   private idleNoticeTaxLastPosted: string | undefined;
+  /** Teammate-context compact proxy (Agent Team / Agent-tool children). */
+  private teammateCompact = new TeammateCompactProxyTracker();
+  private teammateCompactSessionId: string | undefined;
+  private teammateCompactLastPosted: string | undefined;
+  /** toolCallId → child id for Agent/Task tool result attribution. */
+  private teammateToolChildIds = new Map<string, string>();
   /** Session id the current media-tax tracker belongs to. */
   private mediaTaxSessionId: string | undefined;
   /** Last media-tax chip signature posted to the webview (dedupe). */
@@ -670,6 +693,9 @@ export class SessionManager {
         break;
       case 'preferDomHint':
         this.armPreferDomHint();
+        break;
+      case 'compactTeammate':
+        await this.handleCompactTeammate(msg.childId);
         break;
       case 'setMode':
         this.setMode(msg.mode);
@@ -3030,6 +3056,7 @@ export class SessionManager {
   private feedGovernor(update: SessionUpdate): void {
     this.feedMediaTax(update);
     this.feedIdleNoticeTax(update);
+    this.feedTeammateCompactProxy(update);
     const gov = this.governor;
     if (!gov) return;
     // A replacement session's startup events must never feed a governor
@@ -3176,6 +3203,335 @@ export class SessionManager {
         )
       )
     };
+  }
+
+  /**
+   * Teammate-context compact proxy — detect Agent/Task/Teammate children and
+   * teammate-status context_pct reports; surface chip; host action via
+   * handleCompactTeammate (summarize primer / park-handoff cartridge).
+   * Claude #49786 class: member agents lack vendor auto-compaction.
+   */
+  private feedTeammateCompactProxy(update: SessionUpdate): void {
+    const sid = this.meta?.id;
+    if (sid && this.teammateCompactSessionId !== sid) {
+      this.teammateCompact = new TeammateCompactProxyTracker();
+      this.teammateCompactSessionId = sid;
+      this.teammateCompactLastPosted = undefined;
+      this.teammateToolChildIds.clear();
+      this.panel.post({ type: 'teammateCompact', chip: null });
+    }
+    const cfg = this.readTeammateCompactConfig();
+    if (cfg.mode === 'off') {
+      this.postTeammateCompactChip(null);
+      return;
+    }
+
+    const windowTokens = guessContextWindowTokens(
+      this.meta?.model ?? this.meta?.backend ?? ''
+    );
+
+    switch (update.kind) {
+      case 'tool_call': {
+        const tc = update.toolCall;
+        const role = classifyTeammateToolTitle(tc.title);
+        if (!role) break;
+        const id = resolveTeammateChildId({
+          toolCallId: tc.toolCallId,
+          title: tc.title,
+          rawInput: tc.rawInput
+        });
+        this.teammateToolChildIds.set(tc.toolCallId, id);
+        const existing = this.teammateCompact.getChild(id);
+        this.teammateCompact.upsertChild({
+          id,
+          label: teammateChildLabel({ id, title: tc.title, role }),
+          role,
+          usedTokens: existing?.usedTokens ?? 0,
+          windowTokens: existing?.windowTokens || windowTokens,
+          backend: this.meta?.backend,
+          lastToolResults: existing?.lastToolResults,
+          vendorCompactAvailable: existing?.vendorCompactAvailable
+        });
+        break;
+      }
+      case 'tool_call_update': {
+        const tc = update.toolCall;
+        const childId =
+          this.teammateToolChildIds.get(tc.toolCallId) ??
+          (classifyTeammateToolTitle(tc.title)
+            ? resolveTeammateChildId({
+                toolCallId: tc.toolCallId,
+                title: tc.title,
+                rawInput: tc.rawInput
+              })
+            : undefined);
+        if (!childId) break;
+        if (tc.content && Array.isArray(tc.content)) {
+          for (const part of tc.content) {
+            const text = extractNoticeText(part);
+            if (!text) continue;
+            this.teammateCompact.noteToolResult(
+              childId,
+              { title: tc.title, text },
+              {
+                label: teammateChildLabel({
+                  id: childId,
+                  title: tc.title,
+                  role: classifyTeammateToolTitle(tc.title) ?? 'agent_tool'
+                }),
+                role: classifyTeammateToolTitle(tc.title) ?? 'agent_tool',
+                windowTokens
+              }
+            );
+            const parsed = parseTeammateContextPct(text);
+            if (parsed) {
+              const id = parsed.agentId ? `tm:${parsed.agentId}` : childId;
+              this.teammateCompact.noteFillPct(id, parsed.fillPct, {
+                label: parsed.agentId ?? childId,
+                role: 'teammate',
+                windowTokens,
+                backend: this.meta?.backend
+              });
+            }
+          }
+        }
+        break;
+      }
+      case 'user_message_chunk':
+      case 'agent_message_chunk': {
+        const text = extractNoticeText(update.content);
+        if (!text) break;
+        const parsed = parseTeammateContextPct(text);
+        if (!parsed) break;
+        const id = parsed.agentId ? `tm:${parsed.agentId}` : `tm:unknown`;
+        this.teammateCompact.noteFillPct(id, parsed.fillPct, {
+          label: parsed.agentId ?? 'teammate',
+          role: 'teammate',
+          windowTokens,
+          backend: this.meta?.backend
+        });
+        break;
+      }
+      default:
+        break;
+    }
+
+    const chip = this.teammateCompact.chip(cfg);
+    this.postTeammateCompactChip(chip);
+    for (const ev of this.teammateCompact.newlyWarned(cfg)) {
+      this.panel.post({
+        type: 'notice',
+        key: `teammate-compact-${ev.child.id}`,
+        text: `⚠️ Teammate context near limit: ${ev.child.label} (${ev.fillPct != null ? `${Math.round(ev.fillPct)}%` : '?'}).`,
+        detail:
+          `${ev.reason}\n${TEAMMATE_COMPACT_HINT}\nClick the team chip or run "Code Build: Compact Teammate Context" to summarize / park.`
+      });
+    }
+  }
+
+  private readTeammateCompactConfig(): TeammateCompactConfig {
+    const mode = this.config.get<'off' | 'warn' | 'auto'>(
+      'teammateCompact.mode',
+      DEFAULT_TEAMMATE_COMPACT_CONFIG.mode
+    );
+    return {
+      mode,
+      thresholdPct: Math.max(
+        0,
+        this.config.get<number>(
+          'teammateCompact.thresholdPct',
+          DEFAULT_TEAMMATE_COMPACT_CONFIG.thresholdPct
+        )
+      ),
+      criticalPct: Math.max(
+        0,
+        this.config.get<number>(
+          'teammateCompact.criticalPct',
+          DEFAULT_TEAMMATE_COMPACT_CONFIG.criticalPct
+        )
+      ),
+      lastNToolResults: Math.max(
+        0,
+        this.config.get<number>(
+          'teammateCompact.lastNToolResults',
+          DEFAULT_TEAMMATE_COMPACT_CONFIG.lastNToolResults
+        )
+      )
+    };
+  }
+
+  private postTeammateCompactChip(chip: TeammateCompactChip | null): void {
+    const sig = chip
+      ? `${chip.label}|${chip.warn ? 1 : 0}|${chip.childCount}|${chip.approachingCount}|${chip.criticalCount}|${chip.compactedCount}|${chip.failedCount}|${chip.parkedCount}`
+      : 'null';
+    if (sig === this.teammateCompactLastPosted) return;
+    this.teammateCompactLastPosted = sig;
+    this.panel.post({
+      type: 'teammateCompact',
+      chip: chip
+        ? {
+            label: chip.label,
+            childCount: chip.childCount,
+            approachingCount: chip.approachingCount,
+            criticalCount: chip.criticalCount,
+            compactedCount: chip.compactedCount,
+            failedCount: chip.failedCount,
+            parkedCount: chip.parkedCount,
+            warn: chip.warn,
+            ...(chip.hint ? { hint: chip.hint } : {})
+          }
+        : null
+    });
+  }
+
+  /**
+   * Host action: pick a near-limit child (or use childId) and run summarize
+   * primer / vendor-compact notice / park-handoff cartridge. Always keeps a
+   * recoverable artifact — never a silent wipe.
+   */
+  async handleCompactTeammate(childId?: string): Promise<void> {
+    const cfg = this.readTeammateCompactConfig();
+    if (cfg.mode === 'off') {
+      void vscode.window.showInformationMessage(
+        'Code Build: teammate compact proxy is off (codeBuild.teammateCompact.mode).'
+      );
+      return;
+    }
+    const evaluations = this.teammateCompact.evaluateAll(cfg);
+    if (evaluations.length === 0) {
+      void vscode.window.showInformationMessage(
+        'Code Build: no Agent Team / Agent-tool children registered on this lead session yet.'
+      );
+      return;
+    }
+
+    let target: TeammateChildEvaluation | undefined;
+    if (childId) {
+      target = evaluations.find((e) => e.child.id === childId);
+    }
+    if (!target) {
+      const actionable = evaluations.filter((e) => e.action !== 'none');
+      const pool = actionable.length > 0 ? actionable : evaluations;
+      const pick = await vscode.window.showQuickPick(
+        pool.map((e) => ({
+          label: e.child.label,
+          description: `${e.status} · ${e.action}${e.fillPct != null ? ` · ${Math.round(e.fillPct)}%` : ''}`,
+          detail: e.reason,
+          ev: e
+        })),
+        {
+          title: 'Compact teammate context',
+          placeHolder: 'Child / subagent to summarize or park'
+        }
+      );
+      if (!pick) return;
+      target = pick.ev;
+    }
+
+    // Re-evaluate in case the snapshot moved.
+    const ev = evaluateTeammateChild(target.child, cfg);
+    try {
+      if (ev.action === 'park_handoff' || ev.status === 'critical') {
+        await this.applyTeammateParkHandoff(ev, cfg);
+      } else if (ev.action === 'vendor_compact') {
+        // v1: surface intent + still stage a summarize primer artifact so
+        // the compact is recoverable even when we cannot RPC the child.
+        const summary = this.defaultTeammateSummary(ev);
+        const primer = buildTeammateSummarizePrimer({
+          child: ev.child,
+          summary,
+          leadSessionId: this.meta?.id
+        });
+        await this.stageTeammateArtifact(
+          `teammate-compact-${ev.child.label}.md`,
+          `# Vendor compact requested — ${ev.child.label}\n\nChild advertised vendor compact; host staged this recoverable primer because member auto-compact is unreliable (#49786).\n\n\`\`\`\n${primer}\n\`\`\`\n`
+        );
+        this.teammateCompact.recordOutcome('compacted');
+        this.panel.post({
+          type: 'notice',
+          key: `teammate-compacted-${ev.child.id}`,
+          text: `Teammate compact staged for ${ev.child.label} (vendor compact path + primer artifact).`,
+          detail: ev.reason
+        });
+      } else {
+        // summarize or manual ok-child compact
+        const summary = this.defaultTeammateSummary(ev);
+        const primer = buildTeammateSummarizePrimer({
+          child: ev.child,
+          summary,
+          leadSessionId: this.meta?.id
+        });
+        await this.stageTeammateArtifact(
+          `teammate-compact-${ev.child.label}.md`,
+          `# Teammate summarize primer — ${ev.child.label}\n\nRecoverable host-proxy compact artifact (not a silent wipe).\n\n\`\`\`\n${primer}\n\`\`\`\n`
+        );
+        this.teammateCompact.recordOutcome('compacted');
+        // Drop fill so the chip reflects post-compact until the next status.
+        this.teammateCompact.upsertChild({
+          ...ev.child,
+          usedTokens: Math.round(ev.child.windowTokens * 0.15)
+        });
+        this.panel.post({
+          type: 'notice',
+          key: `teammate-compacted-${ev.child.id}`,
+          text: `Teammate summarize primer staged for ${ev.child.label}.`,
+          detail: ev.reason
+        });
+      }
+    } catch (err) {
+      this.teammateCompact.recordOutcome('failed');
+      void vscode.window.showErrorMessage(
+        `Code Build: teammate compact failed — ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+    this.postTeammateCompactChip(this.teammateCompact.chip(cfg));
+  }
+
+  private defaultTeammateSummary(ev: TeammateChildEvaluation): string {
+    const results = ev.child.lastToolResults ?? [];
+    if (results.length === 0) {
+      return `Child "${ev.child.label}" (${ev.child.role}) was near its context limit; no tool results were captured. Continue from the lead's next instruction.`;
+    }
+    const lines = results.slice(-5).map((r, i) => {
+      const title = (r.title ?? `result ${i + 1}`).trim();
+      const body = r.text.trim().slice(0, 500);
+      return `- ${title}: ${body}`;
+    });
+    return `Child "${ev.child.label}" (${ev.child.role}) summary from recent tool results:\n${lines.join('\n')}`;
+  }
+
+  private async applyTeammateParkHandoff(
+    ev: TeammateChildEvaluation,
+    cfg: TeammateCompactConfig
+  ): Promise<void> {
+    const cart = buildTeammateParkHandoffCartridge({
+      child: ev.child,
+      lastN: cfg.lastNToolResults,
+      leadSessionId: this.meta?.id
+    });
+    await this.stageTeammateArtifact(
+      `teammate-park-${ev.child.label}.md`,
+      cart.markdown
+    );
+    this.teammateCompact.recordOutcome('parked');
+    this.teammateCompact.removeChild(ev.child.id);
+    this.panel.post({
+      type: 'notice',
+      key: `teammate-parked-${ev.child.id}`,
+      text: `Parked teammate ${ev.child.label} — handoff cartridge opened (${cart.resultCount} tool result(s)).`,
+      detail: ev.reason
+    });
+  }
+
+  private async stageTeammateArtifact(filename: string, body: string): Promise<void> {
+    const doc = await vscode.workspace.openTextDocument({
+      language: 'markdown',
+      content: body
+    });
+    await vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+    // filename is documentary — untitled docs don't take a path; include it
+    // in the first heading already. Keep arg to satisfy call-site clarity.
+    void filename;
   }
 
   /**

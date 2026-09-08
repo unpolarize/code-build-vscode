@@ -281,6 +281,21 @@ export function Header({
         </span>
       )}
 
+      {state.teammateCompact && (
+        <button
+          type="button"
+          className={
+            state.teammateCompact.warn
+              ? 'media-tax-chip media-tax-chip-warn'
+              : 'media-tax-chip'
+          }
+          title={formatTeammateCompactTooltip(state.teammateCompact)}
+          onClick={() => post({ type: 'compactTeammate' })}
+        >
+          {state.teammateCompact.label}
+        </button>
+      )}
+
       {onSetStallTimeout && (
         <select
           className="stall-picker"
@@ -451,6 +466,19 @@ function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): st
   }
   if (chip.warnReason) lines.push(chip.warnReason);
   lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
+}
+
+function formatTeammateCompactTooltip(
+  chip: NonNullable<ChatState['teammateCompact']>
+): string {
+  const lines = [
+    chip.label,
+    `${chip.childCount} child(ren) · near ${chip.approachingCount + chip.criticalCount} · compacted ${chip.compactedCount} · parked ${chip.parkedCount} · failed ${chip.failedCount}`,
+    chip.hint ??
+      'Host compact proxy for Agent Team / subagent children near context limit (Claude #49786). Click to act.',
+    'codeBuild.teammateCompact.*'
+  ];
   return lines.join('\n');
 }
 
