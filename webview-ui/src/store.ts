@@ -240,6 +240,17 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** maxEffortLevel org/host ceiling chip (null until a ceiling is known). */
+  effortCeiling: {
+    available: boolean;
+    ceiling: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+    selected: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+    source: 'managed' | 'local' | 'agent-recommended' | null;
+    sourceDetail?: string;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
   /** ACP session/stop capability chip — host-teardown vs agent-stop/close. */
   sessionStopCapability: {
     path: 'agent-close' | 'agent-stop' | 'host-teardown';
@@ -347,6 +358,7 @@ export const initialState: ChatState = {
   checkpointIds: [],
   protocolPin: null,
   spendLimit: null,
+  effortCeiling: null,
   sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
@@ -429,6 +441,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, idleNoticeTax: msg.chip };
     case 'teammateCompact':
       return { ...state, teammateCompact: msg.chip };
+    case 'effortCeiling':
+      return { ...state, effortCeiling: msg.chip };
     case 'investigateStatus':
       return {
         ...state,
@@ -890,6 +904,20 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
           ...(u.warnReason ? { warnReason: u.warnReason } : {})
         }
       };
+    case 'effort_ceiling_update':
+      return {
+        ...state,
+        effortCeiling: {
+          available: u.available,
+          ceiling: u.ceiling,
+          selected: u.selected,
+          source: u.source,
+          label: u.label,
+          warn: u.warn,
+          ...(u.sourceDetail ? { sourceDetail: u.sourceDetail } : {}),
+          ...(u.warnReason ? { warnReason: u.warnReason } : {})
+        }
+      };
     case 'session_stop_capability_update':
       return {
         ...state,
@@ -1058,6 +1086,7 @@ function replayRecords(
           // Media-tax is live-only (not persisted) — clear on session switch.
           protocolPin: null,
           spendLimit: null,
+          effortCeiling: null,
           sessionStopCapability: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.

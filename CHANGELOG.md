@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.28.0 — 2026-09-09
+
+### maxEffortLevel org/host ceiling chip (Claude 2.1.267 class)
+
+- New pure module `src/shared/effortCeilingChip.ts`: parse Claude
+  `maxEffortLevel` (top-level or per-model under `modelSettings`) and
+  codex-acp recommended effort; compare selected effort vs ceiling;
+  gate setEffort/send with `off` | `warn` | `block`.
+- Header chip `ceil high · managed` / `ceil med · local` / `ceil high · rec`
+  when a ceiling is known; amber when selected is above it. Effort picker
+  disables over-ceiling levels.
+- Settings: `codeBuild.maxEffortLevel` (host pin) and
+  `codeBuild.effortCeiling.mode` (default `warn`). Host pin wins over
+  agent-reported managed/recommended.
+- ACP initialize emits `effort_ceiling_update` when the agent advertises a
+  ceiling; host also posts live `effortCeiling` from settings (not JSONL).
+- Distinct from the vendor effort-semantics drift canary (silent label remaps).
+- Unit tests: `test/unit/effortCeilingChip.test.ts`.
+
 ## 0.27.0 — 2026-09-08
 
 ### Teammate-context compact proxy (Claude #49786 class)

@@ -167,6 +167,14 @@ import {
   type ScopeFenceEvent
 } from '../shared/scopeFence';
 import { InvestigateLock, type InvestigateEvent } from '../shared/investigateMode';
+import {
+  checkEffortAgainstCeiling,
+  evaluateEffortCeilingChip,
+  parseEffortCeilingMode,
+  type EffortCeilingFields,
+  type EffortCeilingSourceHit,
+  type EffortLevel
+} from '../shared/effortCeilingChip';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -346,6 +354,10 @@ export class SessionManager {
   private mediaTaxLastPosted: string | undefined;
   /** Session-sticky Prefer DOM/CLI host hint (armed by one-click action). */
   private preferDomHintArmed = false;
+  /** Agent-reported maxEffortLevel / recommended effort (from initialize). */
+  private agentEffortCeiling: EffortCeilingSourceHit | null = null;
+  /** Last effort-ceiling chip signature posted (dedupe). */
+  private effortCeilingLastPosted: string | undefined;
   /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
   private toolReadGate?: ToolReadGate;
   /** Session id the current toolReadGate belongs to. */
@@ -595,6 +607,13 @@ export class SessionManager {
         // spawns the CLI (session.start can take several seconds).
         this.panel.post({ type: 'busy', busy: true });
         await this.ensureSession();
+        // maxEffortLevel ceiling gate (Claude 2.1.267 class) — after
+        // ensureSession so remembered/default effort is on meta. Block
+        // clears busy so over-ceiling sends never leave the host.
+        if (this.gateEffortCeiling('send') === 'block') {
+          this.panel.post({ type: 'busy', busy: false });
+          break;
+        }
         // Arm the stall watchdog for this turn (D1). The silence clock starts
         // now, at submission, so a turn that produces NO output at all (the
         // claude `error_during_execution`/0-token stall) is still caught.
@@ -2716,6 +2735,9 @@ export class SessionManager {
       ...this.fsBridgeHooks()
     });
     await this.reapplyPinnedModeAfterStart(skipPin);
+    // Host maxEffortLevel chip (agent-reported may arrive via initialize later).
+    this.effortCeilingLastPosted = undefined;
+    this.postEffortCeilingChip();
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -4003,14 +4025,108 @@ export class SessionManager {
   }
 
   /** Apply a new effort/thinking-budget level. Same persistence + respawn
-   * semantics as setModel. */
+   * semantics as setModel. Honors maxEffortLevel ceiling (warn/block). */
   private setEffort(effort: SessionMeta['effort']): void {
     if (!this.meta) return;
+    if (this.gateEffortCeiling('setEffort', effort) === 'block') return;
     this.meta.effort = effort;
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     this.rememberConfig();
+    this.postEffortCeilingChip();
   }
+
+  /**
+   * Resolve host + agent effort ceiling and post the header chip.
+   * Host `codeBuild.maxEffortLevel` wins over agent-reported managed /
+   * recommended. Live HostToWebview only — not JSONL-persisted.
+   */
+  private postEffortCeilingChip(): void {
+    const selected = (this.meta?.effort ?? 'default') as EffortLevel;
+    const hostMax = this.config.get<string>('maxEffortLevel', '');
+    const agentFields: EffortCeilingFields | null = this.agentEffortCeiling
+      ? this.agentEffortCeiling.source === 'agent-recommended'
+        ? { recommendedEffort: this.agentEffortCeiling.ceiling }
+        : { maxEffortLevel: this.agentEffortCeiling.ceiling }
+      : null;
+    const chip = evaluateEffortCeilingChip({
+      hostMaxEffortLevel: hostMax,
+      agentFields,
+      modelId: this.meta?.model,
+      selected
+    });
+    const sig = chip.available
+      ? `${chip.label}|${chip.warn ? 1 : 0}|${chip.ceiling}|${chip.selected}|${chip.source}`
+      : 'null';
+    if (sig === this.effortCeilingLastPosted) return;
+    this.effortCeilingLastPosted = sig;
+    this.panel.post({
+      type: 'effortCeiling',
+      chip: chip.available
+        ? {
+            available: true,
+            ceiling: chip.ceiling,
+            selected: chip.selected,
+            source: chip.source,
+            label: chip.label,
+            warn: chip.warn,
+            ...(chip.sourceDetail ? { sourceDetail: chip.sourceDetail } : {}),
+            ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
+          }
+        : null
+    });
+  }
+
+  /**
+   * Pre-send / setEffort gate against the effort ceiling.
+   * Returns 'block' when the action must not proceed.
+   */
+  private gateEffortCeiling(
+    reason: 'send' | 'setEffort',
+    selectedOverride?: SessionMeta['effort']
+  ): 'allow' | 'warn' | 'block' {
+    const selected = (selectedOverride ?? this.meta?.effort ?? 'default') as EffortLevel;
+    const hostMax = this.config.get<string>('maxEffortLevel', '');
+    const mode = parseEffortCeilingMode(this.config.get<string>('effortCeiling.mode', 'warn'));
+    const agentFields: EffortCeilingFields | null = this.agentEffortCeiling
+      ? this.agentEffortCeiling.source === 'agent-recommended'
+        ? { recommendedEffort: this.agentEffortCeiling.ceiling }
+        : { maxEffortLevel: this.agentEffortCeiling.ceiling }
+      : null;
+    const gate = checkEffortAgainstCeiling({
+      selected,
+      hostMaxEffortLevel: hostMax,
+      agentFields,
+      modelId: this.meta?.model,
+      mode
+    });
+    this.postEffortCeilingChip();
+    if (gate.action === 'allow') return 'allow';
+    const detail =
+      (gate.sourceDetail ? `${gate.sourceDetail}\n` : '') +
+      `Mode: codeBuild.effortCeiling.mode=${mode}. ` +
+      'Distinct from the effort-semantics drift canary.';
+    if (gate.action === 'block') {
+      this.panel.post({
+        type: 'notice',
+        key: 'effort-ceiling',
+        text:
+          reason === 'send'
+            ? `⚠️ Effort ceiling blocked send — ${gate.message}`
+            : `⚠️ Effort ceiling blocked setEffort — ${gate.message}`,
+        detail
+      });
+      return 'block';
+    }
+    this.panel.post({
+      type: 'notice',
+      key: 'effort-ceiling',
+      text: `⚠️ Effort ceiling warning — ${gate.message}`,
+      detail
+    });
+    return 'warn';
+  }
+
 
   /**
    * Queue a session to resume once the webview signals 'ready'. Used when opening
@@ -4351,6 +4467,11 @@ export class SessionManager {
     this.scopeFence = undefined;
     this.scopeFenceSessionId = undefined;
     this.scopeFenceLastDeniedPath = undefined;
+    // Effort ceiling is per-agent initialize — clear so the next backend
+    // doesn't inherit a stale managed/recommended cap.
+    this.agentEffortCeiling = null;
+    this.effortCeilingLastPosted = undefined;
+    this.panel.post({ type: 'effortCeiling', chip: null });
     // Same for the Investigate lock — findings / unlock must not leak.
     this.investigateLock = undefined;
     this.investigateLockSessionId = undefined;
@@ -4831,6 +4952,23 @@ export class SessionManager {
     this.captureBackendSessionId(update);
     this.handleResumeFallback(update);
     this.syncAgentMode(update);
+    if (update.kind === 'effort_ceiling_update') {
+      // Agent-advertised ceiling from ACP initialize — latch for host gate.
+      if (
+        update.available &&
+        update.ceiling &&
+        update.ceiling !== 'default' &&
+        update.source
+      ) {
+        this.agentEffortCeiling = {
+          ceiling: update.ceiling,
+          source: update.source,
+          sourceDetail: update.sourceDetail ?? 'agent effort_ceiling_update'
+        };
+        this.effortCeilingLastPosted = undefined;
+        this.postEffortCeilingChip();
+      }
+    }
     if (update.kind === 'usage' && typeof update.usage.inputTokens === 'number') {
       this.lastInputTokens = update.usage.inputTokens;
     } else if (update.kind === 'result' && typeof update.usage?.inputTokens === 'number') {

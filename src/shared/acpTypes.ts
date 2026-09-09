@@ -154,6 +154,20 @@ export type SessionUpdate =
       label: string;
       reason: string;
     }
+  /** maxEffortLevel org/host ceiling chip (Claude 2.1.267 / codex-acp class).
+   * `available:false` → no ceiling known (`ceil n/a`); host may also post
+   * via HostToWebview.effortCeiling without persisting to JSONL. */
+  | {
+      kind: 'effort_ceiling_update';
+      available: boolean;
+      ceiling: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+      selected: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+      source: 'managed' | 'local' | 'agent-recommended' | null;
+      sourceDetail?: string;
+      label: string;
+      warn: boolean;
+      warnReason?: string;
+    }
   /** Native resume failed and the transport fell back to a fresh
    * session (e.g. Grok ACP session/load rejected because the on-disk
    * session was deleted or the grok version regressed). The host uses

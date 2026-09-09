@@ -674,6 +674,24 @@ export type HostToWebview =
         hint?: string;
       } | null;
     }
+  /**
+   * maxEffortLevel org/host ceiling chip (Claude 2.1.267 class). Host posts
+   * this live from settings + agent advertise — not JSONL-persisted.
+   * Distinct from effort-semantics drift canary.
+   */
+  | {
+      type: 'effortCeiling';
+      chip: {
+        available: boolean;
+        ceiling: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+        selected: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null;
+        source: 'managed' | 'local' | 'agent-recommended' | null;
+        sourceDetail?: string;
+        label: string;
+        warn: boolean;
+        warnReason?: string;
+      } | null;
+    }
   /** Topic labels for a completed turn. The host's classifier fires
    * after each end-of-turn `result` event when `codeBuild.classifyTurns`
    * is enabled. `turnIndex` is the 0-based index of the user prompt
