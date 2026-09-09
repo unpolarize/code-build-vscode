@@ -98,6 +98,16 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       await mgr.handleDesignArtboardBind();
     }),
+    vscode.commands.registerCommand('codeBuild.compactTeammateContext', async () => {
+      const mgr = lastManager(managers);
+      if (!mgr) {
+        void vscode.window.showInformationMessage(
+          'Code Build: no active conversation to compact teammate context on.'
+        );
+        return;
+      }
+      await mgr.handleCompactTeammate();
+    }),
     vscode.commands.registerCommand('codeBuild.exportConversation', async () => {
       const mgr = lastManager(managers);
       if (!mgr) {

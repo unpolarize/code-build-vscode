@@ -347,6 +347,12 @@ export type WebviewToHost =
    */
   | { type: 'preferDomHint' }
   /**
+   * Teammate-context compact proxy — chip click or slash path. Host runs
+   * evaluate → summarize primer / vendor compact / park-handoff for children
+   * past the context threshold (Claude #49786 class).
+   */
+  | { type: 'compactTeammate'; childId?: string }
+  /**
    * User answer to the overload/unavailable failover confirm banner.
    * `accept: true` + `backend` → spawn/resume that peer with a last-N
    * hybrid primer and stamp failover_* meta. `accept: false` dismisses.
@@ -647,6 +653,24 @@ export type HostToWebview =
         sessionNoticeTokens: number;
         warn: boolean;
         pause: boolean;
+        hint?: string;
+      } | null;
+    }
+  /**
+   * Teammate-context compact-proxy header chip (Claude #49786 class).
+   * Null clears (new session / mode off / no children or outcomes).
+   */
+  | {
+      type: 'teammateCompact';
+      chip: {
+        label: string;
+        childCount: number;
+        approachingCount: number;
+        criticalCount: number;
+        compactedCount: number;
+        failedCount: number;
+        parkedCount: number;
+        warn: boolean;
         hint?: string;
       } | null;
     }

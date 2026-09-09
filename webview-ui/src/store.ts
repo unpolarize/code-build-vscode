@@ -268,6 +268,18 @@ export interface ChatState {
     pause: boolean;
     hint?: string;
   } | null;
+  /** Teammate-context compact-proxy chip (null until children / outcomes). */
+  teammateCompact: {
+    label: string;
+    childCount: number;
+    approachingCount: number;
+    criticalCount: number;
+    compactedCount: number;
+    failedCount: number;
+    parkedCount: number;
+    warn: boolean;
+    hint?: string;
+  } | null;
   /** Investigate-mode findings-first write lock chip (null = mode off). */
   investigate: {
     unlocked: boolean;
@@ -338,6 +350,7 @@ export const initialState: ChatState = {
   sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
+  teammateCompact: null,
   investigate: null,
   historyLoad: null,
   nowLine: null,
@@ -414,6 +427,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, mediaToolTax: msg.chip };
     case 'idleNoticeTax':
       return { ...state, idleNoticeTax: msg.chip };
+    case 'teammateCompact':
+      return { ...state, teammateCompact: msg.chip };
     case 'investigateStatus':
       return {
         ...state,
@@ -1047,6 +1062,8 @@ function replayRecords(
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.
           idleNoticeTax: null,
+          // Teammate compact proxy is per-lead-session — clear on switch.
+          teammateCompact: null,
           // Investigate lock is live host state — cleared on switch; the
           // host re-posts investigateStatus on the next transition.
           investigate: null,
