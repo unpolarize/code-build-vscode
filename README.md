@@ -39,9 +39,14 @@ Webview (React + Vite)  ──typed postMessage──▶  Extension Host
   shows the negotiated version (amber warn on v1↔experimental-v2 mismatch; never
   blocks the session). A **spend-limit parity** chip mirrors Claude Code 2.1.251
   `/usage` spend-limit bar semantics when `rate_limits.spend_limit` is present;
-  other backends show `spend n/a` (never fake remaining %). A **teammate-context
-  compact proxy** chip (`team near N · compact M`) watches Agent Team /
-  Agent-tool children approaching their context limit (Claude [#49786](https://github.com/anthropics/claude-code/issues/49786)
+  other backends show `spend n/a` (never fake remaining %). A **maxEffortLevel
+  ceiling** chip (`ceil high · managed` / `ceil med · local`) surfaces Claude
+  2.1.267 org/user effort caps and codex-acp recommended effort; setEffort/send
+  above the ceiling warn or block per `codeBuild.effortCeiling.mode`
+  (`codeBuild.maxEffortLevel` host pin). Distinct from the effort-semantics
+  drift canary. A **teammate-context compact proxy** chip (`team near N ·
+  compact M`) watches Agent Team / Agent-tool children approaching their
+  context limit (Claude [#49786](https://github.com/anthropics/claude-code/issues/49786)
   class — members lack vendor auto-compaction); click it or run **Compact
   Teammate Context** to stage a summarize primer or park-handoff cartridge
   (`codeBuild.teammateCompact.*`).

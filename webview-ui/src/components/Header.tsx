@@ -176,13 +176,30 @@ export function Header({
           className="effort-picker"
           value={state.session?.effort ?? 'default'}
           onChange={(e) => onSetEffort(e.target.value as Effort)}
-          title="Effort / thinking budget — takes effect on next agent process spawn"
+          title={
+            state.effortCeiling?.available && state.effortCeiling.ceiling
+              ? `Effort / thinking budget (ceiling: ${state.effortCeiling.ceiling} · ${state.effortCeiling.source ?? 'unknown'}) — takes effect on next agent process spawn`
+              : 'Effort / thinking budget — takes effect on next agent process spawn'
+          }
         >
-          {EFFORT_LEVELS.map((lvl) => (
-            <option key={lvl} value={lvl}>
-              {lvl === 'default' ? 'auto · effort' : `effort: ${lvl}`}
-            </option>
-          ))}
+          {EFFORT_LEVELS.map((lvl) => {
+            const ceil = state.effortCeiling?.available
+              ? state.effortCeiling.ceiling
+              : null;
+            const over =
+              ceil != null &&
+              lvl !== 'default' &&
+              EFFORT_LEVELS.indexOf(lvl) > EFFORT_LEVELS.indexOf(ceil as Effort);
+            return (
+              <option key={lvl} value={lvl} disabled={over}>
+                {lvl === 'default'
+                  ? 'auto · effort'
+                  : over
+                    ? `effort: ${lvl} (over ceil)`
+                    : `effort: ${lvl}`}
+              </option>
+            );
+          })}
         </select>
       )}
 
@@ -245,6 +262,19 @@ export function Header({
           title={formatSpendLimitTooltip(state.spendLimit)}
         >
           {state.spendLimit.label}
+        </span>
+      )}
+
+      {state.effortCeiling?.available && (
+        <span
+          className={
+            state.effortCeiling.warn
+              ? 'effort-ceiling-chip effort-ceiling-chip-warn'
+              : 'effort-ceiling-chip'
+          }
+          title={formatEffortCeilingTooltip(state.effortCeiling)}
+        >
+          {state.effortCeiling.label}
         </span>
       )}
 
@@ -466,6 +496,22 @@ function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): st
   }
   if (chip.warnReason) lines.push(chip.warnReason);
   lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
+}
+
+function formatEffortCeilingTooltip(
+  chip: NonNullable<ChatState['effortCeiling']>
+): string {
+  const lines: string[] = [chip.label];
+  if (chip.ceiling) lines.push(`Ceiling: ${chip.ceiling}`);
+  if (chip.selected) lines.push(`Selected: ${chip.selected}`);
+  if (chip.source) lines.push(`Source: ${chip.source}`);
+  if (chip.sourceDetail) lines.push(chip.sourceDetail);
+  if (chip.warnReason) lines.push(chip.warnReason);
+  lines.push(
+    'Claude 2.1.267 maxEffortLevel / codex-acp recommended effort — distinct from effort-semantics drift canary.'
+  );
+  lines.push('codeBuild.maxEffortLevel · codeBuild.effortCeiling.mode');
   return lines.join('\n');
 }
 

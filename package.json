@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -559,6 +559,29 @@
           ],
           "default": "default",
           "description": "Default effort / thinking-budget level. Claude Code and Grok map this to --effort; Codex (o-series) maps it to --reasoning-effort. 'default' = let the backend pick."
+        },
+        "codeBuild.maxEffortLevel": {
+          "type": "string",
+          "enum": [
+            "",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "default": "",
+          "description": "Host effort ceiling (Claude 2.1.267 maxEffortLevel class). When set, the chat header shows a ceil chip and setEffort/send above the ceiling are warned or blocked per codeBuild.effortCeiling.mode. Empty = no host pin (agent-reported managed/recommended ceilings still apply when present). Distinct from the effort-semantics drift canary."
+        },
+        "codeBuild.effortCeiling.mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn",
+            "block"
+          ],
+          "default": "warn",
+          "description": "When selected effort exceeds the maxEffortLevel ceiling: 'off' = chip only, 'warn' = allow with notice (default), 'block' = refuse setEffort and send until effort is lowered or the ceiling is raised/cleared."
         },
         "codeBuild.perfDebug": {
           "type": "string",

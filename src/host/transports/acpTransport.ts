@@ -39,6 +39,11 @@ import {
 } from '../../shared/protocolVersionPin';
 import { evaluateSpendLimitChip, readFiveHourResetsAt } from '../../shared/spendLimitChip';
 import {
+  evaluateEffortCeilingChip,
+  parseEffortCeilingFromAgent,
+  type EffortCeilingFields
+} from '../../shared/effortCeilingChip';
+import {
   decideSessionStopPath,
   hostKillAgentProcess,
   type SessionStopDecision
@@ -303,6 +308,9 @@ export class AcpTransport extends BaseAgentSession {
         // chip shows n/a (never fake 100%). If initialize carries Claude-shaped
         // rate_limits.spend_limit (or camelCase), surface remaining %.
         this.emitSpendLimit(init);
+        // maxEffortLevel / recommended-effort ceiling (Claude 2.1.267 /
+        // codex-acp 1.11.0 class). Host may also pin via codeBuild.maxEffortLevel.
+        this.emitEffortCeiling(init);
         // Session/stop capability — matrix majority lacks stop/close; chip
         // shows host-teardown so Kill never claims a protocol stop.
         this.stopDecision = decideSessionStopPath(init);
@@ -424,6 +432,7 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   private lastSpendLimitLabel?: string;
+  private lastEffortCeilingLabel?: string;
 
   private emitSpendLimit(status: unknown): void {
     const shaped =
@@ -444,6 +453,42 @@ export class AcpTransport extends BaseAgentSession {
       fiveHourResetsAt,
       label: chip.label,
       warn: chip.warn,
+      ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
+    });
+  }
+
+  /** Emit effort ceiling when initialize advertises maxEffortLevel / recommended. */
+  private emitEffortCeiling(init: unknown): void {
+    const fields =
+      init && typeof init === 'object' ? (init as EffortCeilingFields) : null;
+    // Skip emit when nothing to report — host may still pin via settings.
+    if (!parseEffortCeilingFromAgent(fields, { modelId: this.startOpts?.model })) return;
+    const chip = evaluateEffortCeilingChip({
+      agentFields: fields,
+      modelId: this.startOpts?.model,
+      selected: (this.startOpts?.effort as
+        | 'default'
+        | 'low'
+        | 'medium'
+        | 'high'
+        | 'xhigh'
+        | 'max'
+        | null
+        | undefined) ?? null
+    });
+    if (!chip.available) return;
+    const dedupeKey = `${chip.label}|${chip.warn ? 1 : 0}|${chip.ceiling}`;
+    if (dedupeKey === this.lastEffortCeilingLabel) return;
+    this.lastEffortCeilingLabel = dedupeKey;
+    this.emit({
+      kind: 'effort_ceiling_update',
+      available: true,
+      ceiling: chip.ceiling,
+      selected: chip.selected,
+      source: chip.source,
+      label: chip.label,
+      warn: chip.warn,
+      ...(chip.sourceDetail ? { sourceDetail: chip.sourceDetail } : {}),
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
     });
   }
