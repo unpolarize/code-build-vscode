@@ -7,6 +7,11 @@ import { TaskListCard } from './TaskListCard';
 import { post } from '../vscodeApi';
 import { formatRelative, formatHover } from '../util/time';
 import { isNearBottom } from '../util/composerLayout';
+import {
+  needsViewportFill,
+  shouldPinFillToTail,
+  viewportFillAffordanceLabel
+} from '../util/viewportFill';
 
 /** Hover copy for the error-class chip — tells the user what the class
  * implies for recovery (failover offer vs quota wall vs re-auth). */
@@ -36,6 +41,10 @@ interface Props {
   olderSeq?: number;
   olderLoading?: boolean;
   onNeedOlder?: () => void;
+  /** Active session id — fill page counter resets on switch. */
+  sessionId?: string;
+  /** Bumps on each `historyLoaded` so a same-session restore also resets fill. */
+  historyEpoch?: number;
 }
 
 export function MessageList({
@@ -49,12 +58,22 @@ export function MessageList({
   hasOlder,
   olderSeq = 0,
   olderLoading,
-  onNeedOlder
+  onNeedOlder,
+  sessionId,
+  historyEpoch = 0
 }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const ignoreScroll = useRef(false);
   const unlockTimer = useRef<number | null>(null);
   const anchor = useRef({ height: 0, top: 0, seq: 0 });
+  const pagesAutoRef = useRef(0);
+  const fillPendingRef = useRef(false);
+  const fillModeRef = useRef(false);
+  const stalledRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const itemCountAtRequestRef = useRef(0);
+  const [autoPages, setAutoPages] = useState(0);
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
@@ -76,10 +95,12 @@ export function MessageList({
     // Instant while streaming so the tail keeps up; smooth only for the
     // idle "latest" jump. Hold ignoreScroll until scrollend so a mid-smooth
     // frame cannot flip follow back off (that left the counter stuck on e.g. 8/11).
-    lockFollowSync(busy ? 80 : 1000);
+    // Viewport-fill prepends also use `auto` so rapid pages don't fight smooth.
+    const instant = busy || fillModeRef.current;
+    lockFollowSync(instant ? 80 : 1000);
     listRef.current.scrollTo({
       top: listRef.current.scrollHeight,
-      behavior: busy ? 'auto' : 'smooth'
+      behavior: instant ? 'auto' : 'smooth'
     });
     return () => {
       if (unlockTimer.current != null) window.clearTimeout(unlockTimer.current);
@@ -90,24 +111,112 @@ export function MessageList({
   useLayoutEffect(() => {
     const el = listRef.current;
     if (!el || olderSeq === 0 || olderSeq === anchor.current.seq) return;
-    const delta = el.scrollHeight - anchor.current.height;
-    el.scrollTop = anchor.current.top + delta;
+    if (fillPendingRef.current && items.length <= itemCountAtRequestRef.current) {
+      // Empty historyOlder page still bumps olderSeq — stop the loop.
+      stalledRef.current = true;
+      fillModeRef.current = false;
+    }
+    if (shouldPinFillToTail(fillPendingRef.current, follow)) {
+      el.scrollTop = el.scrollHeight;
+    } else {
+      const delta = el.scrollHeight - anchor.current.height;
+      el.scrollTop = anchor.current.top + delta;
+    }
+    fillPendingRef.current = false;
     anchor.current.seq = olderSeq;
-  }, [olderSeq]);
+  }, [olderSeq, follow, items.length]);
+
+  function kickOlder(source: 'fill' | 'user') {
+    if (inFlightRef.current || olderLoading || !hasOlder) return;
+    const el = listRef.current;
+    if (el) {
+      anchor.current = { height: el.scrollHeight, top: el.scrollTop, seq: olderSeq };
+    }
+    inFlightRef.current = true;
+    if (source === 'fill') {
+      fillPendingRef.current = true;
+      fillModeRef.current = true;
+      pagesAutoRef.current += 1;
+      itemCountAtRequestRef.current = items.length;
+      setAutoPages(pagesAutoRef.current);
+    } else {
+      fillPendingRef.current = false;
+      fillModeRef.current = false;
+    }
+    onNeedOlder?.();
+  }
 
   function onScroll() {
     const el = listRef.current;
     if (!el) return;
+    if (fillPendingRef.current) {
+      // In-flight fill: keep pre-prepend height, track the user's current top
+      // so a follow-break landing restores where they scrolled, not the tail.
+      anchor.current = { ...anchor.current, top: el.scrollTop };
+    }
     if (!ignoreScroll.current && onFollowChange) {
       const near = isNearBottom(el);
       if (near && !follow) onFollowChange(true);
       if (!near && follow) onFollowChange(false);
     }
     if (hasOlder && !olderLoading && el.scrollTop <= 96) {
-      anchor.current = { height: el.scrollHeight, top: el.scrollTop, seq: olderSeq };
-      onNeedOlder?.();
+      kickOlder('user');
     }
   }
+
+  // New restore / session: reset the auto-page counter. Follow stays on
+  // (historyLoaded paints the live tail); a user who had scrolled away is
+  // a new session surface, so we re-pin.
+  useEffect(() => {
+    pagesAutoRef.current = 0;
+    fillPendingRef.current = false;
+    fillModeRef.current = false;
+    stalledRef.current = false;
+    inFlightRef.current = false;
+    itemCountAtRequestRef.current = 0;
+    setAutoPages(0);
+  }, [sessionId, historyEpoch]);
+
+  useEffect(() => {
+    if (!follow) fillModeRef.current = false;
+  }, [follow]);
+
+  useEffect(() => {
+    if (!olderLoading) inFlightRef.current = false;
+  }, [olderLoading]);
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+
+    const considerFill = () => {
+      const node = listRef.current;
+      if (!node || items.length === 0) return;
+      if (
+        needsViewportFill({
+          scrollHeight: node.scrollHeight,
+          clientHeight: node.clientHeight,
+          hasOlder: hasOlder === true,
+          olderLoading: olderLoading === true || inFlightRef.current,
+          pagesAutoLoaded: pagesAutoRef.current,
+          follow,
+          stalled: stalledRef.current
+        })
+      ) {
+        kickOlder('fill');
+      } else if (fillModeRef.current && !olderLoading && !inFlightRef.current) {
+        fillModeRef.current = false;
+      }
+    };
+
+    const ro = new ResizeObserver(() => {
+      requestAnimationFrame(considerFill);
+    });
+    ro.observe(el);
+    if (contentRef.current) ro.observe(contentRef.current);
+    requestAnimationFrame(considerFill);
+    return () => ro.disconnect();
+  }, [hasOlder, olderLoading, olderSeq, items.length, follow, historyEpoch, sessionId]);
 
   // Show the working indicator only when we're busy AND the agent hasn't
   // started streaming a response yet. Notices / primer cards after the
@@ -119,35 +228,49 @@ export function MessageList({
 
   return (
     <div className="messages" ref={listRef} onScroll={onScroll} data-cb-scroller="">
-      {olderLoading && <div className="history-older">Loading older messages…</div>}
-      {items.length === 0 && !busy && !loading && (
-        <div className="empty">
-          <h3>Code Build</h3>
-          <p>One chat, many agents — Claude, Grok, Codex, and any ACP CLI.</p>
-        </div>
-      )}
-      {items.map((item) => (
-        <Item
-          key={item.id}
-          item={item}
-          onAskUserAnswer={onAskUserAnswer}
-          streaming={item.id === streamingId}
-          canRestore={
-            item.kind === 'tool' && (checkpointIds?.includes(item.tool.toolCallId) ?? false)
-          }
-        />
-      ))}
-      {awaitingFirstToken && (
-        <div className="msg msg-assistant">
-          <div className="msg-role">Agent</div>
-          <div className="thinking-indicator" aria-label="Agent is working">
-            <span className="thinking-dot" />
-            <span className="thinking-dot" />
-            <span className="thinking-dot" />
-            <span className="thinking-label">working…</span>
+      <div className="messages-inner" ref={contentRef}>
+        {olderLoading && <div className="history-older">Loading older messages…</div>}
+        {hasOlder && !olderLoading && (
+          <button
+            type="button"
+            className="history-older history-older-more"
+            data-cb-older-affordance=""
+            title={viewportFillAffordanceLabel(autoPages)}
+            aria-label={viewportFillAffordanceLabel(autoPages)}
+            onClick={() => kickOlder('user')}
+          >
+            {viewportFillAffordanceLabel(autoPages)}
+          </button>
+        )}
+        {items.length === 0 && !busy && !loading && (
+          <div className="empty">
+            <h3>Code Build</h3>
+            <p>One chat, many agents — Claude, Grok, Codex, and any ACP CLI.</p>
           </div>
-        </div>
-      )}
+        )}
+        {items.map((item) => (
+          <Item
+            key={item.id}
+            item={item}
+            onAskUserAnswer={onAskUserAnswer}
+            streaming={item.id === streamingId}
+            canRestore={
+              item.kind === 'tool' && (checkpointIds?.includes(item.tool.toolCallId) ?? false)
+            }
+          />
+        ))}
+        {awaitingFirstToken && (
+          <div className="msg msg-assistant">
+            <div className="msg-role">Agent</div>
+            <div className="thinking-indicator" aria-label="Agent is working">
+              <span className="thinking-dot" />
+              <span className="thinking-dot" />
+              <span className="thinking-dot" />
+              <span className="thinking-label">working…</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
