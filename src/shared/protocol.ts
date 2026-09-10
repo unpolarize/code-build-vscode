@@ -692,6 +692,25 @@ export type HostToWebview =
         warnReason?: string;
       } | null;
     }
+  /**
+   * Prompt-cache miss segment diagnostics (Claude Cache Diagnostics class).
+   * Null clears (new session / mode off). Distinct from parked hit-meter.
+   */
+  | {
+      type: 'cacheMiss';
+      chip: {
+        available: boolean;
+        hitPct: number | null;
+        lastMissSegment: 'system' | 'tools' | 'history' | 'unknown' | null;
+        lastMissTokens: number | null;
+        cacheReadTokens: number | null;
+        cacheCreationTokens: number | null;
+        label: string;
+        warn: boolean;
+        warnReason?: string;
+        sourceDetail?: string;
+      } | null;
+    }
   /** Topic labels for a completed turn. The host's classifier fires
    * after each end-of-turn `result` event when `codeBuild.classifyTurns`
    * is enabled. `turnIndex` is the 0-based index of the user prompt

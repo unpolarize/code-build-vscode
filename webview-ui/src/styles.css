@@ -235,6 +235,26 @@ body {
   color: var(--vscode-editorWarning-foreground, #d97706);
   opacity: 1;
 }
+/* Prompt-cache miss segment — Claude Cache Diagnostics class. */
+.cache-miss-chip {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.85;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(52, 211, 153, 0.12);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.cache-miss-chip-warn {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: var(--vscode-editorWarning-foreground, #d97706);
+  opacity: 1;
+}
 /* Runtime media/pixel tool-tax — post-tool screenshot/image payloads. */
 .media-tax-chip {
   font-variant-numeric: tabular-nums;

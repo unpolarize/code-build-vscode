@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.29.0 — 2026-09-10
+
+### ACP cache-miss segment diagnostics chip (Claude Cache Diagnostics class)
+
+- New pure module `src/shared/cacheMissChip.ts`: parse Claude/Codex/generic
+  ACP usage for cache_read / cache_creation / miss; classify last miss
+  segment (`system` | `tools` | `history` | `unknown`); consecutive-request
+  detection vs first-turn cache write; pre-send prefix-mutation gate
+  (clock/nonce/dynamic header/reordered tools).
+- Header chip `cache 72% · sys +4.2k` / `cache write +40k` / `cache 98%`.
+  Amber when the miss is host-controllable (system/tools) or severe
+  (`<10%` hit and ≥1k missed tokens). Tooltip: `cache: hit% | last miss: …`.
+- Claude stream-json + Codex turn.completed + ACP session/update emit
+  `cache_miss_update` (deduped). Host also posts live `cacheMiss`.
+- Setting `codeBuild.cacheMiss.mode` (`off` | `warn`, default `warn`).
+  `off` = chip only; `warn` also notices before a host prefix mutation.
+  Pre-send notice is observational — never blocks. Degrades to hit% when
+  the vendor omitted the segment; never invents Anthropic's diagnostics
+  API for other backends.
+- Distinct from parked prompt-cache hit meter (rate only) and TTL idle chip.
+- Unit tests: `test/unit/cacheMissChip.test.ts`.
+
 ## 0.28.0 — 2026-09-09
 
 ### maxEffortLevel org/host ceiling chip (Claude 2.1.267 class)

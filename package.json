@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -582,6 +582,15 @@
           ],
           "default": "warn",
           "description": "When selected effort exceeds the maxEffortLevel ceiling: 'off' = chip only, 'warn' = allow with notice (default), 'block' = refuse setEffort and send until effort is lowered or the ceiling is raised/cleared."
+        },
+        "codeBuild.cacheMiss.mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "warn"
+          ],
+          "default": "warn",
+          "description": "Prompt-cache miss segment diagnostics (Claude Cache Diagnostics class). Header chip shows hit% and last miss segment (system/tools/history/unknown). 'off' = chip only (no pre-send prefix-mutation notices). 'warn' = chip plus a notice when the host is about to inject a clock/nonce/dynamic header before the stable prefix. Degrades to hit% when the vendor omitted the segment. Distinct from parked hit-meter."
         },
         "codeBuild.perfDebug": {
           "type": "string",

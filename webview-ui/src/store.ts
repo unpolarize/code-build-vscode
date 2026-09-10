@@ -251,6 +251,19 @@ export interface ChatState {
     warn: boolean;
     warnReason?: string;
   } | null;
+  /** Prompt-cache miss segment diagnostics (null until cache fields arrive). */
+  cacheMiss: {
+    available: boolean;
+    hitPct: number | null;
+    lastMissSegment: 'system' | 'tools' | 'history' | 'unknown' | null;
+    lastMissTokens: number | null;
+    cacheReadTokens: number | null;
+    cacheCreationTokens: number | null;
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+    sourceDetail?: string;
+  } | null;
   /** ACP session/stop capability chip — host-teardown vs agent-stop/close. */
   sessionStopCapability: {
     path: 'agent-close' | 'agent-stop' | 'host-teardown';
@@ -359,6 +372,7 @@ export const initialState: ChatState = {
   protocolPin: null,
   spendLimit: null,
   effortCeiling: null,
+  cacheMiss: null,
   sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
@@ -443,6 +457,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, teammateCompact: msg.chip };
     case 'effortCeiling':
       return { ...state, effortCeiling: msg.chip };
+    case 'cacheMiss':
+      return { ...state, cacheMiss: msg.chip };
     case 'investigateStatus':
       return {
         ...state,
@@ -918,6 +934,22 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
           ...(u.warnReason ? { warnReason: u.warnReason } : {})
         }
       };
+    case 'cache_miss_update':
+      return {
+        ...state,
+        cacheMiss: {
+          available: u.available,
+          hitPct: u.hitPct,
+          lastMissSegment: u.lastMissSegment,
+          lastMissTokens: u.lastMissTokens,
+          cacheReadTokens: u.cacheReadTokens,
+          cacheCreationTokens: u.cacheCreationTokens,
+          label: u.label,
+          warn: u.warn,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {}),
+          ...(u.sourceDetail ? { sourceDetail: u.sourceDetail } : {})
+        }
+      };
     case 'session_stop_capability_update':
       return {
         ...state,
@@ -1087,6 +1119,7 @@ function replayRecords(
           protocolPin: null,
           spendLimit: null,
           effortCeiling: null,
+          cacheMiss: null,
           sessionStopCapability: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.

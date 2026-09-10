@@ -278,6 +278,19 @@ export function Header({
         </span>
       )}
 
+      {state.cacheMiss?.available && (
+        <span
+          className={
+            state.cacheMiss.warn
+              ? 'cache-miss-chip cache-miss-chip-warn'
+              : 'cache-miss-chip'
+          }
+          title={formatCacheMissTooltip(state.cacheMiss)}
+        >
+          {state.cacheMiss.label}
+        </span>
+      )}
+
       {state.mediaToolTax && (
         <button
           type="button"
@@ -496,6 +509,42 @@ function formatSpendLimitTooltip(chip: NonNullable<ChatState['spendLimit']>): st
   }
   if (chip.warnReason) lines.push(chip.warnReason);
   lines.push('Host parity with Claude Code /usage spend-limit bar — observational only.');
+  return lines.join('\n');
+}
+
+function formatCacheMissTooltip(
+  chip: NonNullable<ChatState['cacheMiss']>
+): string {
+  const lines: string[] = [];
+  if (!chip.available) {
+    return (
+      'cache: n/a — this backend did not expose cache_read / cache_creation / miss fields. ' +
+      'Never invents Anthropic Cache Diagnostics for other vendors.'
+    );
+  }
+  const hit = chip.hitPct != null ? `${chip.hitPct}%` : 'n/a';
+  if (chip.lastMissSegment) {
+    const tok =
+      chip.lastMissTokens != null
+        ? ` (+${chip.lastMissTokens.toLocaleString()} tok)`
+        : '';
+    lines.push(`cache: ${hit} | last miss: ${chip.lastMissSegment}${tok}`);
+  } else {
+    lines.push(`cache: ${hit}`);
+  }
+  if (chip.cacheReadTokens != null) {
+    lines.push(`Cache read: ${chip.cacheReadTokens.toLocaleString()} tok`);
+  }
+  if (chip.cacheCreationTokens != null) {
+    lines.push(`Cache write: ${chip.cacheCreationTokens.toLocaleString()} tok`);
+  }
+  if (chip.sourceDetail) lines.push(chip.sourceDetail);
+  if (chip.warnReason) lines.push(chip.warnReason);
+  lines.push(
+    'Claude Cache Diagnostics class — miss segment (system/tools/history/unknown). ' +
+      'Degrades to hit% when the vendor omitted the segment. Distinct from parked hit-meter.'
+  );
+  lines.push('codeBuild.cacheMiss.mode');
   return lines.join('\n');
 }
 
