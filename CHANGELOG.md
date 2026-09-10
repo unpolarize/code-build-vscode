@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.29.1 — 2026-09-10
+
+### Viewport-fill on short `loadTail` restore
+
+- Opening / reloading a long session no longer paints only the last ~8 turns
+  in an empty pane. After `historyLoaded`, the webview auto-requests older
+  pages until the transcript overflows the scroller, `hasOlder` is false, or
+  6 pages (whichever first). Live-follow stays pinned to the tail (`behavior:
+  'auto'` while filling).
+- Hidden / `clientHeight === 0` panels do not spin requests; ResizeObserver
+  re-arms fill when the pane becomes visible. A page with no new items stops
+  the loop. Breaking follow mid-fill aborts further auto pages and does not
+  yank scroll to the tail.
+- Slim top control whenever `hasOlder`: “· · · older turns — scroll up ·”,
+  switching to “Load earlier…” after the auto-page cap; click uses the same
+  `loadOlderHistory` gate as scroll-up / MessageNav.
+- Pure helper `webview-ui/src/util/viewportFill.ts` + unit tests. Does not
+  change `REPLAY_TAIL_*` / `pageWindow` / `keepLastCompleteTurns`.
+
 ## 0.29.0 — 2026-09-10
 
 ### ACP cache-miss segment diagnostics chip (Claude Cache Diagnostics class)

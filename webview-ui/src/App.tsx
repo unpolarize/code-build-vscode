@@ -71,6 +71,7 @@ export function App() {
   const [composerSeed, setComposerSeed] = useState<string | undefined>(undefined);
   const [follow, setFollow] = useState(true);
   const [olderLoading, setOlderLoading] = useState(false);
+  const [historyEpoch, setHistoryEpoch] = useState(0);
   const initialLayout = loadComposerLayout();
   const [composerHeight, setComposerHeight] = useState(initialLayout.height);
   const [composerMax, setComposerMax] = useState(initialLayout.maximized);
@@ -276,7 +277,11 @@ export function App() {
     const handler = (e: MessageEvent) => {
       const t0 = performance.now();
       lastHostMsgAt.current = t0;
-      dispatch({ kind: 'host', msg: e.data as HostToWebview });
+      const msg = e.data as HostToWebview;
+      dispatch({ kind: 'host', msg });
+      if (msg && typeof msg === 'object' && msg.type === 'historyLoaded') {
+        setHistoryEpoch((n) => n + 1);
+      }
       const ms = performance.now() - t0;
       reduceMsBuf.current.push(ms);
       if (reduceMsBuf.current.length > 30) reduceMsBuf.current.shift();
@@ -599,6 +604,8 @@ export function App() {
         olderSeq={state.olderSeq}
         olderLoading={olderLoading}
         onNeedOlder={requestOlder}
+        sessionId={state.session?.id}
+        historyEpoch={historyEpoch}
         onAskUserAnswer={(toolCallId, answers) => {
           dispatch({ kind: 'askUserAnswered', toolCallId, answers });
           post({ type: 'askUserAnswer', toolCallId, answers });
