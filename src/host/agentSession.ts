@@ -35,6 +35,18 @@ export interface StartOpts {
    * never throw into the write path (callers guard). */
   onFsPreWrite?: (absPath: string) => void;
   /**
+   * In-flight Write atomic drain (kp: cb-in-flight-write-atomic-drain).
+   * Called with the confined path + full intended body just BEFORE
+   * `fs/write_text_file` lands, after path gates. Capture pre-image here.
+   * Must never throw into the write path (callers guard).
+   */
+  onFsWriteIntent?: (absPath: string, content: string) => void;
+  /**
+   * Called AFTER `fs/write_text_file` lands. Drops the in-flight record,
+   * or re-applies a rollback if a quota drain raced the write.
+   */
+  onFsWriteCommit?: (absPath: string) => void;
+  /**
    * Big-file Read gate (kp: cb-big-file-read-hard-block). Called after
    * path confinement + fs.stat, before the host reads file bytes for
    * `fs/read_text_file`. Return false to reject the read (agent sees an

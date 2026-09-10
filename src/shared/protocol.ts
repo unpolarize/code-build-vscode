@@ -711,6 +711,23 @@ export type HostToWebview =
         sourceDetail?: string;
       } | null;
     }
+  /**
+   * In-flight Write atomic drain chip (rate-limit / quota park).
+   * Null clears (new session / no drain this turn). Live-only — not JSONL.
+   */
+  | {
+      type: 'writeDrain';
+      chip: {
+        available: boolean;
+        label: string;
+        flushed: number;
+        rolledBack: number;
+        skipped: number;
+        paths: string[];
+        warn: boolean;
+        hint?: string;
+      } | null;
+    }
   /** Topic labels for a completed turn. The host's classifier fires
    * after each end-of-turn `result` event when `codeBuild.classifyTurns`
    * is enabled. `turnIndex` is the 0-based index of the user prompt

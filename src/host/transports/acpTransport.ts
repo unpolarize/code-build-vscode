@@ -598,7 +598,17 @@ export class AcpTransport extends BaseAgentSession {
         } catch {
           /* capture is best-effort */
         }
+        try {
+          this.startOpts?.onFsWriteIntent?.(safe, p.content);
+        } catch {
+          /* drain tracking is best-effort */
+        }
         await fs.writeFile(safe, p.content, 'utf8');
+        try {
+          this.startOpts?.onFsWriteCommit?.(safe);
+        } catch {
+          /* drain commit is best-effort */
+        }
         return null;
       }
       case 'session/request_permission':

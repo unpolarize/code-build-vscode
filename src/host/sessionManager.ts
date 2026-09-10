@@ -180,6 +180,11 @@ import {
   parseCacheMissMode,
   type CacheMissChip
 } from '../shared/cacheMissChip';
+import {
+  WriteAtomicDrainTracker,
+  type DrainFs,
+  type WriteDrainChip
+} from '../shared/writeAtomicDrain';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -188,6 +193,29 @@ import {
 } from './perf/sessionPerf';
 import * as fsSync from 'node:fs';
 import { startSpan, type Span } from './hostTrace';
+
+/** Injected into WriteAtomicDrainTracker so quota drain can flush/rollback
+ * without the tracker importing vscode. */
+const nodeDrainFs: DrainFs = {
+  readFile(p) {
+    try {
+      return fsSync.readFileSync(p, 'utf8');
+    } catch {
+      return null;
+    }
+  },
+  writeFile(p, content) {
+    fsSync.mkdirSync(path.dirname(p), { recursive: true });
+    fsSync.writeFileSync(p, content, 'utf8');
+  },
+  deleteFile(p) {
+    try {
+      fsSync.unlinkSync(p);
+    } catch {
+      /* already gone */
+    }
+  }
+};
 
 /** Last `detectAll` result so a new panel can paint before `which`×N. */
 let cachedBackends: HydrateState['backends'] = [];
@@ -365,6 +393,10 @@ export class SessionManager {
   private effortCeilingLastPosted: string | undefined;
   /** Last cache-miss chip signature posted (dedupe). */
   private cacheMissLastPosted: string | undefined;
+  /** In-flight Write/Edit drain on quota (anti half-written files). */
+  private writeDrain = new WriteAtomicDrainTracker();
+  /** Last drain chip (re-posted on webview hydrate). */
+  private writeDrainLastChip: WriteDrainChip | null = null;
   /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
   private toolReadGate?: ToolReadGate;
   /** Session id the current toolReadGate belongs to. */
@@ -1262,6 +1294,9 @@ export class SessionManager {
     if (livePause && this.resumeCoordinator.isPaused) {
       const label = resumeChipLabel(livePause);
       if (label) this.panel.post({ type: 'resumePause', pause: livePause, label });
+    }
+    if (this.writeDrainLastChip?.available) {
+      this.postWriteDrainChip(this.writeDrainLastChip);
     }
   }
 
@@ -2750,6 +2785,9 @@ export class SessionManager {
     this.postEffortCeilingChip();
     this.cacheMissLastPosted = undefined;
     this.panel.post({ type: 'cacheMiss', chip: null });
+    this.writeDrain.clear();
+    this.writeDrainLastChip = null;
+    this.panel.post({ type: 'writeDrain', chip: null });
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -4140,6 +4178,30 @@ export class SessionManager {
   }
 
   /**
+   * Post (or clear) the in-flight Write drain chip. Shown after a quota
+   * signal drained open Write/Edit calls; re-posted on webview hydrate.
+   */
+  private postWriteDrainChip(chip: WriteDrainChip | null): void {
+    const out = !chip?.available ? null : chip;
+    this.writeDrainLastChip = out;
+    this.panel.post({
+      type: 'writeDrain',
+      chip: out
+        ? {
+            available: true,
+            label: out.label,
+            flushed: out.flushed,
+            rolledBack: out.rolledBack,
+            skipped: out.skipped,
+            paths: out.paths,
+            warn: out.warn,
+            ...(out.hint ? { hint: out.hint } : {})
+          }
+        : null
+    });
+  }
+
+  /**
    * Dedupe-post the cache-miss diagnostics chip (or clear it).
    * Mode `off` still shows the chip — it only skips pre-send notices.
    * Distinct from parked hit-meter.
@@ -4546,6 +4608,9 @@ export class SessionManager {
     this.panel.post({ type: 'effortCeiling', chip: null });
     this.cacheMissLastPosted = undefined;
     this.panel.post({ type: 'cacheMiss', chip: null });
+    this.writeDrain.clear();
+    this.writeDrainLastChip = null;
+    this.panel.post({ type: 'writeDrain', chip: null });
     // Same for the Investigate lock — findings / unlock must not leak.
     this.investigateLock = undefined;
     this.investigateLockSessionId = undefined;
@@ -4561,6 +4626,8 @@ export class SessionManager {
   /** Shared fs/* bridge hooks for every AgentSession.start call site. */
   private fsBridgeHooks(): {
     onFsPreWrite: (absPath: string) => void;
+    onFsWriteIntent: (absPath: string, content: string) => void;
+    onFsWriteCommit: (absPath: string) => void;
     onFsReadCheck: (absPath: string, bytes: number) => boolean;
     onFsWriteCheck: (absPath: string) => boolean;
   } {
@@ -4572,6 +4639,13 @@ export class SessionManager {
     this.postInvestigateStatus();
     return {
       onFsPreWrite: (absPath) => this.captureFsPreWrite(absPath),
+      onFsWriteIntent: (absPath, content) => {
+        this.writeDrain.setCwd(this.meta?.cwd || this.cwd || '');
+        this.writeDrain.noteFsWriteIntent(absPath, content, nodeDrainFs);
+      },
+      onFsWriteCommit: (absPath) => {
+        this.writeDrain.commitFsWrite(absPath, nodeDrainFs);
+      },
       onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes),
       // Investigate lock first: a findings-locked deny must not consume
       // ScopeFence path budget for a write that never happens.
@@ -5010,6 +5084,8 @@ export class SessionManager {
     // tool_call_update merge + turn boundaries). Same host path for every
     // backend — claude stream-json included; no "claude has /rewind" carve-out.
     this.ensureCheckpointEngine(sessionId)?.observeUpdate(update);
+    this.writeDrain.setCwd(this.meta?.cwd || this.cwd || '');
+    this.writeDrain.observeUpdate(update, nodeDrainFs, this.meta?.cwd || this.cwd);
 
     this.watchTurnLiveness(update);
     if (
@@ -5094,6 +5170,10 @@ export class SessionManager {
 
     if (update.kind === 'error') {
       const cls = update.errorClass ?? classifyBackendError(update.message);
+      // Drain in-flight Write/Edit BEFORE parking so a 429 never leaves a
+      // truncated file (kp: cb-in-flight-write-atomic-drain-on-rate-limit-fi).
+      const drained = this.writeDrain.drain(cls, nodeDrainFs);
+      if (drained.fired) this.postWriteDrainChip(drained.chip);
       // Quota (429-class) parks the session for a SAME-backend resume;
       // everything else stays on the cross-ACP failover path (which itself
       // ignores quota — isFailoverClass — so there is no overlap).

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.30.0 — 2026-09-10
+
+### In-flight Write atomic drain on rate-limit (anti half-written code)
+
+- New pure module `src/shared/writeAtomicDrain.ts`: track open Write/Edit
+  tool calls (and ACP `fs/write_text_file` intents) with the tool-args
+  content hash + pre-image. On a classified quota (429-class) signal,
+  **flush** when disk SHA-1 matches the args hash, else **roll back** to
+  the pre-image (Write-new deletes). Never leave a truncated file.
+- Then the existing resume-after-reset park runs. Header chip
+  `drained write → paused` (amber when any path rolled back).
+- ACP writeFile racing the drain: `commitFsWrite` re-applies rollback so
+  a late land cannot resurrect a truncated body.
+- Does not invent rate-limit signals — hooks `classifyBackendError` quota
+  already used by resume-after-reset. Distinct from soft-stop wrap-up
+  primer and walkaway quota co-stop.
+- Unit tests: `test/unit/writeAtomicDrain.test.ts` (flush + rollback with
+  a fake ACP backend).
+
 ## 0.29.1 — 2026-09-10
 
 ### Viewport-fill on short `loadTail` restore

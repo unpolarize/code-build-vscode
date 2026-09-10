@@ -291,6 +291,19 @@ export function Header({
         </span>
       )}
 
+      {state.writeDrain?.available && (
+        <span
+          className={
+            state.writeDrain.warn
+              ? 'write-drain-chip write-drain-chip-warn'
+              : 'write-drain-chip'
+          }
+          title={formatWriteDrainTooltip(state.writeDrain)}
+        >
+          {state.writeDrain.label}
+        </span>
+      )}
+
       {state.mediaToolTax && (
         <button
           type="button"
@@ -545,6 +558,24 @@ function formatCacheMissTooltip(
       'Degrades to hit% when the vendor omitted the segment. Distinct from parked hit-meter.'
   );
   lines.push('codeBuild.cacheMiss.mode');
+  return lines.join('\n');
+}
+
+function formatWriteDrainTooltip(
+  chip: NonNullable<ChatState['writeDrain']>
+): string {
+  const lines: string[] = [chip.label];
+  if (chip.hint) lines.push(chip.hint);
+  if (chip.flushed) lines.push(`Flushed complete writes: ${chip.flushed}`);
+  if (chip.rolledBack) lines.push(`Rolled back truncated writes: ${chip.rolledBack}`);
+  if (chip.skipped) lines.push(`Skipped (no pre-image): ${chip.skipped}`);
+  if (chip.paths.length) {
+    const shown = chip.paths.slice(0, 6);
+    lines.push(`Paths: ${shown.join(', ')}${chip.paths.length > 6 ? '…' : ''}`);
+  }
+  lines.push(
+    'Host invariant: on a quota/rate-limit signal, in-flight Write/Edit either flushes to a complete file or rolls back to the pre-image — never a truncated file. Then the session parks.'
+  );
   return lines.join('\n');
 }
 

@@ -264,6 +264,17 @@ export interface ChatState {
     warnReason?: string;
     sourceDetail?: string;
   } | null;
+  /** In-flight Write atomic drain chip (quota park). Live-only. */
+  writeDrain: {
+    available: boolean;
+    label: string;
+    flushed: number;
+    rolledBack: number;
+    skipped: number;
+    paths: string[];
+    warn: boolean;
+    hint?: string;
+  } | null;
   /** ACP session/stop capability chip — host-teardown vs agent-stop/close. */
   sessionStopCapability: {
     path: 'agent-close' | 'agent-stop' | 'host-teardown';
@@ -373,6 +384,7 @@ export const initialState: ChatState = {
   spendLimit: null,
   effortCeiling: null,
   cacheMiss: null,
+  writeDrain: null,
   sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
@@ -437,6 +449,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         // Host re-posts a live park after hydrate (same contract as
         // failoverOffer) — reset here so a closed park never lingers.
         resumePause: null,
+        writeDrain: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -459,6 +472,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, effortCeiling: msg.chip };
     case 'cacheMiss':
       return { ...state, cacheMiss: msg.chip };
+    case 'writeDrain':
+      return { ...state, writeDrain: msg.chip };
     case 'investigateStatus':
       return {
         ...state,
@@ -1120,6 +1135,7 @@ function replayRecords(
           spendLimit: null,
           effortCeiling: null,
           cacheMiss: null,
+          writeDrain: null,
           sessionStopCapability: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.
