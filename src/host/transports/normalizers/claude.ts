@@ -5,19 +5,44 @@ import {
   readFiveHourResetsAt,
   type SpendLimitStatusFields
 } from '../../../shared/spendLimitChip';
+import {
+  evaluateCacheMissChip,
+  parseCacheUsage,
+  toCacheMissUpdate,
+  type CacheMissSnapshot,
+  type CacheUsageFields
+} from '../../../shared/cacheMissChip';
 
 /**
  * Normalizes Claude Code `--output-format stream-json` NDJSON lines into ACP-shaped
  * SessionUpdates. Each line is a complete JSON object with a `type` discriminator.
  * See Claude Code headless docs for the message schema.
  */
+
+/** Claude stream-json usage — cache_read / cache_creation + optional diagnostics. */
+export interface ClaudeUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_missed_input_tokens?: number;
+  cache_creation?: unknown;
+  cache_diagnostics?: unknown;
+  cacheDiagnostics?: unknown;
+  system_changed?: unknown;
+  tools_changed?: unknown;
+  history_changed?: unknown;
+  miss_segment?: unknown;
+  cache_miss_reason?: unknown;
+}
+
 export interface ClaudeMessage {
   type: string;
   // assistant/user messages
   message?: {
     role?: string;
     content?: Array<Record<string, unknown>>;
-    usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
+    usage?: ClaudeUsage;
   };
   // result message
   subtype?: string;
@@ -25,7 +50,7 @@ export interface ClaudeMessage {
   error?: string;
   result?: string;
   total_cost_usd?: number;
-  usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number };
+  usage?: ClaudeUsage;
   // system init
   session_id?: string;
   /** Claude 2.1.251+ statusline / gateway fields when present on a line. */
@@ -38,6 +63,10 @@ export class ClaudeNormalizer {
   sessionId?: string;
   /** Last spend-limit label emitted — skip duplicate chips on status pings. */
   private lastSpendLimitLabel?: string;
+  /** Last cache-miss chip signature — skip duplicate JSONL rows. */
+  private lastCacheMissLabel?: string;
+  /** Prior usage snapshot so consecutive-request misses classify vs first write. */
+  private lastCacheSnap?: CacheMissSnapshot | null;
 
   parseLine(obj: ClaudeMessage): SessionUpdate[] {
     switch (obj.type) {
@@ -92,10 +121,13 @@ export class ClaudeNormalizer {
               inputTokens: obj.usage?.input_tokens,
               outputTokens: obj.usage?.output_tokens,
               cacheReadTokens: obj.usage?.cache_read_input_tokens,
+              cacheCreationTokens: obj.usage?.cache_creation_input_tokens,
               costUsd: obj.total_cost_usd
             }
           }
         ];
+        const cacheMiss = this.maybeCacheMissUpdate(obj.usage, true);
+        if (cacheMiss) updates.push(cacheMiss);
         const errorLike = obj.is_error === true || /error/i.test(obj.subtype ?? '');
         if (errorLike) {
           const reason = (obj.error || obj.result || obj.subtype || 'unknown').toString();
@@ -110,8 +142,12 @@ export class ClaudeNormalizer {
       default: {
         // Some Claude builds may attach rate_limits to non-system lines
         // (status / usage-class). Opportunistically surface the chip.
+        const extra: SessionUpdate[] = [];
         const spend = this.maybeSpendLimitUpdate(obj);
-        return spend ? [spend] : [];
+        if (spend) extra.push(spend);
+        const cacheMiss = this.maybeCacheMissUpdate(obj.usage ?? obj, false);
+        if (cacheMiss) extra.push(cacheMiss);
+        return extra;
       }
     }
   }
@@ -187,11 +223,38 @@ export class ClaudeNormalizer {
         usage: {
           inputTokens: obj.message.usage.input_tokens,
           outputTokens: obj.message.usage.output_tokens,
-          cacheReadTokens: obj.message.usage.cache_read_input_tokens
+          cacheReadTokens: obj.message.usage.cache_read_input_tokens,
+          cacheCreationTokens: obj.message.usage.cache_creation_input_tokens
         }
       });
+      const cacheMiss = this.maybeCacheMissUpdate(obj.message.usage, false);
+      if (cacheMiss) out.push(cacheMiss);
     }
     return out;
+  }
+
+  /**
+   * Emit cache_miss_update when usage carries cache fields and the label
+   * changed. Commit the snapshot only on end-of-turn `result` so mid-turn
+   * assistant usage does not look like a consecutive miss against itself.
+   */
+  private maybeCacheMissUpdate(
+    raw: unknown,
+    commitPrevious: boolean
+  ): SessionUpdate | undefined {
+    const fields = raw as CacheUsageFields | null | undefined;
+    const snap = parseCacheUsage(fields);
+    if (!snap) return undefined;
+    const chip = evaluateCacheMissChip({
+      usage: fields,
+      previous: this.lastCacheSnap
+    });
+    if (commitPrevious) this.lastCacheSnap = snap;
+    if (!chip.available) return undefined;
+    const dedupeKey = `${chip.label}|${chip.lastMissSegment ?? ''}|${chip.warn ? 1 : 0}`;
+    if (dedupeKey === this.lastCacheMissLabel) return undefined;
+    this.lastCacheMissLabel = dedupeKey;
+    return toCacheMissUpdate(chip);
   }
 
   private fromUser(obj: ClaudeMessage): SessionUpdate[] {

@@ -304,7 +304,8 @@ test('fixture replay: real 0.142.4 exec --json stream — final answer lands aft
     'tool_call',
     'tool_call_update',
     'agent_message_chunk',
-    'result'
+    'result',
+    'cache_miss_update'
   ]);
   assert.equal(answer, 'PONG');
 });

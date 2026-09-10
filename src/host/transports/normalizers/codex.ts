@@ -1,5 +1,12 @@
 import type { ContentBlock, SessionUpdate, ToolCall } from '../../../shared/acpTypes';
 import { classifyBackendError } from '../../../shared/backendErrorClass';
+import {
+  evaluateCacheMissChip,
+  parseCacheUsage,
+  toCacheMissUpdate,
+  type CacheMissSnapshot,
+  type CacheUsageFields
+} from '../../../shared/cacheMissChip';
 
 /**
  * Normalizes OpenAI Codex `codex exec --json` NDJSON events into ACP-shaped
@@ -47,6 +54,8 @@ export class CodexNormalizer {
   private emittedAssistant = new Set<string>();
   /** Tool ids whose opening `tool_call` has been emitted (see openCloseTool). */
   private openedTools = new Set<string>();
+  private lastCacheMissLabel?: string;
+  private lastCacheSnap?: CacheMissSnapshot | null;
 
   parseLine(ev: CodexEvent): SessionUpdate[] {
     switch (ev.type) {
@@ -69,8 +78,8 @@ export class CodexNormalizer {
         this.emittedAssistant.clear();
         this.openedTools.clear();
         return [];
-      case 'turn.completed':
-        return [
+      case 'turn.completed': {
+        const out: SessionUpdate[] = [
           {
             kind: 'result',
             stopReason: 'end_turn',
@@ -81,6 +90,10 @@ export class CodexNormalizer {
             }
           }
         ];
+        const cacheMiss = this.maybeCacheMissUpdate(ev.usage);
+        if (cacheMiss) out.push(cacheMiss);
+        return out;
+      }
       case 'turn.failed':
         return [
           {
@@ -206,6 +219,22 @@ export class CodexNormalizer {
     this.openedTools.add(id); // duplicate completed for the same id must not re-open a card
     if (opened) return [close];
     return [open, close];
+  }
+
+  private maybeCacheMissUpdate(raw: unknown): SessionUpdate | undefined {
+    const fields = raw as CacheUsageFields | null | undefined;
+    const snap = parseCacheUsage(fields);
+    if (!snap) return undefined;
+    const chip = evaluateCacheMissChip({
+      usage: fields,
+      previous: this.lastCacheSnap
+    });
+    this.lastCacheSnap = snap;
+    if (!chip.available) return undefined;
+    const dedupeKey = `${chip.label}|${chip.lastMissSegment ?? ''}|${chip.warn ? 1 : 0}`;
+    if (dedupeKey === this.lastCacheMissLabel) return undefined;
+    this.lastCacheMissLabel = dedupeKey;
+    return toCacheMissUpdate(chip);
   }
 }
 

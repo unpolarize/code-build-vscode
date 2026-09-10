@@ -168,6 +168,22 @@ export type SessionUpdate =
       warn: boolean;
       warnReason?: string;
     }
+  /** Prompt-cache miss segment diagnostics (Claude Cache Diagnostics class).
+   * `available:false` → `cache n/a`; degrade to hit% when the vendor omitted
+   * the miss segment. Host may also post via HostToWebview.cacheMiss. */
+  | {
+      kind: 'cache_miss_update';
+      available: boolean;
+      hitPct: number | null;
+      lastMissSegment: 'system' | 'tools' | 'history' | 'unknown' | null;
+      lastMissTokens: number | null;
+      cacheReadTokens: number | null;
+      cacheCreationTokens: number | null;
+      label: string;
+      warn: boolean;
+      warnReason?: string;
+      sourceDetail?: string;
+    }
   /** Native resume failed and the transport fell back to a fresh
    * session (e.g. Grok ACP session/load rejected because the on-disk
    * session was deleted or the grok version regressed). The host uses

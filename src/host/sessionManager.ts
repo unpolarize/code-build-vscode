@@ -175,6 +175,11 @@ import {
   type EffortCeilingSourceHit,
   type EffortLevel
 } from '../shared/effortCeilingChip';
+import {
+  checkPrefixMutation,
+  parseCacheMissMode,
+  type CacheMissChip
+} from '../shared/cacheMissChip';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -358,6 +363,8 @@ export class SessionManager {
   private agentEffortCeiling: EffortCeilingSourceHit | null = null;
   /** Last effort-ceiling chip signature posted (dedupe). */
   private effortCeilingLastPosted: string | undefined;
+  /** Last cache-miss chip signature posted (dedupe). */
+  private cacheMissLastPosted: string | undefined;
   /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
   private toolReadGate?: ToolReadGate;
   /** Session id the current toolReadGate belongs to. */
@@ -614,6 +621,9 @@ export class SessionManager {
           this.panel.post({ type: 'busy', busy: false });
           break;
         }
+        // Prompt-cache prefix-mutation notice (Claude Cache Diagnostics class).
+        // Observational — never blocks send.
+        this.gateCacheMissPrefix();
         // Arm the stall watchdog for this turn (D1). The silence clock starts
         // now, at submission, so a turn that produces NO output at all (the
         // claude `error_during_execution`/0-token stall) is still caught.
@@ -2738,6 +2748,8 @@ export class SessionManager {
     // Host maxEffortLevel chip (agent-reported may arrive via initialize later).
     this.effortCeilingLastPosted = undefined;
     this.postEffortCeilingChip();
+    this.cacheMissLastPosted = undefined;
+    this.panel.post({ type: 'cacheMiss', chip: null });
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -4127,6 +4139,66 @@ export class SessionManager {
     return 'warn';
   }
 
+  /**
+   * Dedupe-post the cache-miss diagnostics chip (or clear it).
+   * Mode `off` still shows the chip — it only skips pre-send notices.
+   * Distinct from parked hit-meter.
+   */
+  private postCacheMissChip(chip: CacheMissChip | null): void {
+    const out = !chip?.available ? null : chip;
+    const sig = out
+      ? `${out.label}|${out.warn ? 1 : 0}|${out.lastMissSegment ?? ''}|${out.lastMissTokens ?? ''}`
+      : 'null';
+    if (sig === this.cacheMissLastPosted) return;
+    this.cacheMissLastPosted = sig;
+    this.panel.post({
+      type: 'cacheMiss',
+      chip: out
+        ? {
+            available: true,
+            hitPct: out.hitPct,
+            lastMissSegment: out.lastMissSegment,
+            lastMissTokens: out.lastMissTokens,
+            cacheReadTokens: out.cacheReadTokens,
+            cacheCreationTokens: out.cacheCreationTokens,
+            label: out.label,
+            warn: out.warn,
+            ...(out.warnReason ? { warnReason: out.warnReason } : {}),
+            ...(out.sourceDetail ? { sourceDetail: out.sourceDetail } : {})
+          }
+        : null
+    });
+  }
+
+  /**
+   * Pre-send prefix-mutation notice. Observational — never blocks.
+   * CB does not currently inject a clock/nonce into the system prefix;
+   * the gate is ready for those flags when a caller sets them.
+   */
+  private gateCacheMissPrefix(): void {
+    const mode = parseCacheMissMode(this.config.get<string>('cacheMiss.mode', 'warn'));
+    const gate = checkPrefixMutation({
+      mutation: {
+        // Prefer-DOM / primer are user-message prepends (history), not
+        // system-prefix mutations. Do not flag them as cache-busting.
+        injectsClock: false,
+        injectsNonce: false,
+        dynamicHeaderBeforeStablePrefix: false,
+        toolsReordered: false,
+        toolsAdded: false
+      },
+      mode
+    });
+    if (gate.action !== 'warn' || !gate.message) return;
+    this.panel.post({
+      type: 'notice',
+      key: 'cache-miss-prefix',
+      text: `⚠️ Prompt-cache prefix warning — ${gate.message}`,
+      detail:
+        'Claude Cache Diagnostics class. Distinct from parked hit-meter. ' +
+        'codeBuild.cacheMiss.mode'
+    });
+  }
 
   /**
    * Queue a session to resume once the webview signals 'ready'. Used when opening
@@ -4472,6 +4544,8 @@ export class SessionManager {
     this.agentEffortCeiling = null;
     this.effortCeilingLastPosted = undefined;
     this.panel.post({ type: 'effortCeiling', chip: null });
+    this.cacheMissLastPosted = undefined;
+    this.panel.post({ type: 'cacheMiss', chip: null });
     // Same for the Investigate lock — findings / unlock must not leak.
     this.investigateLock = undefined;
     this.investigateLockSessionId = undefined;
@@ -4973,6 +5047,21 @@ export class SessionManager {
       this.lastInputTokens = update.usage.inputTokens;
     } else if (update.kind === 'result' && typeof update.usage?.inputTokens === 'number') {
       this.lastInputTokens = update.usage.inputTokens;
+    }
+    if (update.kind === 'cache_miss_update') {
+      this.postCacheMissChip({
+        available: update.available,
+        hitPct: update.hitPct,
+        lastMissSegment: update.lastMissSegment,
+        lastMissTokens: update.lastMissTokens,
+        cacheReadTokens: update.cacheReadTokens,
+        cacheCreationTokens: update.cacheCreationTokens,
+        inputTokens: null,
+        label: update.label,
+        warn: update.warn,
+        ...(update.warnReason ? { warnReason: update.warnReason } : {}),
+        ...(update.sourceDetail ? { sourceDetail: update.sourceDetail } : {})
+      });
     }
 
     const immediate =

@@ -44,12 +44,28 @@ import {
   type EffortCeilingFields
 } from '../../shared/effortCeilingChip';
 import {
+  evaluateCacheMissChip,
+  parseCacheUsage,
+  toCacheMissUpdate,
+  type CacheMissSnapshot,
+  type CacheUsageFields
+} from '../../shared/cacheMissChip';
+import {
   decideSessionStopPath,
   hostKillAgentProcess,
   type SessionStopDecision
 } from '../../shared/sessionStopCapability';
 
 export type { AcpMcpServer };
+
+function updateHasCacheUsage(update: Record<string, unknown>): boolean {
+  if (parseCacheUsage(update as CacheUsageFields)) return true;
+  const usage = update.usage ?? update._meta;
+  if (usage && typeof usage === 'object') {
+    return parseCacheUsage(usage as CacheUsageFields) != null;
+  }
+  return false;
+}
 
 function updateHasRateLimits(update: Record<string, unknown>): boolean {
   if (update.rate_limits != null || update.rateLimits != null) return true;
@@ -427,12 +443,15 @@ export class AcpTransport extends BaseAgentSession {
         // Only re-evaluate when the update actually carries rate_limits —
         // a bare agent_message_chunk must not wipe a prior spend chip to n/a.
         if (updateHasRateLimits(p.update)) this.emitSpendLimit(p.update);
+        if (updateHasCacheUsage(p.update)) this.emitCacheMiss(p.update);
       }
     }
   }
 
   private lastSpendLimitLabel?: string;
   private lastEffortCeilingLabel?: string;
+  private lastCacheMissLabel?: string;
+  private lastCacheSnap?: CacheMissSnapshot | null;
 
   private emitSpendLimit(status: unknown): void {
     const shaped =
@@ -455,6 +474,22 @@ export class AcpTransport extends BaseAgentSession {
       warn: chip.warn,
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})
     });
+  }
+
+  private emitCacheMiss(raw: unknown): void {
+    const fields = raw as CacheUsageFields | null;
+    const snap = parseCacheUsage(fields);
+    if (!snap) return;
+    const chip = evaluateCacheMissChip({
+      usage: fields,
+      previous: this.lastCacheSnap
+    });
+    this.lastCacheSnap = snap;
+    if (!chip.available) return;
+    const dedupeKey = `${chip.label}|${chip.lastMissSegment ?? ''}|${chip.warn ? 1 : 0}`;
+    if (dedupeKey === this.lastCacheMissLabel) return;
+    this.lastCacheMissLabel = dedupeKey;
+    this.emit(toCacheMissUpdate(chip));
   }
 
   /** Emit effort ceiling when initialize advertises maxEffortLevel / recommended. */
