@@ -8,6 +8,8 @@ import {
   writeFileAtomic,
   keepLastCompleteTurns,
   hasVisibleReplayRecords,
+  REPLAY_TAIL_MAX_TURNS,
+  REPLAY_ALL_MAX_TURNS,
   type OffsetRec
 } from '../../src/host/persistence/store';
 import {
@@ -630,6 +632,32 @@ test('compact divider at a page edge appears on exactly one of two adjacent page
   assert.ok(older.records.some((r) => (r as { text?: string }).text === 'pre-5'));
   const union = [...older.records, ...tail.records];
   assert.equal(union.filter((r) => r.type === 'compact').length, 1);
+});
+
+test('loadBefore all-page returns more complete turns than first-paint tail', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession({ ...meta, hasContent: true });
+  for (let i = 0; i < 30; i++) {
+    store.appendUserText('sess-1', `u-${i}`);
+    store.appendUpdate('sess-1', {
+      kind: 'agent_message_chunk',
+      content: { type: 'text', text: `a-${i}` }
+    });
+  }
+  const tail = store.loadTail('sess-1');
+  const tailUsers = tail.records.filter((r) => r.type === 'user').length;
+  assert.equal(tailUsers, REPLAY_TAIL_MAX_TURNS);
+  assert.ok(tail.olderFromByte > 0);
+  const older = store.loadBefore('sess-1', tail.olderFromByte, {
+    maxTurns: REPLAY_ALL_MAX_TURNS
+  });
+  const olderUsers = older.records.filter((r) => r.type === 'user').length;
+  assert.ok(
+    olderUsers > REPLAY_TAIL_MAX_TURNS,
+    `load-all page should exceed first-paint (${olderUsers} vs ${REPLAY_TAIL_MAX_TURNS})`
+  );
+  assert.ok(olderUsers <= REPLAY_ALL_MAX_TURNS);
 });
 
 test('loadTail starts on a user turn even when the byte window cuts a prior reply', () => {

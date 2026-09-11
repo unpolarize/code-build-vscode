@@ -266,11 +266,11 @@ export function App() {
     setOlderLoading(false);
   }, [state.olderSeq, state.hasOlder]);
 
-  /** Scroll-up and the ↑ navigator share one request path for older pages. */
-  function requestOlder() {
+  /** Scroll-up, ↑ navigator, Load earlier, and Load entire conversation. */
+  function requestOlder(mode: 'page' | 'all' = 'page') {
     if (!state.hasOlder || olderLoading) return;
     setOlderLoading(true);
-    post({ type: 'loadOlderHistory' });
+    post({ type: 'loadOlderHistory', all: mode === 'all' });
   }
 
   useEffect(() => {

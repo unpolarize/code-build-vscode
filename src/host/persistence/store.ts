@@ -13,6 +13,12 @@ export const REPLAY_TURN_BYTES_CAP = 8 * 1024 * 1024;
 export const REPLAY_TAIL_MAX_RECORDS = 200;
 /** Last complete user turns on first paint / each older page. */
 export const REPLAY_TAIL_MAX_TURNS = 8;
+/** Explicit "Load entire conversation" pages — larger than first-paint so a
+ * long restore does not take one round-trip per 8 turns. Still bounded so a
+ * 200 MB JSONL cannot land in a single postMessage. */
+export const REPLAY_ALL_MAX_TURNS = 50;
+export const REPLAY_ALL_MAX_RECORDS = 400;
+export const REPLAY_ALL_MAX_BYTES = REPLAY_TAIL_BYTES_CAP;
 
 export type OffsetRec = { rec: { type: string; [k: string]: unknown }; start: number };
 

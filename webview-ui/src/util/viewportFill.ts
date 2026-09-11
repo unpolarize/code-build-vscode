@@ -56,3 +56,19 @@ export function viewportFillAffordanceLabel(
 export function shouldPinFillToTail(fillPending: boolean, follow: boolean): boolean {
   return fillPending && follow;
 }
+
+/** User clicked "Load entire conversation": keep requesting older pages
+ * until the file is exhausted or a page lands empty. Ignores the fill cap
+ * and follow-break (scroll-away must not abort a drain they asked for). */
+export function shouldContinueLoadAll(input: {
+  loadAll: boolean;
+  hasOlder: boolean;
+  olderLoading: boolean;
+  stalled: boolean;
+}): boolean {
+  if (!input.loadAll) return false;
+  if (!input.hasOlder) return false;
+  if (input.olderLoading) return false;
+  if (input.stalled) return false;
+  return true;
+}

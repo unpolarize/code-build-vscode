@@ -71,7 +71,13 @@ import type { AgentSession } from './agentSession';
 import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
-import { SessionStore, hasVisibleReplayRecords } from './persistence/store';
+import {
+  SessionStore,
+  hasVisibleReplayRecords,
+  REPLAY_ALL_MAX_BYTES,
+  REPLAY_ALL_MAX_RECORDS,
+  REPLAY_ALL_MAX_TURNS
+} from './persistence/store';
 import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
 import { daemonAppend, daemonCreate, daemonHello, daemonPatchMeta } from './daemonClient';
 import { readOsClipboardImage } from './clipboardImage';
@@ -530,7 +536,7 @@ export class SessionManager {
         this.openSpan = undefined;
         break;
       case 'loadOlderHistory':
-        this.loadOlderHistory();
+        this.loadOlderHistory(msg.all === true);
         break;
       case 'getFileSuggestions': {
         const suggestions = await this.getFileSuggestions(msg.query);
@@ -5936,8 +5942,10 @@ export class SessionManager {
     return { records: local.records, olderFromByte: local.olderFromByte };
   }
 
-  /** Scroll-up: one JSONL window before the records already in the webview. */
-  private loadOlderHistory(): void {
+  /** Scroll-up / Load earlier: one JSONL window before the records already
+   * in the webview. `all` uses a larger page so "Load entire conversation"
+   * can drain remaining history without one 8-turn hop per click. */
+  private loadOlderHistory(all = false): void {
     const id = this.meta?.id;
     if (!id || this.historyOlderBusy) return;
     if (this.historyOlderFrom <= 0) {
@@ -5951,7 +5959,17 @@ export class SessionManager {
     }
     this.historyOlderBusy = true;
     try {
-      const page = this.store.loadBefore(id, this.historyOlderFrom);
+      const page = this.store.loadBefore(
+        id,
+        this.historyOlderFrom,
+        all
+          ? {
+              maxTurns: REPLAY_ALL_MAX_TURNS,
+              maxRecords: REPLAY_ALL_MAX_RECORDS,
+              maxBytes: REPLAY_ALL_MAX_BYTES
+            }
+          : undefined
+      );
       this.historyOlderFrom = page.olderFromByte;
       this.panel.post({
         type: 'historyOlder',

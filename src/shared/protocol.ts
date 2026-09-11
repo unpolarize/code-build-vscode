@@ -339,8 +339,10 @@ export type WebviewToHost =
   | { type: 'sttStop' }
   /** Webview finished applying a historyBatch (backpressure). */
   | { type: 'historyBatchAck' }
-  /** Scroll-up: request the JSONL window before the current tail. */
-  | { type: 'loadOlderHistory' }
+  /** Scroll-up: request the JSONL window before the current tail.
+   * `all: true` uses a larger page (Load entire conversation loops this
+   * until hasOlder is false). First paint still uses the small tail. */
+  | { type: 'loadOlderHistory'; all?: boolean }
   /**
    * One-click Prefer DOM/CLI from the media-tax pause notice or header chip.
    * Host arms a session-sticky prompt hint (advisory — never rewrites tools).

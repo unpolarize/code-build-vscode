@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.29.2 — 2026-09-10
+
+### Load entire conversation after tail restore
+
+- Reloading a long chat still first-paints the last ~8 turns (and auto-fills
+  the viewport, 0.29.1), but the top of the transcript now has **Load entire
+  conversation** next to Load earlier. Clicking it pages remaining JSONL
+  until nothing is left — not one 8-turn hop per click.
+- Host `loadOlderHistory { all: true }` uses a larger page (50 turns / 400
+  records / 2 MB) so a long restore does not take one round-trip per 8 turns
+  and still cannot dump a 200 MB file in a single `postMessage`.
+- Installed Code Build was still **0.23.2**, so 0.29.1's fill + Load earlier
+  never reached this window. This build ships both. (kp: tasks/cb-window-reload-shows-only-last-8-turns-and-has)
+
 ## 0.29.1 — 2026-09-10
 
 ### Viewport-fill on short `loadTail` restore

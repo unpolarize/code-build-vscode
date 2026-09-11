@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   needsViewportFill,
+  shouldContinueLoadAll,
   shouldPinFillToTail,
   viewportFillAffordanceLabel,
   VIEWPORT_FILL_MARGIN_PX,
@@ -112,5 +113,35 @@ describe('shouldPinFillToTail', () => {
     assert.equal(shouldPinFillToTail(true, true), true);
     assert.equal(shouldPinFillToTail(true, false), false);
     assert.equal(shouldPinFillToTail(false, true), false);
+  });
+});
+
+describe('shouldContinueLoadAll', () => {
+  const ALL = { loadAll: true, hasOlder: true, olderLoading: false, stalled: false };
+
+  it('keeps paging while load-all is on and older remains', () => {
+    assert.equal(shouldContinueLoadAll(ALL), true);
+  });
+
+  it('stops when the file is exhausted', () => {
+    assert.equal(shouldContinueLoadAll({ ...ALL, hasOlder: false }), false);
+  });
+
+  it('waits for the in-flight page', () => {
+    assert.equal(shouldContinueLoadAll({ ...ALL, olderLoading: true }), false);
+  });
+
+  it('stops on an empty page even if hasOlder stayed true', () => {
+    assert.equal(shouldContinueLoadAll({ ...ALL, stalled: true }), false);
+  });
+
+  it('does nothing unless the user asked for load-all', () => {
+    assert.equal(shouldContinueLoadAll({ ...ALL, loadAll: false }), false);
+  });
+
+  it('does not honor the viewport-fill page cap (load-all drains the file)', () => {
+    // The helper has no pagesAutoLoaded on purpose — a 200-turn transcript
+    // must not stop after 6 fill pages when the user clicked Load entire.
+    assert.equal(shouldContinueLoadAll(ALL), true);
   });
 });

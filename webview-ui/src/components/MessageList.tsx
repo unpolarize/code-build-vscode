@@ -9,6 +9,7 @@ import { formatRelative, formatHover } from '../util/time';
 import { isNearBottom } from '../util/composerLayout';
 import {
   needsViewportFill,
+  shouldContinueLoadAll,
   shouldPinFillToTail,
   viewportFillAffordanceLabel
 } from '../util/viewportFill';
@@ -40,7 +41,7 @@ interface Props {
   hasOlder?: boolean;
   olderSeq?: number;
   olderLoading?: boolean;
-  onNeedOlder?: () => void;
+  onNeedOlder?: (mode?: 'page' | 'all') => void;
   /** Active session id — fill page counter resets on switch. */
   sessionId?: string;
   /** Bumps on each `historyLoaded` so a same-session restore also resets fill. */
@@ -73,7 +74,9 @@ export function MessageList({
   const stalledRef = useRef(false);
   const inFlightRef = useRef(false);
   const itemCountAtRequestRef = useRef(0);
+  const loadAllRef = useRef(false);
   const [autoPages, setAutoPages] = useState(0);
+  const [loadAll, setLoadAll] = useState(false);
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
@@ -126,7 +129,7 @@ export function MessageList({
     anchor.current.seq = olderSeq;
   }, [olderSeq, follow, items.length]);
 
-  function kickOlder(source: 'fill' | 'user') {
+  function kickOlder(source: 'fill' | 'user' | 'all') {
     if (inFlightRef.current || olderLoading || !hasOlder) return;
     const el = listRef.current;
     if (el) {
@@ -139,11 +142,18 @@ export function MessageList({
       pagesAutoRef.current += 1;
       itemCountAtRequestRef.current = items.length;
       setAutoPages(pagesAutoRef.current);
+    } else if (source === 'all') {
+      loadAllRef.current = true;
+      fillPendingRef.current = true;
+      fillModeRef.current = follow;
+      itemCountAtRequestRef.current = items.length;
     } else {
+      loadAllRef.current = false;
+      setLoadAll(false);
       fillPendingRef.current = false;
       fillModeRef.current = false;
     }
-    onNeedOlder?.();
+    onNeedOlder?.(source === 'all' ? 'all' : 'page');
   }
 
   function onScroll() {
@@ -174,7 +184,9 @@ export function MessageList({
     stalledRef.current = false;
     inFlightRef.current = false;
     itemCountAtRequestRef.current = 0;
+    loadAllRef.current = false;
     setAutoPages(0);
+    setLoadAll(false);
   }, [sessionId, historyEpoch]);
 
   useEffect(() => {
@@ -192,6 +204,7 @@ export function MessageList({
     const considerFill = () => {
       const node = listRef.current;
       if (!node || items.length === 0) return;
+      if (loadAllRef.current) return;
       if (
         needsViewportFill({
           scrollHeight: node.scrollHeight,
@@ -218,6 +231,24 @@ export function MessageList({
     return () => ro.disconnect();
   }, [hasOlder, olderLoading, olderSeq, items.length, follow, historyEpoch, sessionId]);
 
+  useEffect(() => {
+    if (
+      !shouldContinueLoadAll({
+        loadAll: loadAllRef.current,
+        hasOlder: hasOlder === true,
+        olderLoading: olderLoading === true || inFlightRef.current,
+        stalled: stalledRef.current
+      })
+    ) {
+      if (loadAllRef.current && (!hasOlder || stalledRef.current)) {
+        loadAllRef.current = false;
+        setLoadAll(false);
+      }
+      return;
+    }
+    kickOlder('all');
+  }, [hasOlder, olderLoading, olderSeq, items.length]);
+
   // Show the working indicator only when we're busy AND the agent hasn't
   // started streaming a response yet. Notices / primer cards after the
   // You-bubble are skipped so idle-reconnect chrome cannot hide the pill.
@@ -229,18 +260,37 @@ export function MessageList({
   return (
     <div className="messages" ref={listRef} onScroll={onScroll} data-cb-scroller="">
       <div className="messages-inner" ref={contentRef}>
-        {olderLoading && <div className="history-older">Loading older messages…</div>}
+        {olderLoading && (
+          <div className="history-older">
+            {loadAll ? 'Loading entire conversation…' : 'Loading older messages…'}
+          </div>
+        )}
         {hasOlder && !olderLoading && (
-          <button
-            type="button"
-            className="history-older history-older-more"
-            data-cb-older-affordance=""
-            title={viewportFillAffordanceLabel(autoPages)}
-            aria-label={viewportFillAffordanceLabel(autoPages)}
-            onClick={() => kickOlder('user')}
-          >
-            {viewportFillAffordanceLabel(autoPages)}
-          </button>
+          <div className="history-older-bar">
+            <button
+              type="button"
+              className="history-older-more"
+              data-cb-older-affordance=""
+              title={viewportFillAffordanceLabel(autoPages)}
+              aria-label={viewportFillAffordanceLabel(autoPages)}
+              onClick={() => kickOlder('user')}
+            >
+              {viewportFillAffordanceLabel(autoPages)}
+            </button>
+            <button
+              type="button"
+              className="history-older-more history-older-all"
+              data-cb-older-all=""
+              title="Load the rest of this transcript from disk, one page at a time"
+              aria-label="Load entire conversation"
+              onClick={() => {
+                setLoadAll(true);
+                kickOlder('all');
+              }}
+            >
+              Load entire conversation
+            </button>
+          </div>
         )}
         {items.length === 0 && !busy && !loading && (
           <div className="empty">
