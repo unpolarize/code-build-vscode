@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { PermissionMode } from '../../../src/shared/acpTypes';
 import { modePickerOptions } from '../../../src/shared/permissionModes';
+import { formatModelSwitchTooltip } from '../../../src/shared/modelSwitchHook';
 import type { ChatState } from '../store';
 import { post } from '../vscodeApi';
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -288,6 +289,19 @@ export function Header({
           title={formatCacheMissTooltip(state.cacheMiss)}
         >
           {state.cacheMiss.label}
+        </span>
+      )}
+
+      {state.modelSwitch?.available && (
+        <span
+          className={
+            state.modelSwitch.warn
+              ? 'model-switch-chip model-switch-chip-warn'
+              : 'model-switch-chip'
+          }
+          title={formatModelSwitchTooltip(state.modelSwitch)}
+        >
+          {state.modelSwitch.label}
         </span>
       )}
 

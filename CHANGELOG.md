@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.31.0 — 2026-09-11
+
+### Pre/Post model-switch host hook bus (confirm / block / re-cache chip)
+
+- New setting `codeBuild.modelSwitchPolicy`: `allow | confirm | block`
+  (default **confirm**). Composer-picker / explicit model override fires a
+  host pre-hook before `meta.model` commits.
+- Confirm dialog shows estimated re-cache tokens (or "unknown") and `$
+  unknown` — never invents cache economics. Block keeps the prior model
+  and posts a notice. Failover (529/overload) is not this gate.
+- Post-hook stamps `SessionMeta.lastModelSwitch` and a header chip
+  `switch · ~Nk re-cache` (or `switch · unknown re-cache`); next-turn
+  cache miss fills measured tokens.
+- Pure module `src/shared/modelSwitchHook.ts` + unit tests (confirm does
+  not send until approved; block never sends).
+
 ## 0.30.0 — 2026-09-10
 
 ### In-flight Write atomic drain on rate-limit (anti half-written code)

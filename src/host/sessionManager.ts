@@ -185,6 +185,11 @@ import {
   type DrainFs,
   type WriteDrainChip
 } from '../shared/writeAtomicDrain';
+import {
+  ModelSwitchTracker,
+  normalizeModelId,
+  type ModelSwitchChip
+} from '../shared/modelSwitchHook';
 import { WriteCheckpointEngine } from './writeCheckpoint';
 import { createPathGuard } from './pathGuard';
 import {
@@ -393,6 +398,10 @@ export class SessionManager {
   private effortCeilingLastPosted: string | undefined;
   /** Last cache-miss chip signature posted (dedupe). */
   private cacheMissLastPosted: string | undefined;
+  /** Pre/Post model-switch host hook (picker / explicit override). */
+  private modelSwitch = new ModelSwitchTracker();
+  /** Last model-switch chip signature posted (dedupe). */
+  private modelSwitchLastPosted: string | undefined;
   /** In-flight Write/Edit drain on quota (anti half-written files). */
   private writeDrain = new WriteAtomicDrainTracker();
   /** Last drain chip (re-posted on webview hydrate). */
@@ -768,7 +777,7 @@ export class SessionManager {
         this.unpinMode();
         break;
       case 'setModel':
-        this.setModel(msg.model);
+        await this.setModel(msg.model);
         break;
       case 'setEffort':
         this.setEffort(msg.effort);
@@ -1297,6 +1306,10 @@ export class SessionManager {
     }
     if (this.writeDrainLastChip?.available) {
       this.postWriteDrainChip(this.writeDrainLastChip);
+    }
+    if (this.modelSwitch.lastChip?.available) {
+      this.modelSwitchLastPosted = undefined;
+      this.postModelSwitchChip(this.modelSwitch.lastChip);
     }
   }
 
@@ -2785,6 +2798,9 @@ export class SessionManager {
     this.postEffortCeilingChip();
     this.cacheMissLastPosted = undefined;
     this.panel.post({ type: 'cacheMiss', chip: null });
+    this.modelSwitch.clear();
+    this.modelSwitchLastPosted = undefined;
+    this.panel.post({ type: 'modelSwitch', chip: null });
     this.writeDrain.clear();
     this.writeDrainLastChip = null;
     this.panel.post({ type: 'writeDrain', chip: null });
@@ -4063,15 +4079,85 @@ export class SessionManager {
       });
   }
 
-  /** Apply a new model selection. Persists onto meta so the picker stays
-   * sticky on reload; takes effect at the next process spawn (claude reads
-   * --model only at spawn time). */
-  private setModel(model: string): void {
+  /** Apply a new model selection. Pre-hook honors codeBuild.modelSwitchPolicy
+   * (allow | confirm | block). Confirm dialog shows estimated re-cache
+   * tokens (or unknown) before meta.model commits; block keeps the prior
+   * model. Takes effect at the next process spawn. Distinct from 529
+   * failover — picker / explicit override only. */
+  private async setModel(model: string): Promise<void> {
+    if (!this.meta) return;
+    const policy = this.config.get<string>('modelSwitchPolicy', 'confirm');
+    const decision = this.modelSwitch.apply({
+      policy,
+      fromModel: this.meta.model,
+      toModel: model,
+      source: 'picker'
+    });
+    if (decision.action === 'noop') {
+      // Same model: nothing to do. Initial pick (no telemetry): apply
+      // without a confirm dialog or re-cache chip.
+      if (normalizeModelId(this.meta.model) === normalizeModelId(model)) return;
+      this.commitModel(model, null);
+      return;
+    }
+    if (decision.action === 'block') {
+      this.panel.post({
+        type: 'notice',
+        key: 'model-switch',
+        text: `⚠️ ${decision.notice ?? 'Model switch blocked'}`,
+        detail:
+          'codeBuild.modelSwitchPolicy=block. Distinct from overload failover. ' +
+          'Estimated re-cache is observational (existing cache/input telemetry or unknown).'
+      });
+      this.panel.post({ type: 'sessionMeta', session: this.meta });
+      return;
+    }
+    if (decision.action === 'confirm' && !decision.applied) {
+      const dialog = decision.dialog;
+      const confirmLabel = dialog?.confirmLabel ?? 'Switch';
+      const pick = await vscode.window.showWarningMessage(
+        dialog?.title ?? `Switch model to ${model}?`,
+        { modal: true, detail: dialog?.detail },
+        confirmLabel
+      );
+      if (pick !== confirmLabel) {
+        this.panel.post({ type: 'sessionMeta', session: this.meta });
+        return;
+      }
+      const approved = this.modelSwitch.apply({
+        policy,
+        fromModel: this.meta.model,
+        toModel: model,
+        source: 'picker',
+        confirmed: true
+      });
+      if (!approved.applied) return;
+      this.commitModel(model, approved);
+      return;
+    }
+    if (!decision.applied) return;
+    this.commitModel(model, decision);
+  }
+
+  private commitModel(
+    model: string,
+    decision: { chip: ModelSwitchChip | null; record: { from?: string; to: string; at: number; estimatedTokens: number | null; measuredMissTokens: number | null } | null } | null
+  ): void {
     if (!this.meta) return;
     this.meta.model = model;
+    if (decision?.record) {
+      this.meta.lastModelSwitch = {
+        ...(decision.record.from ? { from: decision.record.from } : {}),
+        to: decision.record.to,
+        at: decision.record.at,
+        estimatedTokens: decision.record.estimatedTokens,
+        measuredMissTokens: decision.record.measuredMissTokens
+      };
+    }
     this.store.updateMeta(this.meta);
     this.panel.post({ type: 'sessionMeta', session: this.meta });
     this.rememberConfig();
+    if (decision?.chip) this.postModelSwitchChip(decision.chip);
   }
 
   /** Apply a new effort/thinking-budget level. Same persistence + respawn
@@ -4206,6 +4292,30 @@ export class SessionManager {
    * Mode `off` still shows the chip — it only skips pre-send notices.
    * Distinct from parked hit-meter.
    */
+  private postModelSwitchChip(chip: ModelSwitchChip | null): void {
+    const out = !chip?.available ? null : chip;
+    const sig = out
+      ? `${out.label}|${out.warn ? 1 : 0}|${out.toModel}|${out.measuredMissTokens ?? ''}`
+      : 'null';
+    if (sig === this.modelSwitchLastPosted) return;
+    this.modelSwitchLastPosted = sig;
+    this.panel.post({
+      type: 'modelSwitch',
+      chip: out
+        ? {
+            available: true,
+            label: out.label,
+            fromModel: out.fromModel,
+            toModel: out.toModel,
+            estimatedTokens: out.estimatedTokens,
+            measuredMissTokens: out.measuredMissTokens,
+            warn: out.warn,
+            ...(out.warnReason ? { warnReason: out.warnReason } : {})
+          }
+        : null
+    });
+  }
+
   private postCacheMissChip(chip: CacheMissChip | null): void {
     const out = !chip?.available ? null : chip;
     const sig = out
@@ -4608,6 +4718,9 @@ export class SessionManager {
     this.panel.post({ type: 'effortCeiling', chip: null });
     this.cacheMissLastPosted = undefined;
     this.panel.post({ type: 'cacheMiss', chip: null });
+    this.modelSwitch.clear();
+    this.modelSwitchLastPosted = undefined;
+    this.panel.post({ type: 'modelSwitch', chip: null });
     this.writeDrain.clear();
     this.writeDrainLastChip = null;
     this.panel.post({ type: 'writeDrain', chip: null });
@@ -5121,8 +5234,16 @@ export class SessionManager {
     }
     if (update.kind === 'usage' && typeof update.usage.inputTokens === 'number') {
       this.lastInputTokens = update.usage.inputTokens;
+      this.modelSwitch.noteTelemetry({
+        inputTokens: update.usage.inputTokens,
+        cacheReadTokens: update.usage.cacheReadTokens
+      });
     } else if (update.kind === 'result' && typeof update.usage?.inputTokens === 'number') {
       this.lastInputTokens = update.usage.inputTokens;
+      this.modelSwitch.noteTelemetry({
+        inputTokens: update.usage.inputTokens,
+        cacheReadTokens: update.usage.cacheReadTokens
+      });
     }
     if (update.kind === 'cache_miss_update') {
       this.postCacheMissChip({
@@ -5138,6 +5259,24 @@ export class SessionManager {
         ...(update.warnReason ? { warnReason: update.warnReason } : {}),
         ...(update.sourceDetail ? { sourceDetail: update.sourceDetail } : {})
       });
+      const measured = this.modelSwitch.observeCache({
+        cacheReadTokens: update.cacheReadTokens,
+        lastMissTokens: update.lastMissTokens,
+        inputTokens: this.lastInputTokens
+      });
+      if (measured && this.meta) {
+        this.meta.lastModelSwitch = {
+          ...(this.modelSwitch.lastRecord?.from
+            ? { from: this.modelSwitch.lastRecord.from }
+            : {}),
+          to: this.modelSwitch.lastRecord?.to ?? this.meta.model ?? '',
+          at: this.modelSwitch.lastRecord?.at ?? Date.now(),
+          estimatedTokens: this.modelSwitch.lastRecord?.estimatedTokens ?? null,
+          measuredMissTokens: measured.measuredMissTokens
+        };
+        this.store.updateMeta(this.meta);
+        this.postModelSwitchChip(measured);
+      }
     }
 
     const immediate =

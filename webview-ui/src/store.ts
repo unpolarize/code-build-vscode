@@ -264,6 +264,17 @@ export interface ChatState {
     warnReason?: string;
     sourceDetail?: string;
   } | null;
+  /** Last host-gated model switch (null until a picker/override commits). */
+  modelSwitch: {
+    available: boolean;
+    label: string;
+    fromModel: string | null;
+    toModel: string;
+    estimatedTokens: number | null;
+    measuredMissTokens: number | null;
+    warn: boolean;
+    warnReason?: string;
+  } | null;
   /** In-flight Write atomic drain chip (quota park). Live-only. */
   writeDrain: {
     available: boolean;
@@ -384,6 +395,7 @@ export const initialState: ChatState = {
   spendLimit: null,
   effortCeiling: null,
   cacheMiss: null,
+  modelSwitch: null,
   writeDrain: null,
   sessionStopCapability: null,
   mediaToolTax: null,
@@ -450,6 +462,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         // failoverOffer) — reset here so a closed park never lingers.
         resumePause: null,
         writeDrain: null,
+        modelSwitch: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -472,6 +485,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, effortCeiling: msg.chip };
     case 'cacheMiss':
       return { ...state, cacheMiss: msg.chip };
+    case 'modelSwitch':
+      return { ...state, modelSwitch: msg.chip };
     case 'writeDrain':
       return { ...state, writeDrain: msg.chip };
     case 'investigateStatus':
@@ -1135,6 +1150,7 @@ function replayRecords(
           spendLimit: null,
           effortCeiling: null,
           cacheMiss: null,
+          modelSwitch: null,
           writeDrain: null,
           sessionStopCapability: null,
           mediaToolTax: null,

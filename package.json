@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.30.0",
+  "version": "0.31.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -546,6 +546,16 @@
           "type": "string",
           "default": "",
           "description": "Default model id passed to the backend on session start. Examples: claude-opus-4-7, claude-sonnet-4-6, grok-build, grok-4.20, gpt-5. Empty = let the backend pick. Can be overridden per-session from the Model dropdown in the chat header."
+        },
+        "codeBuild.modelSwitchPolicy": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "confirm",
+            "block"
+          ],
+          "default": "confirm",
+          "description": "Host Pre/Post model-switch gate (Claude 2.1.251 PreModelSwitch class, all ACP backends). On a composer-picker / explicit model-identity change: 'allow' = switch immediately, 'confirm' = dialog with estimated re-cache tokens/$ (or unknown) before commit (default), 'block' = keep the prior model and surface a reason. Distinct from overload/unavailable failover. Never invents cache economics — tokens come from existing session cache/input telemetry."
         },
         "codeBuild.defaultEffort": {
           "type": "string",

@@ -62,6 +62,18 @@ export interface SessionMeta {
   /** Currently-selected model id (e.g. 'claude-opus-4-7', 'grok-build').
    * Optional — when missing the backend picks the default. */
   model?: string;
+  /**
+   * Last host-gated model-identity switch (picker / explicit override).
+   * Estimated tokens from existing cache telemetry; measured miss is
+   * filled on the next turn. Distinct from failover_* (529/overload).
+   */
+  lastModelSwitch?: {
+    from?: string;
+    to: string;
+    at: number;
+    estimatedTokens?: number | null;
+    measuredMissTokens?: number | null;
+  };
   /** Currently-selected effort/thinking-budget level. */
   effort?: 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   /** Backend's NATIVE session id (e.g. claude's `session_id` from the
@@ -709,6 +721,24 @@ export type HostToWebview =
         warn: boolean;
         warnReason?: string;
         sourceDetail?: string;
+      } | null;
+    }
+  /**
+   * Pre/Post model-switch host hook chip. Null clears (new session).
+   * Live-only — last switch also stamps SessionMeta.lastModelSwitch.
+   * Distinct from 529/overload failover.
+   */
+  | {
+      type: 'modelSwitch';
+      chip: {
+        available: boolean;
+        label: string;
+        fromModel: string | null;
+        toModel: string;
+        estimatedTokens: number | null;
+        measuredMissTokens: number | null;
+        warn: boolean;
+        warnReason?: string;
       } | null;
     }
   /**
