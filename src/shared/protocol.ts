@@ -424,6 +424,17 @@ export type WebviewToHost =
   | {
       type: 'investigateDecision';
       decision: 'arm' | 'unlock' | 'disarm';
+    }
+  /**
+   * User decision on the finishability preflight gate
+   * (kp: cb-finishability-preflight-gate). `override` allows the first
+   * Write this session; `rebind` keeps writes blocked (pick another
+   * backend); `shrink` releases this gate and arms Investigate-only;
+   * `block` keeps the deny.
+   */
+  | {
+      type: 'finishabilityDecision';
+      action: 'block' | 'override' | 'rebind' | 'shrink';
     };
 
 // ---- Host -> Webview events ----
@@ -763,6 +774,27 @@ export type HostToWebview =
         skipped: number;
         paths: string[];
         warn: boolean;
+        hint?: string;
+      } | null;
+    }
+  /**
+   * Finishability preflight chip (first Write vs remaining 5h window).
+   * Null clears (new session / unbound). Live-only — not JSONL.
+   */
+  | {
+      type: 'finishabilityPreflight';
+      chip: {
+        available: boolean;
+        label: string;
+        gated: boolean;
+        effort: string;
+        estimatePct: number;
+        remainingPct: number | null;
+        thresholdPct: number | null;
+        window: 'five_hour' | 'seven_day' | 'unknown';
+        phase: string;
+        warn: boolean;
+        warnReason?: string;
         hint?: string;
       } | null;
     }

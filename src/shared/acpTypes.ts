@@ -140,6 +140,11 @@ export type SessionUpdate =
        * the window the resume-after-reset park binds to (never spend).
        * Null when the vendor omitted it: unknown reset, manual-resume only. */
       fiveHourResetsAt?: number | null;
+      /** Remaining % of the 5h RATE window (100 − five_hour.used_percentage).
+       * Distinct from spend remainingPercentage. Null when omitted. */
+      fiveHourRemainingPercentage?: number | null;
+      /** Remaining % of the 7-day RATE window. Null when omitted. */
+      sevenDayRemainingPercentage?: number | null;
       label: string;
       warn: boolean;
       warnReason?: string;

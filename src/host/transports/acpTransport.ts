@@ -37,7 +37,12 @@ import {
   evaluateProtocolVersionPin,
   HOST_ACP_PROTOCOL_VERSION
 } from '../../shared/protocolVersionPin';
-import { evaluateSpendLimitChip, readFiveHourResetsAt } from '../../shared/spendLimitChip';
+import {
+  evaluateSpendLimitChip,
+  readFiveHourRemainingPercentage,
+  readFiveHourResetsAt,
+  readSevenDayRemainingPercentage
+} from '../../shared/spendLimitChip';
 import {
   evaluateEffortCeilingChip,
   parseEffortCeilingFromAgent,
@@ -458,9 +463,11 @@ export class AcpTransport extends BaseAgentSession {
       status && typeof status === 'object' ? (status as Record<string, unknown>) : null;
     const chip = evaluateSpendLimitChip(shaped);
     const fiveHourResetsAt = readFiveHourResetsAt(shaped);
+    const fiveHourRemainingPercentage = readFiveHourRemainingPercentage(shaped);
+    const sevenDayRemainingPercentage = readSevenDayRemainingPercentage(shaped);
     // Dedupe on label AND the 5h reset — a new rate window with an
     // unchanged spend label must still reach the resume-after-reset park.
-    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}`;
+    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}|${fiveHourRemainingPercentage ?? ''}|${sevenDayRemainingPercentage ?? ''}`;
     if (dedupeKey === this.lastSpendLimitLabel) return;
     this.lastSpendLimitLabel = dedupeKey;
     this.emit({
@@ -470,6 +477,8 @@ export class AcpTransport extends BaseAgentSession {
       remainingPercentage: chip.remainingPercentage,
       resetsAt: chip.resetsAt,
       fiveHourResetsAt,
+      fiveHourRemainingPercentage,
+      sevenDayRemainingPercentage,
       label: chip.label,
       warn: chip.warn,
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})

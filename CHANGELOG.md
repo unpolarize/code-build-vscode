@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.33.0 — 2026-09-11
+
+### Finishability preflight gate (anti mid-refactor kill)
+
+- Before the first Write/Edit in a KP/goal-bound session, estimate the
+  task's share of a 5h window from `implement_effort` (tiny 8% / small 20%
+  / medium 45% / large 80% / xlarge 100%). If estimate > remaining 5h
+  (or weekly, when tighter) × `codeBuild.finishability.safetyFactor`
+  (default 0.85), block the write.
+- Header chip with Override (click) / Shrink to investigate-only
+  (alt-click) / Rebind backend (shift-click). Unknown remaining never
+  invents 100% (`finish n/a`). Distinct from walkaway quota co-stop.
+- Telemetry: gate hits, overrides, rebinds, shrinks, post-override 429s.
+  Host-trace `cb.finishabilityPreflight`.
+- Pure module `src/shared/finishabilityPreflight.ts` + unit tests.
+
 ## 0.32.0 — 2026-09-11
 
 ### Concurrent-session permission ballot (Campfire / Slack Code class)

@@ -2,7 +2,7 @@
   "name": "code-build-vscode",
   "displayName": "Code Build",
   "description": "A generalized, Claude-Code-style coding agent UI that drives Claude, Grok, Codex and any ACP agent behind one chat.",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "publisher": "zhirafovod",
   "author": {
     "name": "Sergey Sergeev",
@@ -541,6 +541,18 @@
           "type": "boolean",
           "default": false,
           "description": "Start every session in Investigate mode: host fs writes are denied until the assistant reports a structured Findings block (path + severity + observation) and writes are unlocked. Normally Investigate is toggled per session from the chat header."
+        },
+        "codeBuild.finishability.safetyFactor": {
+          "type": "number",
+          "default": 0.85,
+          "minimum": 0.1,
+          "maximum": 1,
+          "description": "Finishability preflight: block the first Write when estimated KP effort (tiny/small/medium/large table as % of a 5h window) exceeds remaining 5h (and weekly, if known) × this factor. Default 0.85 leaves headroom. Distinct from mid-flight walkaway co-stop."
+        },
+        "codeBuild.finishability.force": {
+          "type": "boolean",
+          "default": false,
+          "description": "Force-arm the finishability preflight on every session (testing). Normally the gate arms only for KP/goal-bound sessions from /kp."
         },
         "codeBuild.defaultModel": {
           "type": "string",

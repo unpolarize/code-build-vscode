@@ -294,6 +294,21 @@ export interface ChatState {
     warn: boolean;
     hint?: string;
   } | null;
+  /** Finishability preflight chip (first Write vs remaining 5h). Live-only. */
+  finishability: {
+    available: boolean;
+    label: string;
+    gated: boolean;
+    effort: string;
+    estimatePct: number;
+    remainingPct: number | null;
+    thresholdPct: number | null;
+    window: 'five_hour' | 'seven_day' | 'unknown';
+    phase: string;
+    warn: boolean;
+    warnReason?: string;
+    hint?: string;
+  } | null;
   /** ACP session/stop capability chip — host-teardown vs agent-stop/close. */
   sessionStopCapability: {
     path: 'agent-close' | 'agent-stop' | 'host-teardown';
@@ -406,6 +421,7 @@ export const initialState: ChatState = {
   cacheMiss: null,
   modelSwitch: null,
   writeDrain: null,
+  finishability: null,
   sessionStopCapability: null,
   mediaToolTax: null,
   idleNoticeTax: null,
@@ -471,6 +487,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         // failoverOffer) — reset here so a closed park never lingers.
         resumePause: null,
         writeDrain: null,
+        finishability: null,
         modelSwitch: null,
         permissionBallot: null,
         historyLoad: state.historyLoad,
@@ -499,6 +516,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, modelSwitch: msg.chip };
     case 'writeDrain':
       return { ...state, writeDrain: msg.chip };
+    case 'finishabilityPreflight':
+      return { ...state, finishability: msg.chip };
     case 'permissionBallot':
       return { ...state, permissionBallot: msg.ballot };
     case 'permissionResolved':
@@ -1175,6 +1194,7 @@ function replayRecords(
           cacheMiss: null,
           modelSwitch: null,
           writeDrain: null,
+          finishability: null,
           sessionStopCapability: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.

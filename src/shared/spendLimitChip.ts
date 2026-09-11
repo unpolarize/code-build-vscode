@@ -98,6 +98,23 @@ function readResetsAt(window: LimitWindow): number | null {
  * Null when the payload lacks a usable five_hour.resets_at — callers
  * must treat that as "unknown reset", never substitute spend_limit's.
  */
+function pickNamedWindow(
+  rateLimits: Record<string, unknown> | null,
+  keys: string[]
+): LimitWindow | null {
+  if (!rateLimits) return null;
+  for (const k of keys) {
+    const raw = rateLimits[k];
+    if (raw && typeof raw === 'object') return raw as LimitWindow;
+  }
+  return null;
+}
+
+function remainingFromUsed(used: number | null): number | null {
+  if (used == null) return null;
+  return roundPct(Math.max(0, 100 - used));
+}
+
 export function readFiveHourResetsAt(
   status: SpendLimitStatusFields | null | undefined
 ): number | null {
@@ -106,6 +123,35 @@ export function readFiveHourResetsAt(
   const raw = limits.five_hour ?? (limits as Record<string, unknown>).fiveHour;
   if (!raw || typeof raw !== 'object') return null;
   return readResetsAt(raw as LimitWindow);
+}
+
+/**
+ * Remaining % of the 5-HOUR rate window (100 − used). Null when the
+ * vendor omitted five_hour.used_percentage — never fake 100%.
+ * Distinct from spend_limit remaining (evaluateSpendLimitChip).
+ */
+export function readFiveHourRemainingPercentage(
+  status: SpendLimitStatusFields | null | undefined
+): number | null {
+  const w = pickNamedWindow(pickRateLimits(status), ['five_hour', 'fiveHour']);
+  if (!w) return null;
+  return remainingFromUsed(readUsed(w));
+}
+
+/**
+ * Remaining % of the 7-day / weekly rate window. Null when omitted.
+ */
+export function readSevenDayRemainingPercentage(
+  status: SpendLimitStatusFields | null | undefined
+): number | null {
+  const w = pickNamedWindow(pickRateLimits(status), [
+    'seven_day',
+    'sevenDay',
+    'seven_days',
+    'weekly'
+  ]);
+  if (!w) return null;
+  return remainingFromUsed(readUsed(w));
 }
 
 /** Format resets_at for tooltips; undefined when absent. */

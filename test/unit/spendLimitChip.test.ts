@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   evaluateSpendLimitChip,
   formatSpendLimitReset,
+  readFiveHourRemainingPercentage,
   readFiveHourResetsAt,
+  readSevenDayRemainingPercentage,
   SPEND_LIMIT_WARN_AT
 } from '../../src/shared/spendLimitChip';
 import { ClaudeNormalizer } from '../../src/host/transports/normalizers/claude';
@@ -222,4 +224,18 @@ test('readFiveHourResetsAt — binds the 5h RATE window, never spend_limit', () 
   );
   assert.equal(readFiveHourResetsAt(null), null);
   assert.equal(readFiveHourResetsAt({}), null);
+});
+
+test('readFiveHourRemainingPercentage / seven-day — never fake 100%', () => {
+  assert.equal(readFiveHourRemainingPercentage(CLAUDE_SPEND_FIXTURE), 76.5);
+  assert.equal(readSevenDayRemainingPercentage(CLAUDE_SPEND_FIXTURE), 58.8);
+  assert.equal(
+    readFiveHourRemainingPercentage({ rate_limits: { spend_limit: { used_percentage: 10 } } }),
+    null
+  );
+  assert.equal(readFiveHourRemainingPercentage(null), null);
+  assert.equal(
+    readFiveHourRemainingPercentage({ rate_limits: { five_hour: { used_percentage: 112 } } }),
+    0
+  );
 });

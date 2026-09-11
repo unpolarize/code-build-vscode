@@ -2,7 +2,9 @@ import type { ContentBlock, SessionUpdate } from '../../../shared/acpTypes';
 import { classifyBackendError } from '../../../shared/backendErrorClass';
 import {
   evaluateSpendLimitChip,
+  readFiveHourRemainingPercentage,
   readFiveHourResetsAt,
+  readSevenDayRemainingPercentage,
   type SpendLimitStatusFields
 } from '../../../shared/spendLimitChip';
 import {
@@ -159,10 +161,13 @@ export class ClaudeNormalizer {
       (obj.rateLimits != null && typeof obj.rateLimits === 'object');
     if (!hasLimits) return undefined;
     const chip = evaluateSpendLimitChip(obj as SpendLimitStatusFields);
-    const fiveHourResetsAt = readFiveHourResetsAt(obj as SpendLimitStatusFields);
+    const fields = obj as SpendLimitStatusFields;
+    const fiveHourResetsAt = readFiveHourResetsAt(fields);
+    const fiveHourRemainingPercentage = readFiveHourRemainingPercentage(fields);
+    const sevenDayRemainingPercentage = readSevenDayRemainingPercentage(fields);
     // Dedupe on label AND the 5h reset — a new rate window with an
     // unchanged spend label must still reach the resume-after-reset park.
-    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}`;
+    const dedupeKey = `${chip.label}|${fiveHourResetsAt ?? ''}|${fiveHourRemainingPercentage ?? ''}|${sevenDayRemainingPercentage ?? ''}`;
     if (dedupeKey === this.lastSpendLimitLabel) return undefined;
     this.lastSpendLimitLabel = dedupeKey;
     return {
@@ -172,6 +177,8 @@ export class ClaudeNormalizer {
       remainingPercentage: chip.remainingPercentage,
       resetsAt: chip.resetsAt,
       fiveHourResetsAt,
+      fiveHourRemainingPercentage,
+      sevenDayRemainingPercentage,
       label: chip.label,
       warn: chip.warn,
       ...(chip.warnReason ? { warnReason: chip.warnReason } : {})

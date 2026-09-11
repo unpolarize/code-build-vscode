@@ -186,6 +186,16 @@ import {
   type WriteDrainChip
 } from '../shared/writeAtomicDrain';
 import {
+  DEFAULT_FINISHABILITY_CONFIG,
+  DEFAULT_FINISHABILITY_SAFETY_FACTOR,
+  FinishabilityPreflightTracker,
+  shouldArmFinishability,
+  type FinishabilityAction,
+  type FinishabilityChip,
+  type FinishabilityConfig,
+  type FinishabilityEvent
+} from '../shared/finishabilityPreflight';
+import {
   ModelSwitchTracker,
   normalizeModelId,
   type ModelSwitchChip
@@ -410,6 +420,10 @@ export class SessionManager {
   private writeDrain = new WriteAtomicDrainTracker();
   /** Last drain chip (re-posted on webview hydrate). */
   private writeDrainLastChip: WriteDrainChip | null = null;
+  /** First-Write finishability preflight (KP-bound vs remaining 5h). */
+  private finishability = new FinishabilityPreflightTracker();
+  /** Last finishability chip (re-posted on webview hydrate). */
+  private finishabilityLastChip: FinishabilityChip | null = null;
   /** Per-session big-file Read gate (ACP fs/read_text_file pre-read). */
   private toolReadGate?: ToolReadGate;
   /** Session id the current toolReadGate belongs to. */
@@ -627,6 +641,9 @@ export class SessionManager {
         break;
       case 'investigateDecision':
         this.applyInvestigateDecision(msg.decision);
+        break;
+      case 'finishabilityDecision':
+        this.applyFinishabilityDecision(msg.action);
         break;
       case 'askUserAnswer':
         this.answerAskUserQuestion(msg.toolCallId, msg.answers);
@@ -1315,6 +1332,9 @@ export class SessionManager {
     if (this.writeDrainLastChip?.available) {
       this.postWriteDrainChip(this.writeDrainLastChip);
     }
+    if (this.finishabilityLastChip?.available) {
+      this.postFinishabilityChip(this.finishabilityLastChip);
+    }
     if (this.modelSwitch.lastChip?.available) {
       this.modelSwitchLastPosted = undefined;
       this.postModelSwitchChip(this.modelSwitch.lastChip);
@@ -1959,6 +1979,7 @@ export class SessionManager {
     const effort = this.pendingScopeFenceEffort;
     this.pendingScopeFenceEffort = undefined;
     this.maybeArmScopeFence(effort, itemId);
+    this.maybeArmFinishability(effort, itemId);
 
     this.panel.post({
       type: 'notice',
@@ -2812,6 +2833,9 @@ export class SessionManager {
     this.writeDrain.clear();
     this.writeDrainLastChip = null;
     this.panel.post({ type: 'writeDrain', chip: null });
+    this.finishability.clear();
+    this.finishabilityLastChip = null;
+    this.panel.post({ type: 'finishabilityPreflight', chip: null });
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -4733,6 +4757,9 @@ export class SessionManager {
     this.writeDrain.clear();
     this.writeDrainLastChip = null;
     this.panel.post({ type: 'writeDrain', chip: null });
+    this.finishability.clear();
+    this.finishabilityLastChip = null;
+    this.panel.post({ type: 'finishabilityPreflight', chip: null });
     // Same for the Investigate lock — findings / unlock must not leak.
     this.investigateLock = undefined;
     this.investigateLockSessionId = undefined;
@@ -4769,9 +4796,10 @@ export class SessionManager {
         this.writeDrain.commitFsWrite(absPath, nodeDrainFs);
       },
       onFsReadCheck: (absPath, bytes) => this.ensureToolReadGate().allowRead(absPath, bytes),
-      // Investigate lock first: a findings-locked deny must not consume
-      // ScopeFence path budget for a write that never happens.
+      // Finishability first: a remaining-window deny must not consume
+      // Investigate/ScopeFence budget for a write that never happens.
       onFsWriteCheck: (absPath) =>
+        this.ensureFinishability().allowWrite(absPath) &&
         this.ensureInvestigateLock().allowWrite(absPath) &&
         this.ensureScopeFence().allowWrite(absPath)
     };
@@ -4985,6 +5013,99 @@ export class SessionManager {
         ? `force (${source})`
         : `implement_effort=${effort ?? 'unknown'} (${source})`
     );
+  }
+
+  private ensureFinishability(): FinishabilityPreflightTracker {
+    this.finishability.setConfig(this.readFinishabilityConfig());
+    this.finishability.setOnEvent((e) => this.onFinishabilityEvent(e));
+    const force = this.config.get<boolean>('finishability.force', false);
+    if (force && !this.finishability.isActive()) {
+      this.finishability.arm({
+        kpBound: true,
+        effort: this.pendingScopeFenceEffort ?? null,
+        reason: 'codeBuild.finishability.force'
+      });
+      this.postFinishabilityChip(this.finishability.lastPostedChip());
+    }
+    return this.finishability;
+  }
+
+  private readFinishabilityConfig(): FinishabilityConfig {
+    const raw = this.config.get<number>(
+      'finishability.safetyFactor',
+      DEFAULT_FINISHABILITY_SAFETY_FACTOR
+    );
+    return {
+      safetyFactor:
+        typeof raw === 'number' && Number.isFinite(raw)
+          ? raw
+          : DEFAULT_FINISHABILITY_CONFIG.safetyFactor
+    };
+  }
+
+  private maybeArmFinishability(effort: string | null | undefined, source: string): void {
+    const force = this.config.get<boolean>('finishability.force', false);
+    const kpBound = !!this.meta?.kpItemId || !!source;
+    if (!force && !shouldArmFinishability({ kpBound })) return;
+    const t = this.ensureFinishability();
+    t.arm({
+      kpBound: true,
+      effort: effort ?? null,
+      reason: force && !this.meta?.kpItemId
+        ? `force (${source})`
+        : `kp-bound implement_effort=${effort ?? 'medium'} (${source})`
+    });
+    this.postFinishabilityChip(t.lastPostedChip());
+  }
+
+  private onFinishabilityEvent(e: FinishabilityEvent): void {
+    this.postFinishabilityChip(e.chip);
+    const span = startSpan('cb.finishabilityPreflight');
+    span.end({ type: e.type, path: e.path, log: e.log ?? '' });
+    if (e.type === 'arm' || e.type === 'allow') return;
+    this.panel.post({
+      type: 'notice',
+      text: e.message,
+      key: `finishability-${e.type}`,
+      detail:
+        e.type === 'deny' || e.type === 'rebind'
+          ? 'Override / Shrink to investigate-only / Rebind backend (finishabilityDecision).'
+          : e.log
+    });
+  }
+
+  private applyFinishabilityDecision(action: FinishabilityAction): void {
+    const t = this.ensureFinishability();
+    t.applyDecision(action);
+    this.postFinishabilityChip(t.lastPostedChip());
+    if (action === 'shrink') {
+      this.ensureInvestigateLock().arm('finishability-shrink');
+      this.postInvestigateStatus();
+    }
+  }
+
+  private postFinishabilityChip(chip: FinishabilityChip | null): void {
+    const out = !chip?.available ? null : chip;
+    this.finishabilityLastChip = out;
+    this.panel.post({
+      type: 'finishabilityPreflight',
+      chip: out
+        ? {
+            available: true,
+            label: out.label,
+            gated: out.gated,
+            effort: out.effort,
+            estimatePct: out.estimatePct,
+            remainingPct: out.remainingPct,
+            thresholdPct: out.thresholdPct,
+            window: out.window,
+            phase: out.phase,
+            warn: out.warn,
+            ...(out.warnReason ? { warnReason: out.warnReason } : {}),
+            ...(out.hint ? { hint: out.hint } : {})
+          }
+        : null
+    });
   }
 
   // ── Performance + hot-path coalesce ──────────────────────────────────
@@ -5359,6 +5480,12 @@ export class SessionManager {
       // Cache the 5h RATE window's reset for the resume-after-reset park —
       // deliberately not the spend window this chip event is named after.
       this.resumeCoordinator.noteRateWindowReset(update.fiveHourResetsAt ?? null);
+      this.ensureFinishability().noteRateWindow({
+        fiveHourRemainingPct: update.fiveHourRemainingPercentage ?? null,
+        sevenDayRemainingPct: update.sevenDayRemainingPercentage ?? null
+      });
+      const live = this.finishability.lastPostedChip();
+      if (live?.available) this.postFinishabilityChip(live);
     }
 
     if (update.kind === 'error') {
@@ -5367,6 +5494,7 @@ export class SessionManager {
       // truncated file (kp: cb-in-flight-write-atomic-drain-on-rate-limit-fi).
       const drained = this.writeDrain.drain(cls, nodeDrainFs);
       if (drained.fired) this.postWriteDrainChip(drained.chip);
+      if (cls === 'quota') this.ensureFinishability().noteQuotaError();
       // Quota (429-class) parks the session for a SAME-backend resume;
       // everything else stays on the cross-ACP failover path (which itself
       // ignores quota — isFailoverClass — so there is no overlap).
@@ -6298,6 +6426,9 @@ export class SessionManager {
 
     const earlyResumeId = resolveRespawnResumeId(meta, opts?.compactRespawn === true);
     this.meta = meta;
+    if (this.meta.kpItemId) {
+      this.maybeArmFinishability(this.pendingScopeFenceEffort ?? null, this.meta.kpItemId);
+    }
     if (this.meta.backendSessions) {
       for (const [b, sid] of Object.entries(this.meta.backendSessions)) {
         if (sid) this.previousSessionByBackend.set(b as BackendId, sid);

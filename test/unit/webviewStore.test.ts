@@ -708,3 +708,30 @@ describe('error bubble errorClass passthrough', () => {
     assert.equal(err.errorClass, 'quota');
   });
 });
+
+describe('finishability preflight chip', () => {
+  it('stores a gated chip and clears on null', () => {
+    const gated = reduce(initialState, {
+      type: 'finishabilityPreflight',
+      chip: {
+        available: true,
+        label: 'finish ⚠ large 80%>12%',
+        gated: true,
+        effort: 'large',
+        estimatePct: 80,
+        remainingPct: 12,
+        thresholdPct: 10.2,
+        window: 'five_hour',
+        phase: 'gated',
+        warn: true
+      }
+    } as HostToWebview);
+    assert.equal(gated.finishability?.gated, true);
+    assert.match(gated.finishability?.label ?? '', /large 80%>12%/);
+    const cleared = reduce(gated, {
+      type: 'finishabilityPreflight',
+      chip: null
+    } as HostToWebview);
+    assert.equal(cleared.finishability, null);
+  });
+});

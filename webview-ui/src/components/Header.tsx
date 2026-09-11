@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { PermissionMode } from '../../../src/shared/acpTypes';
 import { modePickerOptions } from '../../../src/shared/permissionModes';
 import { formatModelSwitchTooltip } from '../../../src/shared/modelSwitchHook';
+import { formatFinishabilityTooltip } from '../../../src/shared/finishabilityPreflight';
 import type { ChatState } from '../store';
 import { post } from '../vscodeApi';
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -317,6 +318,37 @@ export function Header({
           {state.writeDrain.label}
         </span>
       )}
+
+      {state.finishability?.available &&
+        (state.finishability.gated ? (
+          <button
+            type="button"
+            className={
+              state.finishability.warn
+                ? 'finishability-chip finishability-chip-warn'
+                : 'finishability-chip'
+            }
+            title={formatFinishabilityTooltip(state.finishability)}
+            onClick={(e) => {
+              if (e.shiftKey) post({ type: 'finishabilityDecision', action: 'rebind' });
+              else if (e.altKey) post({ type: 'finishabilityDecision', action: 'shrink' });
+              else post({ type: 'finishabilityDecision', action: 'override' });
+            }}
+          >
+            {state.finishability.label}
+          </button>
+        ) : (
+          <span
+            className={
+              state.finishability.warn
+                ? 'finishability-chip finishability-chip-warn'
+                : 'finishability-chip'
+            }
+            title={formatFinishabilityTooltip(state.finishability)}
+          >
+            {state.finishability.label}
+          </span>
+        ))}
 
       {state.mediaToolTax && (
         <button
