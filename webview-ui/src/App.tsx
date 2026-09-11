@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import type { HostToWebview } from '../../src/shared/protocol';
 import type { PermissionMode, PermissionOutcome } from '../../src/shared/acpTypes';
+import { ballotInfoForHead, type BallotAction } from '../../src/shared/permissionBallot';
 import { post, setState } from './vscodeApi';
 import { parseUriList } from './util/mentions';
 import { appendUser, initialState, markAskUserAnswered, reduce, type ChatState, type ImageAttachment } from './store';
@@ -59,6 +60,7 @@ function appReducer(state: ChatState, action: Action): ChatState {
       usage: null,
       usageBreakdown: [],
       permissionQueue: [],
+      permissionBallot: null,
       failoverOffer: null,
       resumePause: null
     };
@@ -479,6 +481,22 @@ export function App() {
     dispatch({ kind: 'resolvePermission', requestId });
   }
 
+  function onBallot(action: BallotAction) {
+    const info = ballotInfoForHead(
+      state.permissionQueue,
+      state.permissionBallot,
+      state.session?.backend
+    );
+    if (!info) return;
+    post({
+      type: 'respondPermissionBallot',
+      fingerprintKey: info.key,
+      action,
+      backend: state.session?.backend
+    });
+    for (const id of info.localIds) dispatch({ kind: 'resolvePermission', requestId: id });
+  }
+
   function onRequestFileSuggestions(query: string) {
     post({ type: 'getFileSuggestions', query });
   }
@@ -628,7 +646,13 @@ export function App() {
         <PermissionPrompt
           permission={state.permissionQueue[0]}
           queued={state.permissionQueue.length - 1}
+          ballot={ballotInfoForHead(
+            state.permissionQueue,
+            state.permissionBallot,
+            state.session?.backend
+          )}
           onRespond={onRespond}
+          onBallot={onBallot}
         />
       )}
       <VoiceBar

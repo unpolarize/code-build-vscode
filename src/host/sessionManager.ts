@@ -198,6 +198,10 @@ import {
 } from './perf/sessionPerf';
 import * as fsSync from 'node:fs';
 import { startSpan, type Span } from './hostTrace';
+import {
+  getPermissionBallotHub,
+  type BallotAction
+} from '../shared/permissionBallot';
 
 /** Injected into WriteAtomicDrainTracker so quota drain can flush/rollback
  * without the tracker importing vscode. */
@@ -784,9 +788,13 @@ export class SessionManager {
         break;
       case 'respondPermission':
         this.session?.respondPermission(msg.requestId, msg.outcome);
+        getPermissionBallotHub().unregister(msg.requestId);
         // Resume normal stall watching only once EVERY queued permission is
         // answered — with concurrent requests, one decision may leave more.
         this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
+        break;
+      case 'respondPermissionBallot':
+        this.applyPermissionBallot(msg.fingerprintKey, msg.action, msg.backend);
         break;
       case 'openDiff':
         await this.editor.openDiff(msg.path, msg.oldText, msg.newText);
@@ -4686,6 +4694,7 @@ export class SessionManager {
     this.pendingBackendIdReason = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    getPermissionBallotHub().unregisterSession(this.meta?.id ?? '');
     this.session?.dispose();
     this.session = undefined;
     // Cancel any pending "still waiting" notice — we don't want it
@@ -5170,6 +5179,48 @@ export class SessionManager {
     this.perf.setDualStore(dual);
   }
 
+  private registerPermissionBallot(
+    sessionId: string,
+    update: Extract<SessionUpdate, { kind: 'permission_request' }>
+  ): void {
+    getPermissionBallotHub().register({
+      requestId: update.requestId,
+      sessionId,
+      backend: this.meta?.backend ?? 'unknown',
+      tool: update.toolCall,
+      options: update.options,
+      resolve: (outcome) => {
+        if (!this.session) return false;
+        this.session.respondPermission(update.requestId, outcome);
+        return true;
+      },
+      notifyResolved: (requestId) => {
+        this.panel.post({ type: 'permissionResolved', requestIds: [requestId] });
+        this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
+      },
+      notifyBallot: (ballot) => {
+        this.panel.post({ type: 'permissionBallot', ballot });
+      }
+    });
+  }
+
+  private applyPermissionBallot(
+    fingerprintKey: string,
+    action: BallotAction,
+    backend?: string
+  ): void {
+    const span = startSpan('cb.permissionBallot');
+    const result = getPermissionBallotHub().apply(action, fingerprintKey, backend);
+    span.end({
+      action,
+      key: fingerprintKey,
+      applied: result.applied.length,
+      skipped: result.decisions.filter((d) => !d.apply).length,
+      log: result.log
+    });
+    this.awaitingPermission = this.session?.hasPendingPermissions() ?? false;
+  }
+
   /**
    * Shared agent-event path: async disk queue + IPC coalesce + perf + side effects.
    * Result/error/permission flush IPC immediately so the UI leaves "working…" promptly.
@@ -5284,6 +5335,9 @@ export class SessionManager {
       update.kind === 'error' ||
       update.kind === 'permission_request';
     this.enqueueIpc(sessionId, update, immediate);
+    if (update.kind === 'permission_request') {
+      this.registerPermissionBallot(sessionId, update);
+    }
 
     if (update.kind === 'result' || update.kind === 'error') {
       this.panel.post({ type: 'busy', busy: false });

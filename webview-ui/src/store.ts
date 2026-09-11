@@ -17,6 +17,7 @@ import type {
   PerfSnapshotMsg,
   SessionMeta
 } from '../../src/shared/protocol';
+import type { HighRiskClass } from '../../src/shared/permissionBallot';
 import { diffStats } from './diff';
 
 /** Image attachment shown alongside a user message — base64 payload so it
@@ -154,6 +155,13 @@ export interface ChatState {
    * concurrent requests, orphaning their host-side resolvers (deadlock
    * until the stall watchdog fired). */
   permissionQueue: PendingPermission[];
+  /** Cross-session sibling count for the live permission ballot (null = none). */
+  permissionBallot: {
+    key: string;
+    count: number;
+    backends: string[];
+    highRisk: HighRiskClass | null;
+  } | null;
   usage: UsageInfo | null;
   /** Per-model usage breakdown — populated from `usage_breakdown` updates.
    * Drives the expanded tooltip in the header. */
@@ -359,6 +367,7 @@ export const initialState: ChatState = {
   items: [],
   busy: false,
   permissionQueue: [],
+  permissionBallot: null,
   usage: null,
   usageBreakdown: [],
   commands: [],
@@ -463,6 +472,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         resumePause: null,
         writeDrain: null,
         modelSwitch: null,
+        permissionBallot: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -489,6 +499,17 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, modelSwitch: msg.chip };
     case 'writeDrain':
       return { ...state, writeDrain: msg.chip };
+    case 'permissionBallot':
+      return { ...state, permissionBallot: msg.ballot };
+    case 'permissionResolved':
+      return {
+        ...state,
+        permissionQueue: state.permissionQueue.filter((p) => !msg.requestIds.includes(p.requestId)),
+        permissionBallot:
+          state.permissionQueue.filter((p) => !msg.requestIds.includes(p.requestId)).length === 0
+            ? null
+            : state.permissionBallot
+      };
     case 'investigateStatus':
       return {
         ...state,
@@ -676,6 +697,7 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
           usage: null,
           usageBreakdown: [],
           permissionQueue: [],
+          permissionBallot: null,
           busy: false,
           historyLoad: load
         };
@@ -1138,6 +1160,7 @@ function replayRecords(
           usage: null,
           usageBreakdown: [],
           permissionQueue: [],
+          permissionBallot: null,
           busy: false,
           // Stale restore actions must not survive a session switch; the host
           // re-posts checkpointAvailable right after historyLoaded.

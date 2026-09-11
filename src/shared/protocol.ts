@@ -10,6 +10,7 @@ import type {
   SessionUpdate
 } from './acpTypes';
 import type { BackendErrorClass } from './backendErrorClass';
+import type { BallotAction, HighRiskClass } from './permissionBallot';
 import type { ResumeAfterResetPause } from './resumeAfterReset';
 import type { SessionKind, VoiceMode } from './voiceIdeation';
 
@@ -283,6 +284,13 @@ export type WebviewToHost =
    */
   | { type: 'primerDecision'; choice: 'full' | 'hybrid' | 'none'; lastNTurns?: number }
   | { type: 'respondPermission'; requestId: string; outcome: PermissionOutcome }
+  /** Collapse matching pending prompts across open sessions in this window. */
+  | {
+      type: 'respondPermissionBallot';
+      fingerprintKey: string;
+      action: BallotAction;
+      backend?: string;
+    }
   | { type: 'openDiff'; path: string; oldText: string; newText: string }
   | { type: 'revealLocation'; path: string; line?: number }
   /** "Restore code to here" on an edit ToolCard — revert tracked files to
@@ -764,6 +772,18 @@ export type HostToWebview =
    * within this session; the webview maps it to the matching user
    * bubble (small chips next to the role line). Off by default;
    * each call costs a small Haiku-tier inference. */
+  /** Drop permission prompts the host already resolved (cross-session ballot). */
+  | { type: 'permissionResolved'; requestIds: string[] }
+  /** Sibling count for the live permission ballot (null = no grouping). */
+  | {
+      type: 'permissionBallot';
+      ballot: {
+        key: string;
+        count: number;
+        backends: string[];
+        highRisk: HighRiskClass | null;
+      } | null;
+    }
   | { type: 'turnLabels'; turnIndex: number; labels: string[] }
   /** AskUserQuestion tool call surfaced from the agent. Each entry is one
    * pickable card with the agent's question + N options. Clicking posts

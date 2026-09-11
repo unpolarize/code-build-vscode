@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.32.0 — 2026-09-11
+
+### Concurrent-session permission ballot (Campfire / Slack Code class)
+
+- Group concurrent pending ACP permission prompts by a backend-agnostic
+  fingerprint `(method, path|command_norm)` so identical Write/Bash cards
+  across Claude+Codex+Grok collapse to one ballot.
+- UI: Approve all / Deny all / Approve this backend only when 2+ matching
+  prompts are pending. Optional 30s auto-deny stays **off** by default.
+- High-risk classes (force-push, `rm -rf`, secrets paths) never auto-approve;
+  Deny-all still applies.
+- Host hub resolves matching prompts across open sessions in the window.
+  Local log line `permission-ballot action=… key=…` (host-trace, no network).
+- Pure module `src/shared/permissionBallot.ts` + unit tests (2 mock ACP
+  sessions, identical Write → one ballot; Approve-all / Deny-any).
+
 ## 0.31.0 — 2026-09-11
 
 ### Pre/Post model-switch host hook bus (confirm / block / re-cache chip)

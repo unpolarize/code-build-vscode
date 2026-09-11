@@ -864,6 +864,27 @@ body {
   font-size: 0.9em;
   opacity: 0.85;
 }
+.permission-ballot {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.25));
+  border-radius: 4px;
+  background: var(--vscode-editor-background, transparent);
+}
+.permission-ballot-label {
+  display: block;
+  font-size: 0.85em;
+  opacity: 0.9;
+}
+.permission-ballot-risk {
+  display: block;
+  margin-top: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-errorForeground, #f85149);
+}
+.permission-ballot .permission-options {
+  margin-top: 6px;
+}
 
 /* Cross-ACP overload/unavailable failover confirm. */
 .failover-banner {

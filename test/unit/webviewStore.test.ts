@@ -522,6 +522,18 @@ describe('permission FIFO queue', () => {
     assert.equal(s.permissionQueue.length, 1);
     assert.equal(s.permissionQueue[0].tool.rawInput, undefined);
   });
+
+  it('permissionResolved drops matching ids; permissionBallot stores sibling count', () => {
+    const queued = apply(initialState, permReq('r1'), permReq('r2'));
+    const balloted = reduce(queued, {
+      type: 'permissionBallot',
+      ballot: { key: 'write|/tmp/a.ts', count: 2, backends: ['claude', 'grok'], highRisk: null }
+    });
+    assert.equal(balloted.permissionBallot?.count, 2);
+    const dropped = reduce(balloted, { type: 'permissionResolved', requestIds: ['r1', 'r2'] });
+    assert.deepEqual(dropped.permissionQueue, []);
+    assert.equal(dropped.permissionBallot, null);
+  });
 });
 
 describe('compact marker (divider plumbing)', () => {
