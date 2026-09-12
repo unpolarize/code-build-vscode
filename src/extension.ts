@@ -126,7 +126,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // the chat just opens cleanly (grok — no resume flag exists yet).
     vscode.commands.registerCommand(
       'codeBuild.openExternalSession',
-      async (args: { source: SessionSource; sessionId: string; cwd: string; title?: string }) => {
+      async (args: {
+        source: SessionSource;
+        sessionId: string;
+        cwd: string;
+        title?: string;
+        records?: import('./host/persistence/externalReplay').ReplayRecord[];
+      }) => {
         if (!args || !args.source || !args.sessionId || !args.cwd) {
           void vscode.window.showWarningMessage('Code Build: openExternalSession needs {source, sessionId, cwd}.');
           return;

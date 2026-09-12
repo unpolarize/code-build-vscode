@@ -80,7 +80,9 @@ import {
   grokChatPathFor,
   loadClaudeHistory,
   loadGrokHistory,
-  locateGrokChatHistory
+  locateGrokChatHistory,
+  pickExternalReplay,
+  type ReplayRecord as ExternalReplayRecord
 } from './persistence/externalReplay';
 import { listAllSessions } from './persistence/externalSources';
 import {
@@ -4538,8 +4540,20 @@ export class SessionManager {
   /** Same pattern as queueResume but for sessions imported from upstream CLIs
    * (claude / grok). Defers until the webview is mounted so the
    * sessionMeta + historyLoaded posts aren't dropped on the floor. */
-  private pendingExternal?: { source: SessionSource; sessionId: string; cwd: string; title?: string };
-  queueExternal(args: { source: SessionSource; sessionId: string; cwd: string; title?: string }): void {
+  private pendingExternal?: {
+    source: SessionSource;
+    sessionId: string;
+    cwd: string;
+    title?: string;
+    records?: ExternalReplayRecord[];
+  };
+  queueExternal(args: {
+    source: SessionSource;
+    sessionId: string;
+    cwd: string;
+    title?: string;
+    records?: ExternalReplayRecord[];
+  }): void {
     if (this.webviewReady) {
       void this.openExternalSession(args);
     } else {
@@ -4560,8 +4574,14 @@ export class SessionManager {
     sessionId: string;
     cwd: string;
     title?: string;
+    records?: ExternalReplayRecord[];
   }): Promise<void> {
-    if (args.source !== 'claude' && args.source !== 'grok') return;
+    if (args.source !== 'claude' && args.source !== 'grok') {
+      // CSV used to pass source:"git" here — that left an empty panel.
+      // Injected git-store records still resume as grok (kick default).
+      if (!args.records?.length) return;
+      args = { ...args, source: 'grok' };
+    }
 
     // CB already owns this native session (it was started here, compacted
     // here, or a prior "Open in Code Build" grew content). Reuse that row:
@@ -4651,12 +4671,14 @@ export class SessionManager {
     // ~/.claude/projects/<dash-encoded-cwd>/<id>.jsonl; for grok from
     // ~/.grok/sessions/<urlencoded-cwd>/<id>/chat_history.jsonl.
     // Both paths are deterministic given (cwd, sessionId).
-    const replay =
+    const nativeReplay =
       args.source === 'claude'
         ? loadClaudeHistory(claudeJsonlPathFor(args.cwd, args.sessionId))
         : args.source === 'grok'
           ? loadGrokHistory(grokChatPathFor(args.cwd, args.sessionId))
           : null;
+    const replay = pickExternalReplay(nativeReplay, args.records);
+    const injectedOnly = !(nativeReplay && nativeReplay.records.length > 0) && !!replay?.records.length;
     if (replay) {
       // Extract the dominant model from the imported transcript so the
       // header dropdown reflects what the session was actually using.
@@ -4708,7 +4730,7 @@ export class SessionManager {
     // --resume, spawn a fresh agent in the same cwd, and surface a soft
     // 'notice' (not 'error'). The transcript replay above already gives
     // the user context.
-    let resumeId: string | undefined = args.sessionId;
+    let resumeId: string | undefined = injectedOnly ? undefined : args.sessionId;
     if (args.source === 'claude') {
       const holder = findActiveClaudeHolder(args.sessionId);
       if (holder) {

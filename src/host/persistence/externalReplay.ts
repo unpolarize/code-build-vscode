@@ -149,6 +149,19 @@ export interface ReplayResult {
   byModel: UsageInfo[];
 }
 
+/** Prefer the native JSONL replay; if it's missing/empty, use records CSV
+ * injected from the git-store turns (cross-device continue). */
+export function pickExternalReplay(
+  native: ReplayResult | null,
+  injected?: ReplayRecord[] | null
+): ReplayResult | null {
+  if (native && native.records.length > 0) return native;
+  if (injected && injected.length > 0) {
+    return { records: injected, totals: {}, byModel: [] };
+  }
+  return native;
+}
+
 /** Parse a Claude Code JSONL transcript and emit webview-replay records +
  * per-model token totals. Tolerates malformed lines (skips them) so a
  * partial transcript still loads. */

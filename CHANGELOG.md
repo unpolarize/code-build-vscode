@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.35.0 — 2026-09-12
+
+### openExternalSession hydrates git-store records
+
+- CSV Continue-in-CB on a cross-device / git-store-only session can now pass `records[]`. When the native claude/grok JSONL is missing, Code Build replays those records into the chat instead of opening an empty panel. `source:"git"` with records maps to grok instead of a silent no-op.
+- (kp: tasks/csv-cb-continue-in-code-build-on-done-sessions-o)
+
 ## 0.34.0 — 2026-09-12
 
 ### Restricted/sandbox posture matrix chip (Claude 2.1.248 class)
