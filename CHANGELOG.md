@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.34.0 — 2026-09-12
+
+### Restricted/sandbox posture matrix chip (Claude 2.1.248 class)
+
+- Header chip translates vendor sandbox flags into `{shell, network, files, creds}`
+  badges. Claude `--restricted` / `CLAUDE_CODE_RESTRICTED=1` → `shell:off` +
+  `files:cwd`. Codex `--sandbox read-only|workspace-write|danger-full-access`
+  from spawn argv / initialize. Missing signals stay `unknown` (amber) — never
+  silent green.
+- Click the chip for a notice listing the raw spawn-args / env / initialize
+  signals used. Concurrent sessions on the same cwd with disagreeing known
+  dimensions post a conflict banner.
+- Surface only — does not change sandbox enforcement.
+- Pure module `src/shared/sandboxPostureChip.ts` + unit tests (restricted vs
+  unrestricted Claude fixtures, Codex sandbox, unknown ≠ green).
+
 ## 0.33.0 — 2026-09-11
 
 ### Finishability preflight gate (anti mid-refactor kill)

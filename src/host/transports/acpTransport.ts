@@ -60,6 +60,10 @@ import {
   hostKillAgentProcess,
   type SessionStopDecision
 } from '../../shared/sessionStopCapability';
+import {
+  evaluateSandboxPosture,
+  toSandboxPostureUpdate
+} from '../../shared/sandboxPostureChip';
 
 export type { AcpMcpServer };
 
@@ -342,6 +346,7 @@ export class AcpTransport extends BaseAgentSession {
           label: this.stopDecision.label,
           reason: this.stopDecision.reason
         });
+        this.emitSandboxPosture(init, args);
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
         // rejects objects without env (Invalid params → broken Grok restore).
@@ -537,7 +542,17 @@ export class AcpTransport extends BaseAgentSession {
     });
   }
 
-  /** Session cwd used as the sandbox root for the fs/* bridge. */
+  /** Restricted/sandbox posture from initialize + spawn argv/env. */
+  private emitSandboxPosture(init: unknown, spawnArgs: string[]): void {
+    const chip = evaluateSandboxPosture({
+      backend: this.backend,
+      spawnArgs,
+      env: process.env,
+      agentInitialize: init
+    });
+    this.emit(toSandboxPostureUpdate(chip));
+  }
+
   private requireRoot(): string {
     const root = this.startOpts?.cwd;
     if (!root) throw new Error('No workspace root for fs request');

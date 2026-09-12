@@ -159,6 +159,22 @@ export type SessionUpdate =
       label: string;
       reason: string;
     }
+  /** Restricted/sandbox posture matrix (Claude 2.1.248 class). Unknown
+   * dimensions stay `unknown` — never silent green. Surface only. */
+  | {
+      kind: 'sandbox_posture_update';
+      available: boolean;
+      shell: 'off' | 'on' | 'unknown';
+      network: 'off' | 'on' | 'allowlist' | 'unknown';
+      files: 'cwd' | 'workspace' | 'unrestricted' | 'unknown';
+      creds: 'blocked' | 'allowed' | 'unknown';
+      label: string;
+      warn: boolean;
+      warnReason?: string;
+      signals: Array<{ key: string; value: string; source: 'spawn-args' | 'env' | 'initialize' }>;
+      conflict?: boolean;
+      conflictDetail?: string;
+    }
   /** maxEffortLevel org/host ceiling chip (Claude 2.1.267 / codex-acp class).
    * `available:false` → no ceiling known (`ceil n/a`); host may also post
    * via HostToWebview.effortCeiling without persisting to JSONL. */

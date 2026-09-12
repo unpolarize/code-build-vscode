@@ -367,6 +367,11 @@ export type WebviewToHost =
    */
   | { type: 'preferDomHint' }
   /**
+   * Click-through on the sandbox posture chip — host shows the raw vendor
+   * signals used (spawn args / env / initialize). Surface only.
+   */
+  | { type: 'sandboxPostureDetail' }
+  /**
    * Teammate-context compact proxy — chip click or slash path. Host runs
    * evaluate → summarize primer / vendor compact / park-handoff for children
    * past the context threshold (Claude #49786 class).
@@ -703,6 +708,27 @@ export type HostToWebview =
         parkedCount: number;
         warn: boolean;
         hint?: string;
+      } | null;
+    }
+  /**
+   * Restricted/sandbox posture matrix chip (Claude 2.1.248 class). Host
+   * posts live from spawn argv / env / initialize. Null clears (new session).
+   * Unknown dimensions stay unknown — never silent green. Surface only.
+   */
+  | {
+      type: 'sandboxPosture';
+      chip: {
+        available: boolean;
+        shell: 'off' | 'on' | 'unknown';
+        network: 'off' | 'on' | 'allowlist' | 'unknown';
+        files: 'cwd' | 'workspace' | 'unrestricted' | 'unknown';
+        creds: 'blocked' | 'allowed' | 'unknown';
+        label: string;
+        warn: boolean;
+        warnReason?: string;
+        signals: Array<{ key: string; value: string; source: 'spawn-args' | 'env' | 'initialize' }>;
+        conflict?: boolean;
+        conflictDetail?: string;
       } | null;
     }
   /**

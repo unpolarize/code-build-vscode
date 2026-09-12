@@ -3,6 +3,7 @@ import type { PermissionMode } from '../../../src/shared/acpTypes';
 import { modePickerOptions } from '../../../src/shared/permissionModes';
 import { formatModelSwitchTooltip } from '../../../src/shared/modelSwitchHook';
 import { formatFinishabilityTooltip } from '../../../src/shared/finishabilityPreflight';
+import { formatSandboxPostureTooltip } from '../../../src/shared/sandboxPostureChip';
 import type { ChatState } from '../store';
 import { post } from '../vscodeApi';
 type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -241,6 +242,21 @@ export function Header({
         >
           {state.sessionStopCapability.label}
         </span>
+      )}
+
+      {state.sandboxPosture?.available && (
+        <button
+          type="button"
+          className={
+            state.sandboxPosture.warn || state.sandboxPosture.conflict
+              ? 'sandbox-posture-chip sandbox-posture-chip-warn'
+              : 'sandbox-posture-chip'
+          }
+          title={formatSandboxPostureTooltip(state.sandboxPosture)}
+          onClick={() => post({ type: 'sandboxPostureDetail' })}
+        >
+          {state.sandboxPosture.label}
+        </button>
       )}
 
       {state.session?.failoverFrom && state.session.failoverReason && (

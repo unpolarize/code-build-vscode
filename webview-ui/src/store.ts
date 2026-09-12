@@ -316,6 +316,20 @@ export interface ChatState {
     label: string;
     reason: string;
   } | null;
+  /** Restricted/sandbox posture matrix (null until spawn/initialize). */
+  sandboxPosture: {
+    available: boolean;
+    shell: 'off' | 'on' | 'unknown';
+    network: 'off' | 'on' | 'allowlist' | 'unknown';
+    files: 'cwd' | 'workspace' | 'unrestricted' | 'unknown';
+    creds: 'blocked' | 'allowed' | 'unknown';
+    label: string;
+    warn: boolean;
+    warnReason?: string;
+    signals: Array<{ key: string; value: string; source: 'spawn-args' | 'env' | 'initialize' }>;
+    conflict?: boolean;
+    conflictDetail?: string;
+  } | null;
   /** Runtime media/pixel tool-tax chip (null until tax > 0 or Prefer-DOM armed). */
   mediaToolTax: {
     label: string;
@@ -423,6 +437,7 @@ export const initialState: ChatState = {
   writeDrain: null,
   finishability: null,
   sessionStopCapability: null,
+  sandboxPosture: null,
   mediaToolTax: null,
   idleNoticeTax: null,
   teammateCompact: null,
@@ -510,6 +525,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
       return { ...state, teammateCompact: msg.chip };
     case 'effortCeiling':
       return { ...state, effortCeiling: msg.chip };
+    case 'sandboxPosture':
+      return { ...state, sandboxPosture: msg.chip };
     case 'cacheMiss':
       return { ...state, cacheMiss: msg.chip };
     case 'modelSwitch':
@@ -1031,6 +1048,23 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
           reason: u.reason
         }
       };
+    case 'sandbox_posture_update':
+      return {
+        ...state,
+        sandboxPosture: {
+          available: u.available,
+          shell: u.shell,
+          network: u.network,
+          files: u.files,
+          creds: u.creds,
+          label: u.label,
+          warn: u.warn,
+          signals: u.signals,
+          ...(u.warnReason ? { warnReason: u.warnReason } : {}),
+          ...(u.conflict ? { conflict: true } : {}),
+          ...(u.conflictDetail ? { conflictDetail: u.conflictDetail } : {})
+        }
+      };
     default:
       return state;
   }
@@ -1196,6 +1230,7 @@ function replayRecords(
           writeDrain: null,
           finishability: null,
           sessionStopCapability: null,
+          sandboxPosture: null,
           mediaToolTax: null,
           // Idle-notice tax is live host state too — clear on switch.
           idleNoticeTax: null,

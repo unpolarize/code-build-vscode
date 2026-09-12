@@ -212,6 +212,13 @@ import {
   getPermissionBallotHub,
   type BallotAction
 } from '../shared/permissionBallot';
+import {
+  evaluateSandboxPosture,
+  formatSandboxPostureDetail,
+  getSandboxPostureHub,
+  postureSignature,
+  type SandboxPostureChip
+} from '../shared/sandboxPostureChip';
 
 /** Injected into WriteAtomicDrainTracker so quota drain can flush/rollback
  * without the tracker importing vscode. */
@@ -410,6 +417,12 @@ export class SessionManager {
   private agentEffortCeiling: EffortCeilingSourceHit | null = null;
   /** Last effort-ceiling chip signature posted (dedupe). */
   private effortCeilingLastPosted: string | undefined;
+  /** Last sandbox-posture chip (live host state + click-through). */
+  private lastSandboxChip: SandboxPostureChip | null = null;
+  /** Agent-advertised posture from ACP initialize (wins over spawn-only). */
+  private lastSandboxChipFromAgent: SandboxPostureChip | null = null;
+  /** Last sandbox-posture chip signature posted (dedupe). */
+  private sandboxPostureLastPosted: string | undefined;
   /** Last cache-miss chip signature posted (dedupe). */
   private cacheMissLastPosted: string | undefined;
   /** Pre/Post model-switch host hook (picker / explicit override). */
@@ -784,6 +797,9 @@ export class SessionManager {
         break;
       case 'preferDomHint':
         this.armPreferDomHint();
+        break;
+      case 'sandboxPostureDetail':
+        this.showSandboxPostureDetail();
         break;
       case 'compactTeammate':
         await this.handleCompactTeammate(msg.childId);
@@ -1338,6 +1354,10 @@ export class SessionManager {
     if (this.modelSwitch.lastChip?.available) {
       this.modelSwitchLastPosted = undefined;
       this.postModelSwitchChip(this.modelSwitch.lastChip);
+    }
+    if (this.lastSandboxChip?.available) {
+      this.sandboxPostureLastPosted = undefined;
+      this.postSandboxPostureChip();
     }
   }
 
@@ -2825,6 +2845,9 @@ export class SessionManager {
     // Host maxEffortLevel chip (agent-reported may arrive via initialize later).
     this.effortCeilingLastPosted = undefined;
     this.postEffortCeilingChip();
+    this.lastSandboxChipFromAgent = null;
+    this.sandboxPostureLastPosted = undefined;
+    this.postSandboxPostureChip();
     this.cacheMissLastPosted = undefined;
     this.panel.post({ type: 'cacheMiss', chip: null });
     this.modelSwitch.clear();
@@ -4246,6 +4269,98 @@ export class SessionManager {
   }
 
   /**
+   * Resolve spawn argv + env (+ agent initialize when latched) into the
+   * header posture chip. Unknown dimensions stay unknown (amber).
+   * Surface only — does not change sandbox enforcement.
+   */
+  private postSandboxPostureChip(): void {
+    if (!this.meta) return;
+    const remembered = this.rememberedConfig();
+    const spec = BACKENDS[this.meta.backend];
+    const spawnArgs = spec.buildArgs({
+      cwd: this.meta.cwd,
+      mode: this.meta.mode ?? remembered.mode,
+      model: this.meta.model,
+      effort: this.meta.effort ?? remembered.effort,
+      allowBypass: this.allowBypass,
+      additionalTrustedDirs: this.trustedDirs(this.meta.mode ?? remembered.mode)
+    });
+    const base =
+      this.lastSandboxChipFromAgent ??
+      evaluateSandboxPosture({
+        backend: this.meta.backend,
+        spawnArgs,
+        env: process.env
+      });
+    const hub = getSandboxPostureHub();
+    hub.register({
+      sessionId: this.meta.id,
+      cwd: this.meta.cwd,
+      backend: this.meta.backend,
+      chip: base
+    });
+    const conflict = hub.conflictFor(this.meta.id);
+    const posted: SandboxPostureChip = conflict
+      ? {
+          ...base,
+          warn: true,
+          conflict: true,
+          conflictDetail:
+            `Conflicting sandbox posture on ${conflict.cwd}: ${conflict.reasons.join('; ')}.`,
+          warnReason:
+            `Conflicting sandbox posture on ${conflict.cwd}: ${conflict.reasons.join('; ')}.`
+        }
+      : base;
+    const sig = postureSignature(posted);
+    this.lastSandboxChip = posted;
+    if (sig === this.sandboxPostureLastPosted) return;
+    this.sandboxPostureLastPosted = sig;
+    if (conflict) {
+      this.panel.post({
+        type: 'notice',
+        key: 'sandbox-posture-conflict',
+        text: `⚠️ Sandbox posture conflict — ${posted.conflictDetail}`,
+        detail: formatSandboxPostureDetail(posted)
+      });
+    }
+    this.panel.post({
+      type: 'sandboxPosture',
+      chip: {
+        available: posted.available,
+        shell: posted.shell,
+        network: posted.network,
+        files: posted.files,
+        creds: posted.creds,
+        label: posted.label,
+        warn: posted.warn,
+        signals: posted.signals,
+        ...(posted.warnReason ? { warnReason: posted.warnReason } : {}),
+        ...(posted.conflict ? { conflict: true } : {}),
+        ...(posted.conflictDetail ? { conflictDetail: posted.conflictDetail } : {})
+      }
+    });
+  }
+
+  /** Click-through: list raw vendor signals used for the posture badges. */
+  private showSandboxPostureDetail(): void {
+    const chip = this.lastSandboxChip;
+    if (!chip) {
+      this.panel.post({
+        type: 'notice',
+        key: 'sandbox-posture',
+        text: 'Sandbox posture: no signals yet (session not started).'
+      });
+      return;
+    }
+    this.panel.post({
+      type: 'notice',
+      key: 'sandbox-posture',
+      text: `Sandbox posture — ${chip.label}`,
+      detail: formatSandboxPostureDetail(chip)
+    });
+  }
+
+  /**
    * Pre-send / setEffort gate against the effort ceiling.
    * Returns 'block' when the action must not proceed.
    */
@@ -4653,6 +4768,9 @@ export class SessionManager {
       additionalTrustedDirs: this.trustedDirs(mode),
       ...this.fsBridgeHooks()
     });
+    this.lastSandboxChipFromAgent = null;
+    this.sandboxPostureLastPosted = undefined;
+    this.postSandboxPostureChip();
   }
 
   /** On the first user prompt: index the session in history and derive a title from it. */
@@ -4719,6 +4837,11 @@ export class SessionManager {
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     getPermissionBallotHub().unregisterSession(this.meta?.id ?? '');
+    getSandboxPostureHub().unregister(this.meta?.id ?? '');
+    this.lastSandboxChip = null;
+    this.lastSandboxChipFromAgent = null;
+    this.sandboxPostureLastPosted = undefined;
+    this.panel.post({ type: 'sandboxPosture', chip: null });
     this.session?.dispose();
     this.session = undefined;
     // Cancel any pending "still waiting" notice — we don't want it
@@ -5387,6 +5510,23 @@ export class SessionManager {
     this.captureBackendSessionId(update);
     this.handleResumeFallback(update);
     this.syncAgentMode(update);
+    if (update.kind === 'sandbox_posture_update') {
+      this.lastSandboxChipFromAgent = {
+        available: update.available,
+        shell: update.shell,
+        network: update.network,
+        files: update.files,
+        creds: update.creds,
+        label: update.label,
+        warn: update.warn,
+        signals: update.signals,
+        ...(update.warnReason ? { warnReason: update.warnReason } : {}),
+        ...(update.conflict ? { conflict: true } : {}),
+        ...(update.conflictDetail ? { conflictDetail: update.conflictDetail } : {})
+      };
+      this.sandboxPostureLastPosted = undefined;
+      this.postSandboxPostureChip();
+    }
     if (update.kind === 'effort_ceiling_update') {
       // Agent-advertised ceiling from ACP initialize — latch for host gate.
       if (
@@ -6531,6 +6671,9 @@ export class SessionManager {
       additionalTrustedDirs: this.trustedDirs(mode),
       ...this.fsBridgeHooks()
     });
+    this.lastSandboxChipFromAgent = null;
+    this.sandboxPostureLastPosted = undefined;
+    this.postSandboxPostureChip();
   }
 }
 
