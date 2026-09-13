@@ -161,6 +161,7 @@ import {
 import {
   DEFAULT_TOOL_READ_GATE_CONFIG,
   ToolReadGate,
+  applyToolReadGateChip,
   type ToolReadGateConfig,
   type ToolReadGateEvent
 } from '../shared/toolReadGate';
@@ -5029,23 +5030,9 @@ export class SessionManager {
     path?: string
   ): void {
     const gate = this.ensureToolReadGate();
-    if (decision === 'allow_session') {
-      gate.grantSession();
-      return;
-    }
-    if (decision === 'deny') {
-      gate.deny(path);
-      this.panel.post({
-        type: 'notice',
-        text: path
-          ? `Oversized read denied for ${path}`
-          : 'Oversized read denied (default posture)',
-        key: 'tool-read-gate-deny'
-      });
-      return;
-    }
     const target = (path && path.trim()) || this.toolReadGateLastDeniedPath;
-    if (!target) {
+    const result = applyToolReadGateChip(gate, decision, target);
+    if (result.applied === 'need_path') {
       this.panel.post({
         type: 'notice',
         text: 'Allow once needs a path (no prior denied read in this session).',
@@ -5053,7 +5040,16 @@ export class SessionManager {
       });
       return;
     }
-    gate.grantOnce(target);
+    this.panel.post({ type: 'dismissNotice', key: 'tool-read-gate-deny' });
+    if (result.applied === 'deny') {
+      this.panel.post({
+        type: 'notice',
+        text: result.path
+          ? `Oversized read denied for ${result.path}`
+          : 'Oversized read denied (default posture)',
+        key: 'tool-read-gate-denied'
+      });
+    }
   }
 
   private ensureScopeFence(): ScopeFence {

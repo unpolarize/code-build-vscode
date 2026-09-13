@@ -49,8 +49,10 @@ export interface StartOpts {
   /**
    * Big-file Read gate (kp: cb-big-file-read-hard-block). Called after
    * path confinement + fs.stat, before the host reads file bytes for
-   * `fs/read_text_file`. Return false to reject the read (agent sees an
-   * error; host emits a timeline deny/grant event). Absent = allow all.
+   * `fs/read_text_file` and before Claude `session/request_permission`
+   * auto-approve for Read / Bash cat·head. Return false to reject the
+   * read (agent sees an error / rejected permission; host emits a
+   * timeline deny/grant event). Absent = allow all.
    */
   onFsReadCheck?: (absPath: string, bytes: number) => boolean;
   /**

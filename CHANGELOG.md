@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.35.2 — 2026-09-13
+
+### Big-file Read gate: deny chips + Claude permission path
+
+- Deny notice now shows **Allow once** / **Allow session** / **Deny** chips
+  (`toolReadGateDecision`). Allow once permits exactly one subsequent oversized
+  read; Allow session lasts the session; Deny stays blocked.
+- The same size gate now runs on Claude `session/request_permission` for
+  Read / Bash `cat`/`head` (before auto-approve, including bypass).
+- (kp: ideas/cb-big-file-read-hard-block-host-gate-warn-then)
+
 ## 0.35.1 — 2026-09-12
 
 ### Grok resume: no replay flood, You-bubble before handshake, restoring notice

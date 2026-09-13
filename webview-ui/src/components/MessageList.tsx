@@ -476,6 +476,34 @@ const Item = memo(function Item({
               </button>
             </div>
           )}
+          {item.key === 'tool-read-gate-deny' && (
+            <div className="notice-actions">
+              <button
+                type="button"
+                className="btn notice-action-btn"
+                title="Permit one subsequent oversized read of this path"
+                onClick={() => post({ type: 'toolReadGateDecision', decision: 'allow_once' })}
+              >
+                Allow once
+              </button>
+              <button
+                type="button"
+                className="btn notice-action-btn"
+                title="Permit oversized reads for the rest of this session"
+                onClick={() => post({ type: 'toolReadGateDecision', decision: 'allow_session' })}
+              >
+                Allow session
+              </button>
+              <button
+                type="button"
+                className="btn notice-action-btn"
+                title="Keep the oversized read blocked"
+                onClick={() => post({ type: 'toolReadGateDecision', decision: 'deny' })}
+              >
+                Deny
+              </button>
+            </div>
+          )}
         </div>
       );
     case 'askUser':

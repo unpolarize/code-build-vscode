@@ -6,6 +6,8 @@ import {
   detectReadToolPath,
   parseBashReadPath,
   formatBytes,
+  applyToolReadGateChip,
+  TOOL_READ_GATE_CHIPS,
   DEFAULT_TOOL_READ_MAX_BYTES_WARN,
   DEFAULT_TOOL_READ_MAX_BYTES_BLOCK,
   DEFAULT_TOOL_READ_GATE_CONFIG,
@@ -56,6 +58,12 @@ test('detectReadToolPath covers Read and Bash cat', () => {
   assert.equal(detectReadToolPath('Bash', { command: 'cat huge.json' }), 'huge.json');
   assert.equal(detectReadToolPath('Edit', { path: 'x.ts' }), null);
   assert.equal(detectReadToolPath('Bash', { command: 'npm test' }), null);
+});
+
+test('detectReadToolPath treats ACP kind=read as a Read tool', () => {
+  assert.equal(detectReadToolPath('big.log', { path: '/tmp/big.log' }, 'read'), '/tmp/big.log');
+  assert.equal(detectReadToolPath(undefined, { file_path: 'x.md' }, 'read'), 'x.md');
+  assert.equal(detectReadToolPath('Write', { path: 'x.ts' }, 'edit'), null);
 });
 
 // --- gate: block / grant-once / session-allow ---------------------------------
@@ -141,4 +149,51 @@ test('setConfig updates thresholds mid-session', () => {
   assert.equal(g.allowRead('/f', 50), true); // warn band
   g.setConfig({ maxBytesWarn: 10, maxBytesBlock: 40 });
   assert.equal(g.allowRead('/f', 50), false);
+});
+
+// --- chip → lease mapping (webview Allow once / Allow session / Deny) ---------
+
+test('TOOL_READ_GATE_CHIPS is Allow once / Allow session / Deny', () => {
+  assert.deepEqual(
+    TOOL_READ_GATE_CHIPS.map((c) => c.decision),
+    ['allow_once', 'allow_session', 'deny']
+  );
+  assert.deepEqual(
+    TOOL_READ_GATE_CHIPS.map((c) => c.label),
+    ['Allow once', 'Allow session', 'Deny']
+  );
+});
+
+test('chip Allow once permits exactly one subsequent oversized read', () => {
+  const g = new ToolReadGate();
+  const path = '/tmp/fixture-2mib.bin';
+  assert.equal(g.allowRead(path, TWO_MIB), false);
+
+  const mapped = applyToolReadGateChip(g, 'allow_once', path);
+  assert.deepEqual(mapped, { applied: 'once', path });
+  assert.equal(g.allowRead(path, TWO_MIB), true);
+  assert.equal(g.allowRead(path, TWO_MIB), false);
+});
+
+test('chip Allow session lasts the session; Deny stays blocked', () => {
+  const g = new ToolReadGate();
+  assert.equal(g.allowRead('/a.log', TWO_MIB), false);
+
+  assert.deepEqual(applyToolReadGateChip(g, 'allow_session'), { applied: 'session' });
+  assert.equal(g.allowRead('/a.log', TWO_MIB), true);
+  assert.equal(g.allowRead('/b.log', TWO_MIB), true);
+
+  const g2 = new ToolReadGate();
+  assert.equal(g2.allowRead('/c.log', TWO_MIB), false);
+  assert.deepEqual(applyToolReadGateChip(g2, 'deny', '/c.log'), {
+    applied: 'deny',
+    path: '/c.log'
+  });
+  assert.equal(g2.allowRead('/c.log', TWO_MIB), false);
+});
+
+test('chip Allow once without a path is need_path (no lease)', () => {
+  const g = new ToolReadGate();
+  assert.deepEqual(applyToolReadGateChip(g, 'allow_once'), { applied: 'need_path' });
+  assert.equal(g.allowRead('/x', TWO_MIB), false);
 });

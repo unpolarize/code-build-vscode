@@ -13,6 +13,7 @@
 //      until the stall watchdog fired. Teardown resolves EVERY pending
 //      request with {outcome:'cancelled'} so no promise leaks.
 import type { PermissionOutcome, ToolCall } from '../../shared/acpTypes';
+import { detectReadToolPath } from '../../shared/toolReadGate';
 import { extractAcpToolContent } from './normalizers/acp';
 
 /** Normalize the agent-supplied toolCall from a session/request_permission
@@ -37,6 +38,39 @@ export function buildPermissionToolCall(raw: unknown, requestId: string): ToolCa
     // Defensive: malformed params must still yield a promptable request.
     return { toolCallId: requestId, title: 'Permission request', status: 'pending' };
   }
+}
+
+/**
+ * Path the big-file Read gate should stat for a `session/request_permission`
+ * toolCall (Claude Read / Bash cat·head). Null when the call is not a
+ * recognizable oversized-read candidate — leave those to the normal prompt.
+ */
+export function permissionReadPath(raw: unknown): string | null {
+  const tc = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const title = typeof tc.title === 'string' ? tc.title : undefined;
+  const kind = typeof tc.kind === 'string' ? tc.kind : undefined;
+  const fromTool = detectReadToolPath(title, tc.rawInput, kind);
+  if (fromTool) return fromTool;
+  if (kind != null && /^read$/i.test(kind) && Array.isArray(tc.locations)) {
+    for (const item of tc.locations) {
+      if (item && typeof item === 'object' && typeof (item as { path?: unknown }).path === 'string') {
+        const p = (item as { path: string }).path.trim();
+        if (p) return p;
+      }
+    }
+  }
+  return null;
+}
+
+/** Prefer reject_once, then reject_always; otherwise cancel the RPC. */
+export function rejectPermissionOutcome(
+  options: { optionId: string; kind: string }[]
+): PermissionOutcome {
+  const reject =
+    options.find((o) => o.kind === 'reject_once') ??
+    options.find((o) => o.kind === 'reject_always');
+  if (reject) return { outcome: 'selected', optionId: reject.optionId };
+  return { outcome: 'cancelled' };
 }
 
 function extractLocations(raw: unknown): { path: string; line?: number }[] {

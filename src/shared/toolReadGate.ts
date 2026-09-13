@@ -77,23 +77,29 @@ export function classifyReadSize(
  * Detect Read / cat / head style tool calls from title + rawInput.
  * Used to extend the gate beyond ACP fs/read (Claude Read, Bash cat/head).
  * Returns the candidate path when recognizable; null when not a read-ish tool.
+ *
+ * `kind` is the ACP toolCall.kind (`read` / `execute` / …). A `read` kind
+ * is treated as a Read tool even when the title is a filename.
  */
 export function detectReadToolPath(
   title: string | undefined,
-  rawInput?: unknown
+  rawInput?: unknown,
+  kind?: string
 ): string | null {
-  if (!title) return null;
-  const t = title.trim();
+  const t = title?.trim() ?? '';
   const input =
     rawInput && typeof rawInput === 'object'
       ? (rawInput as Record<string, unknown>)
       : undefined;
 
   // Native Read / read_file / ReadFile tools — path in common fields.
-  if (/^(read|read_file|readfile)$/i.test(t)) {
+  // ACP `kind: 'read'` covers title-as-filename adapters.
+  if (/^(read|read_file|readfile)$/i.test(t) || (kind != null && /^read$/i.test(kind))) {
     const p = pickPathField(input);
-    return p;
+    if (p) return p;
   }
+
+  if (!t) return null;
 
   // Bash / Shell wrapping cat/head/less/wc -c on a file.
   if (/^(bash|shell|zsh|sh)$/i.test(t)) {
@@ -107,6 +113,47 @@ export function detectReadToolPath(
   }
 
   return null;
+}
+
+/** Webview deny-notice chips → host `toolReadGateDecision` values. */
+export type ToolReadGateChip = 'allow_once' | 'allow_session' | 'deny';
+
+export const TOOL_READ_GATE_CHIPS: ReadonlyArray<{
+  label: string;
+  decision: ToolReadGateChip;
+}> = [
+  { label: 'Allow once', decision: 'allow_once' },
+  { label: 'Allow session', decision: 'allow_session' },
+  { label: 'Deny', decision: 'deny' }
+];
+
+export type ToolReadGateChipResult =
+  | { applied: 'once'; path: string }
+  | { applied: 'session' }
+  | { applied: 'deny'; path?: string }
+  | { applied: 'need_path' };
+
+/**
+ * Map a deny-notice chip click onto grant leases.
+ * `allow_once` requires a path (the denied file); `allow_session` does not.
+ */
+export function applyToolReadGateChip(
+  gate: ToolReadGate,
+  chip: ToolReadGateChip,
+  path?: string
+): ToolReadGateChipResult {
+  if (chip === 'allow_session') {
+    gate.grantSession();
+    return { applied: 'session' };
+  }
+  if (chip === 'deny') {
+    gate.deny(path);
+    return { applied: 'deny', path };
+  }
+  const p = (path ?? '').trim();
+  if (!p) return { applied: 'need_path' };
+  gate.grantOnce(p);
+  return { applied: 'once', path: p };
 }
 
 function pickPathField(input?: Record<string, unknown>): string | null {

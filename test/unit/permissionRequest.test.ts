@@ -8,8 +8,15 @@ import assert from 'node:assert/strict';
 import type { PermissionOutcome } from '../../src/shared/acpTypes';
 import {
   buildPermissionToolCall,
+  permissionReadPath,
+  rejectPermissionOutcome,
   PendingPermissionResolvers
 } from '../../src/host/transports/permissionRequest';
+import {
+  ToolReadGate,
+  applyToolReadGateChip,
+  DEFAULT_TOOL_READ_MAX_BYTES_BLOCK
+} from '../../src/shared/toolReadGate';
 
 describe('buildPermissionToolCall', () => {
   it('retains rawInput, locations and normalized ACP content', () => {
@@ -105,6 +112,116 @@ describe('PendingPermissionResolvers', () => {
     assert.deepEqual(await p2, { outcome: 'cancelled' });
     // Late responses after teardown are safely ignored.
     assert.equal(reg.resolve('r1', { outcome: 'cancelled' }), false);
+  });
+});
+
+describe('permissionReadPath (Claude Read / Bash cat·head)', () => {
+  it('detects Claude Read and Bash cat/head of a 2MiB-class fixture', () => {
+    assert.equal(
+      permissionReadPath({
+        title: 'Read',
+        kind: 'read',
+        rawInput: { file_path: '/tmp/fixture-2mib.bin' }
+      }),
+      '/tmp/fixture-2mib.bin'
+    );
+    assert.equal(
+      permissionReadPath({
+        title: 'Bash',
+        kind: 'execute',
+        rawInput: { command: 'cat /tmp/fixture-2mib.bin' }
+      }),
+      '/tmp/fixture-2mib.bin'
+    );
+    assert.equal(
+      permissionReadPath({
+        title: 'Bash',
+        kind: 'execute',
+        rawInput: { command: 'head -n 20 /tmp/fixture-2mib.bin' }
+      }),
+      '/tmp/fixture-2mib.bin'
+    );
+  });
+
+  it('falls back to locations[] for kind=read without rawInput path', () => {
+    assert.equal(
+      permissionReadPath({
+        title: 'big.log',
+        kind: 'read',
+        locations: [{ path: '/workspace/big.log' }]
+      }),
+      '/workspace/big.log'
+    );
+  });
+
+  it('2MiB Bash cat/head hits the same block gate as ACP Read', () => {
+    const twoMib = 2 * 1024 * 1024;
+    assert.ok(twoMib > DEFAULT_TOOL_READ_MAX_BYTES_BLOCK);
+    const catPath = permissionReadPath({
+      title: 'Bash',
+      kind: 'execute',
+      rawInput: { command: 'cat /tmp/fixture-2mib.bin' }
+    });
+    const headPath = permissionReadPath({
+      title: 'Bash',
+      kind: 'execute',
+      rawInput: { command: 'head -n 20 /tmp/fixture-2mib.bin' }
+    });
+    const readPath = permissionReadPath({
+      title: 'Read',
+      kind: 'read',
+      rawInput: { path: '/tmp/fixture-2mib.bin' }
+    });
+    assert.equal(catPath, '/tmp/fixture-2mib.bin');
+    assert.equal(headPath, catPath);
+    assert.equal(readPath, catPath);
+
+    const g = new ToolReadGate();
+    assert.equal(g.allowRead(catPath!, twoMib), false);
+    assert.deepEqual(applyToolReadGateChip(g, 'allow_once', catPath!), {
+      applied: 'once',
+      path: catPath
+    });
+    assert.equal(g.allowRead(catPath!, twoMib), true);
+    assert.equal(g.allowRead(catPath!, twoMib), false);
+  });
+
+  it('returns null for non-read tools (Edit, npm test)', () => {
+    assert.equal(
+      permissionReadPath({ title: 'Edit', kind: 'edit', rawInput: { path: 'x.ts' } }),
+      null
+    );
+    assert.equal(
+      permissionReadPath({
+        title: 'Bash',
+        kind: 'execute',
+        rawInput: { command: 'npm test' }
+      }),
+      null
+    );
+  });
+});
+
+describe('rejectPermissionOutcome', () => {
+  it('prefers reject_once, then reject_always, else cancelled', () => {
+    assert.deepEqual(
+      rejectPermissionOutcome([
+        { optionId: 'allow', kind: 'allow_once' },
+        { optionId: 'nope', kind: 'reject_once' },
+        { optionId: 'never', kind: 'reject_always' }
+      ]),
+      { outcome: 'selected', optionId: 'nope' }
+    );
+    assert.deepEqual(
+      rejectPermissionOutcome([
+        { optionId: 'allow', kind: 'allow_once' },
+        { optionId: 'never', kind: 'reject_always' }
+      ]),
+      { outcome: 'selected', optionId: 'never' }
+    );
+    assert.deepEqual(rejectPermissionOutcome([{ optionId: 'allow', kind: 'allow_once' }]), {
+      outcome: 'cancelled'
+    });
   });
 });
 

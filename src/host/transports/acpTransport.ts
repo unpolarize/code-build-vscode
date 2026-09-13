@@ -16,7 +16,12 @@ import { normalizeAcpUpdate } from './normalizers/acp';
 import { classifyBackendError } from '../../shared/backendErrorClass';
 import { acpIdForPermissionMode, permissionModeFromAcpId } from '../../shared/permissionModes';
 import { settleAcpProcessExit } from './acpProcessExit';
-import { buildPermissionToolCall, PendingPermissionResolvers } from './permissionRequest';
+import {
+  buildPermissionToolCall,
+  permissionReadPath,
+  rejectPermissionOutcome,
+  PendingPermissionResolvers
+} from './permissionRequest';
 import { createPathGuard, type PathGuard } from '../pathGuard';
 import {
   appendKpMcpServer,
@@ -703,11 +708,32 @@ export class AcpTransport extends BaseAgentSession {
     this.pendingAskUser.clear();
   }
 
-  private handlePermission(params: Record<string, unknown>): Promise<{ outcome: PermissionOutcome }> {
+  private async handlePermission(
+    params: Record<string, unknown>
+  ): Promise<{ outcome: PermissionOutcome }> {
     const requestId = crypto.randomUUID();
     const toolCall = (params.toolCall ?? {}) as Record<string, unknown>;
     const options = (params.options ?? []) as { optionId: string; name: string; kind: string }[];
     const toolKind = toolCall.kind as string | undefined;
+
+    // Big-file Read gate BEFORE auto-approve so bypass / night sessions
+    // cannot invoice a 50MB log through Claude Read or Bash cat/head.
+    // Same onFsReadCheck hook as ACP fs/read_text_file.
+    if (this.startOpts?.onFsReadCheck) {
+      const candidate = permissionReadPath(params.toolCall);
+      if (candidate) {
+        try {
+          const safe = this.resolveFsPath(candidate);
+          const st = await fs.stat(safe);
+          if (st.isFile() && !this.startOpts.onFsReadCheck(safe, st.size)) {
+            return { outcome: rejectPermissionOutcome(options) };
+          }
+        } catch {
+          // Path escape / missing file — leave to the permission UI or the
+          // tool's own error. Never fail closed on a stat miss.
+        }
+      }
+    }
 
     // Auto-approve to match Claude Code's permission semantics:
     //   - bypass  → approve everything (the user opted into the escape hatch)
