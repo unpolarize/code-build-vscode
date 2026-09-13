@@ -5,6 +5,7 @@ import type {
   PermissionOutcome,
   SessionUpdate
 } from '../shared/acpTypes';
+import type { XaiExtCallResult, XaiExtensionCaps } from '../shared/xaiAcpExtensions';
 
 export interface StartOpts {
   cwd: string;
@@ -103,6 +104,29 @@ export interface AgentSession {
    * on tool_result via `prompt()`.
    */
   answerAskUserQuestion?(toolCallId: string, answers: Record<string, string>): boolean;
+
+  /**
+   * Advertised x.ai ACP extensions from initialize (compact / rewind / git).
+   * Absent on non-ACP transports — host treats as all-false.
+   */
+  xaiExtensionCaps?(): XaiExtensionCaps;
+
+  /**
+   * Native `x.ai/compact_conversation` when advertised. Never throws —
+   * `{ ok:false, notice }` on missing capability, handshake, or RPC error.
+   */
+  compactConversation?(focus?: string): Promise<XaiExtCallResult>;
+
+  /**
+   * Native `x.ai/rewind/execute` when advertised. Never throws.
+   * Host truncates the local transcript after a confirmed ok.
+   */
+  rewindToPrompt?(targetPromptIndex: number, force?: boolean): Promise<XaiExtCallResult>;
+
+  /**
+   * Read-only `x.ai/git/info` when advertised. Never throws.
+   */
+  gitInfo?(): Promise<XaiExtCallResult>;
 
   dispose(): void;
 }

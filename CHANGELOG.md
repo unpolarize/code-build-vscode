@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.35.3 — 2026-09-13
+
+### Selective x.ai ACP extensions: native /compact (capability-gated)
+
+- `/compact` calls `x.ai/compact_conversation` when initialize advertises it
+  (Grok `_meta.grokShell` or an explicit methods list). Success writes the
+  compact divider and does **not** kill/respawn. Missing/failed RPC falls
+  back to the existing host summarize+respawn path (Claude/Codex unchanged).
+- Typed host→agent wrappers for rewind (`x.ai/rewind/execute`) and git info
+  (`x.ai/git/info`) — capability-gated, never throw. Rewind chips and the
+  branch badge are a later slice.
+- (kp: ideas/cb-selective-x-ai-acp-extensions-compact-rewind-)
+
 ## 0.35.2 — 2026-09-13
 
 ### Big-file Read gate: deny chips + Claude permission path

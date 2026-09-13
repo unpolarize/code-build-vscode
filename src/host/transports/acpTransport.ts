@@ -70,6 +70,19 @@ import {
   toSandboxPostureUpdate
 } from '../../shared/sandboxPostureChip';
 import { SessionLoadReplayWindow } from '../../shared/sessionLoadReplayWindow';
+import {
+  EMPTY_XAI_CAPS,
+  XAI_COMPACT,
+  XAI_GIT_INFO,
+  XAI_REWIND_EXECUTE,
+  compactConversationParams,
+  gitInfoParams,
+  parseXaiExtensionCaps,
+  rewindExecuteParams,
+  unsupportedNotice,
+  type XaiExtCallResult,
+  type XaiExtensionCaps
+} from '../../shared/xaiAcpExtensions';
 
 export type { AcpMcpServer };
 
@@ -252,6 +265,8 @@ export class AcpTransport extends BaseAgentSession {
   private teardownEscalation?: ReturnType<typeof setTimeout>;
   /** Drop grok session/load replay lines so they don't poison JSONL. */
   private loadReplay = new SessionLoadReplayWindow();
+  /** x.ai compact/rewind/git bridges from initialize. Default all-false. */
+  private xaiCaps: XaiExtensionCaps = { ...EMPTY_XAI_CAPS };
 
   constructor(
     public readonly id: string,
@@ -269,6 +284,7 @@ export class AcpTransport extends BaseAgentSession {
     this.pathGuardCwd = undefined;
     this.exitSettled = false;
     this.stopDecision = decideSessionStopPath(null);
+    this.xaiCaps = { ...EMPTY_XAI_CAPS };
     if (this.teardownEscalation) {
       clearTimeout(this.teardownEscalation);
       this.teardownEscalation = undefined;
@@ -354,6 +370,7 @@ export class AcpTransport extends BaseAgentSession {
           label: this.stopDecision.label,
           reason: this.stopDecision.reason
         });
+        this.xaiCaps = parseXaiExtensionCaps(init);
         this.emitSandboxPosture(init, args);
         // Pass MCP servers (default: chrome-devtools autoConnect + playwright).
         // Each entry MUST include `env: []` — ACP's untagged McpServer enum
@@ -450,6 +467,62 @@ export class AcpTransport extends BaseAgentSession {
    * promotion. Handshake errors were already surfaced from start(). */
   override ready(): Promise<void> {
     return this.readyPromise?.catch(() => undefined) ?? Promise.resolve();
+  }
+
+  xaiExtensionCaps(): XaiExtensionCaps {
+    return this.xaiCaps;
+  }
+
+  /**
+   * Host → agent x.ai extension RPC. Capability-gated; never throws.
+   * Inbound onRequest is unchanged — these methods are agent-side.
+   */
+  private async requestXaiExtension(
+    method: string,
+    advertised: boolean,
+    params?: unknown
+  ): Promise<XaiExtCallResult> {
+    if (!advertised) return { ok: false, notice: unsupportedNotice(method) };
+    if (!this.rpc || !this.acpSessionId) {
+      return {
+        ok: false,
+        notice: `ACP session not started — cannot call ${method}.`
+      };
+    }
+    try {
+      const result = await this.rpc.request(method, params);
+      return { ok: true, result };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { ok: false, notice: `${method} failed: ${message}` };
+    }
+  }
+
+  async compactConversation(focus?: string): Promise<XaiExtCallResult> {
+    return this.requestXaiExtension(
+      XAI_COMPACT,
+      this.xaiCaps.compact,
+      compactConversationParams(this.acpSessionId ?? '', focus)
+    );
+  }
+
+  async rewindToPrompt(
+    targetPromptIndex: number,
+    force?: boolean
+  ): Promise<XaiExtCallResult> {
+    return this.requestXaiExtension(
+      XAI_REWIND_EXECUTE,
+      this.xaiCaps.rewind,
+      rewindExecuteParams(this.acpSessionId ?? '', targetPromptIndex, force === true)
+    );
+  }
+
+  async gitInfo(): Promise<XaiExtCallResult> {
+    return this.requestXaiExtension(
+      XAI_GIT_INFO,
+      this.xaiCaps.gitInfo,
+      gitInfoParams(this.acpSessionId)
+    );
   }
 
   private onNotification(method: string, params: unknown): void {

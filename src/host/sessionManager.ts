@@ -35,6 +35,10 @@ import {
   prepareCompactLineage,
   resolveRespawnResumeId
 } from './compact';
+import {
+  decideCompactRoute,
+  nativeCompactSummaryPreview
+} from '../shared/xaiAcpExtensions';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import { NowLineTracker } from '../shared/nowLine';
 import {
@@ -1484,15 +1488,59 @@ export class SessionManager {
 
     const be = backendLabel(meta.backend);
     const useClaude = meta.backend === 'claude';
-    this.panel.post({
-      type: 'notice',
-      text: `Compacting this conversation${focus ? ` (focus: ${focus})` : ''}…`,
-      detail: useClaude
-        ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
-        : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
-    });
 
     try {
+      // Native x.ai/compact_conversation when the ACP agent advertised it
+      // (Grok grokShell / methods list). Generic summarize+respawn is
+      // owned by tasks/cb-built-in-compact — this only swaps the backend
+      // path. Claude/Codex omit the cap → unchanged fallback.
+      if (this.session) await this.session.ready();
+      const caps = this.session?.xaiExtensionCaps?.();
+      if (
+        decideCompactRoute(caps) === 'native' &&
+        this.session?.compactConversation
+      ) {
+        this.panel.post({
+          type: 'notice',
+          text: `Compacting via x.ai/compact_conversation${focus ? ` (focus: ${focus})` : ''}…`,
+          detail:
+            'Agent-side compact (no host respawn). If the RPC is missing or fails, host compact fallback runs next.'
+        });
+        const native = await this.session.compactConversation(focus);
+        if (native.ok) {
+          const marker = buildCompactMarker({
+            now: Date.now(),
+            preTokens: this.lastInputTokens,
+            summary: nativeCompactSummaryPreview(focus),
+            focus
+          });
+          this.store.appendCompactMarker(meta.id, marker);
+          this.store.flushSync(meta.id);
+          this.panel.post({ type: 'compactMarker', marker });
+          this.lastInputTokens = undefined;
+          this.panel.post({
+            type: 'notice',
+            text: `Compacted via x.ai/compact_conversation${
+              typeof marker.preTokens === 'number'
+                ? ` from ${Math.round(marker.preTokens / 1000)}K input tokens`
+                : ''
+            } — agent context compacted in place (no respawn).`
+          });
+          return;
+        }
+        this.panel.post({
+          type: 'notice',
+          text: `${native.notice} — falling back to host compact.`
+        });
+      }
+
+      this.panel.post({
+        type: 'notice',
+        text: `Compacting this conversation${focus ? ` (focus: ${focus})` : ''}…`,
+        detail: useClaude
+          ? `Summarising ${records.length.toLocaleString()} record(s) via a one-shot \`claude -p\` (typically 10–30s), then restarting the ${be} backend at this same session with the summary + last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
+          : `Building a clipped summary locally, then restarting the ${be} backend at this same session with it + the last 5 turns as context. Scrollback stays; a divider marks the boundary. Messages sent meanwhile are queued.`
+      });
       // Session total so far — records are persisted post-fold, so this
       // already includes any earlier compact's base. meta.costBaseUsd as a
       // floor covers the compact-again-before-any-new-cost-report edge.

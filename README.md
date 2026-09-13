@@ -163,6 +163,9 @@ iterating, since `npm run watch:host` and `npm run watch:webview` rebuild on cha
    default 5 distinct paths) and denied for `CLAUDE.md` / `AGENTS.md` / `.grok/**` unless overridden.
    Architecture-digression phrases latch a write pause until expand-effort. Advisory + deny-list only —
    never rewrites prompts; human override always available.
+10. **Native Grok compact:** `/compact` uses `x.ai/compact_conversation` when the ACP agent
+    advertises it (Grok `grokShell` / methods list) and falls back to host summarize+respawn
+    otherwise. Claude/Codex are unchanged.
 
 Sessions are persisted under `~/.codebuild/` and exported in a Code-Sessions-readable
 JSONL format.
