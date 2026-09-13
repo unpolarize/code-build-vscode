@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.35.1 — 2026-09-12
+
+### Grok resume: no replay flood, You-bubble before handshake, restoring notice
+
+- Drop ACP `session/update` lines during `session/load` plus a 250ms drain so a grok restore does not append the on-disk transcript into the local JSONL again. Live updates after `session/prompt` still persist.
+- Idle-resume persists the `type:'user'` row before `ensureSession` / `session/load`, so the You-bubble is on disk before the handshake.
+- skipReplay reconnect shows a keyed "Restoring session…" notice (does not clear items). `user_message_chunk` counts as first-event so the 30s nudge clears.
+- Webview paints `user_message_chunk` as a You-bubble, deduped against the optimistic echo, so a user-less tail no longer finishes as a blank pane.
+- (kp: tasks/grok-restart-minute-stall-missing-user-turn-empt)
+
 ## 0.35.0 — 2026-09-12
 
 ### openExternalSession hydrates git-store records

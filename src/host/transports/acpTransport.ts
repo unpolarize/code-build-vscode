@@ -64,6 +64,7 @@ import {
   evaluateSandboxPosture,
   toSandboxPostureUpdate
 } from '../../shared/sandboxPostureChip';
+import { SessionLoadReplayWindow } from '../../shared/sessionLoadReplayWindow';
 
 export type { AcpMcpServer };
 
@@ -244,6 +245,8 @@ export class AcpTransport extends BaseAgentSession {
   private stopDecision: SessionStopDecision = decideSessionStopPath(null);
   /** Pending SIGKILL escalation after host-teardown SIGTERM. */
   private teardownEscalation?: ReturnType<typeof setTimeout>;
+  /** Drop grok session/load replay lines so they don't poison JSONL. */
+  private loadReplay = new SessionLoadReplayWindow();
 
   constructor(
     public readonly id: string,
@@ -365,6 +368,9 @@ export class AcpTransport extends BaseAgentSession {
           // True native resume: Grok (and any ACP agent with loadSession)
           // restores on-disk transcript + context. History may also stream
           // as session/update notifications; CB already replays from disk.
+          // Suppress those replay lines (in-flight + short drain) so they
+          // are not appended to the local JSONL a second time.
+          this.loadReplay.beginLoad();
           try {
             const loadResult = await this.rpc!.request<{ modes?: SessionModes }>('session/load', {
               sessionId: opts.resumeId,
@@ -386,6 +392,8 @@ export class AcpTransport extends BaseAgentSession {
             // "started a fresh session" moments before a hard error if
             // session/new also rejects.
             loadFailure = err instanceof Error ? err.message : String(err);
+          } finally {
+            this.loadReplay.markLoadSettled();
           }
         }
         if (!loaded) {
@@ -440,6 +448,9 @@ export class AcpTransport extends BaseAgentSession {
   }
 
   private onNotification(method: string, params: unknown): void {
+    if (method === 'session/update' && this.loadReplay.shouldDropSessionUpdate()) {
+      return;
+    }
     if (method === 'session/update') {
       const p = params as { update?: Record<string, unknown> };
       if (p.update) {
@@ -746,6 +757,7 @@ export class AcpTransport extends BaseAgentSession {
         return;
       }
     }
+    this.loadReplay.markPromptSent();
     if (!this.rpc || !this.acpSessionId) {
       // Last-resort: handshake never even started (start() wasn't called
       // or the process died before init). Surface a clearer message than
@@ -926,6 +938,7 @@ export class AcpTransport extends BaseAgentSession {
     // Mark settled before kill so the 'exit' handler does not re-emit
     // synthetic result/error into a disposed session.
     this.exitSettled = true;
+    this.loadReplay.dispose();
     // Capability-aware stop: try session/close|stop when advertised, then
     // always host-reap. When the agent lacks stop, we never claim RPC stop.
     const decision = this.stopDecision;

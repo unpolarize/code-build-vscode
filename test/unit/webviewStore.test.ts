@@ -175,9 +175,62 @@ describe('taskList snapshot-replace', () => {
   });
 });
 
+describe('user_message_chunk paint', () => {
+  it('paints a You-bubble from user_message_chunk', () => {
+    const s = apply(initialState, {
+      kind: 'user_message_chunk',
+      content: text('hello from grok echo')
+    } as SessionUpdate);
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 1);
+    assert.equal((users[0] as { text: string }).text, 'hello from grok echo');
+  });
+
+  it('dedupes against an optimistic appendUser of the same text', () => {
+    const echoed = appendUser(initialState, 'same prompt');
+    const s = apply(echoed, {
+      kind: 'user_message_chunk',
+      content: text('same prompt')
+    } as SessionUpdate);
+    assert.equal(s.items.filter((it) => it.kind === 'user').length, 1);
+  });
+});
+
 describe('historyLoaded replay', () => {
   const rec = (update: SessionUpdate) => ({ type: 'update', update });
   const userRec = (t: string) => ({ type: 'user', text: t });
+
+  it('user-chunk-only tail on empty items still paints ≥1 You-bubble (no blank finish)', () => {
+    const s = reduce(initialState, {
+      type: 'historyLoaded',
+      meta,
+      records: [
+        rec({
+          kind: 'user_message_chunk',
+          content: text('restarted prompt')
+        } as SessionUpdate)
+      ]
+    } as HostToWebview);
+    assert.ok(s.items.length >= 1, 'must not render []');
+    const users = s.items.filter((it) => it.kind === 'user');
+    assert.equal(users.length, 1);
+    assert.equal((users[0] as { text: string }).text, 'restarted prompt');
+  });
+
+  it('historyLoaded keeps optimistic user when replay is user-chunk echo of same text', () => {
+    const prior = appendUser(initialState, 'restarted prompt');
+    const s = reduce(prior, {
+      type: 'historyLoaded',
+      meta,
+      records: [
+        rec({
+          kind: 'user_message_chunk',
+          content: text('restarted prompt')
+        } as SessionUpdate)
+      ]
+    } as HostToWebview);
+    assert.equal(s.items.filter((it) => it.kind === 'user').length, 1);
+  });
 
   it('restores thought chunks, tool results/diffs and files summary — parity with live path', () => {
     const updates: SessionUpdate[] = [

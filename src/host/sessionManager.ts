@@ -72,6 +72,10 @@ import { createSession } from './transports/factory';
 import { EditorTools } from './editorBridge/editorTools';
 import { buildSuggestGlob, rankFileSuggestions, isImagePath } from './fileSuggest';
 import { SessionStore, hasVisibleReplayRecords } from './persistence/store';
+import {
+  persistUserTurnTiming,
+  isFirstEventProgress
+} from '../shared/sessionLoadReplayWindow';
 import { LAST_SESSION_KEY, sessionMatchesWorkspace } from './lastSession';
 import { daemonAppend, daemonCreate, daemonHello, daemonPatchMeta } from './daemonClient';
 import { readOsClipboardImage } from './clipboardImage';
@@ -690,6 +694,33 @@ export class SessionManager {
         // Busy first so the working pill stays up while idle-reconnect
         // spawns the CLI (session.start can take several seconds).
         this.panel.post({ type: 'busy', busy: true });
+        const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
+        const images = msg.blocks
+          .filter((b): b is Extract<ContentBlock, { type: 'image' }> => b.type === 'image')
+          .map((b) => ({ mimeType: b.mimeType, data: b.data }));
+        // Idle-resume already has meta: persist the You-row BEFORE
+        // session/load so a grok restore cannot stall type:'user' behind
+        // the handshake. Brand-new chats persist after openSession.
+        let persistedUser = false;
+        if (
+          persistUserTurnTiming(!!this.meta) === 'before-ensure-session' &&
+          this.meta &&
+          (originalText || images.length > 0)
+        ) {
+          if (this.gateEffortCeiling('send') === 'block') {
+            this.panel.post({ type: 'busy', busy: false });
+            break;
+          }
+          this.commitAndTitle(originalText || '(image)');
+          this.store.appendUserText(
+            this.meta.id,
+            originalText,
+            Date.now(),
+            images.length > 0 ? images : undefined
+          );
+          void daemonAppend(this.meta.id, { type: 'user', text: originalText });
+          persistedUser = true;
+        }
         await this.ensureSession();
         // maxEffortLevel ceiling gate (Claude 2.1.267 class) — after
         // ensureSession so remembered/default effort is on meta. Block
@@ -713,20 +744,16 @@ export class SessionManager {
           modePerm: this.meta?.mode
         });
         this.pushPerfHud();
-        const originalText = msg.blocks.find((b) => b.type === 'text')?.text ?? '';
-        const images = msg.blocks
-          .filter((b): b is Extract<ContentBlock, { type: 'image' }> => b.type === 'image')
-          .map((b) => ({ mimeType: b.mimeType, data: b.data }));
-        if (originalText || images.length > 0) {
+        if (!persistedUser && this.meta && (originalText || images.length > 0)) {
           // First real prompt: promote to history + derive a title from it.
           this.commitAndTitle(originalText || '(image)');
           this.store.appendUserText(
-            this.meta!.id,
+            this.meta.id,
             originalText,
             Date.now(),
             images.length > 0 ? images : undefined
           );
-          void daemonAppend(this.meta!.id, { type: 'user', text: originalText });
+          void daemonAppend(this.meta.id, { type: 'user', text: originalText });
         }
         // Stash for the classifier (paired with the upcoming
         // assistant text on the next `result`). Bumps turnIndex AFTER
@@ -5518,13 +5545,7 @@ export class SessionManager {
     this.writeDrain.observeUpdate(update, nodeDrainFs, this.meta?.cwd || this.cwd);
 
     this.watchTurnLiveness(update);
-    if (
-      update.kind === 'agent_message_chunk' ||
-      update.kind === 'agent_thought_chunk' ||
-      update.kind === 'tool_call' ||
-      update.kind === 'available_commands_update' ||
-      update.kind === 'system_init'
-    ) {
+    if (isFirstEventProgress(update.kind)) {
       opts?.onFirstEvent?.();
     }
     this.interceptToolCall(update);
@@ -5980,6 +6001,8 @@ export class SessionManager {
     resumeId?: string;
     spawnStart: number;
     skipPin?: boolean;
+    /** Dismissed with the 30s nudge on first agent event. */
+    key?: string;
   }): () => void {
     // Resolve the same spawn command the transport will use, so the
     // tooltip is the actual argv (not a generic description). Mirrors
@@ -6012,7 +6035,12 @@ export class SessionManager {
       `Started: ${startedAt}`,
       `Phase: spawn + waiting for first event from agent`
     ].join('\n');
-    this.panel.post({ type: 'notice', text: opts.text, detail });
+    this.panel.post({
+      type: 'notice',
+      text: opts.text,
+      detail,
+      ...(opts.key ? { key: opts.key } : {})
+    });
 
     // The 30s "still waiting" nudge only makes sense when the agent
     // actually has work to do at startup — i.e., resuming a long
@@ -6025,8 +6053,11 @@ export class SessionManager {
     // we wait for in that case is the system_init line (which we
     // now also accept as the first-event marker).
     if (!opts.resumeId) {
-      this.startupNoticeCleanup = () => {};
-      return this.startupNoticeCleanup;
+      const cleanup = () => {
+        if (opts.key) this.panel.post({ type: 'dismissNotice', key: opts.key });
+      };
+      this.startupNoticeCleanup = cleanup;
+      return cleanup;
     }
 
     // Tag the nudge with a unique key so it can be retroactively
@@ -6054,6 +6085,7 @@ export class SessionManager {
       // webview's items list. Tell the webview to prune it so we
       // don't leave a stale "still waiting" hanging around forever.
       this.panel.post({ type: 'dismissNotice', key: nudgeKey });
+      if (opts.key) this.panel.post({ type: 'dismissNotice', key: opts.key });
     };
     this.startupNoticeCleanup = cleanup;
     return cleanup;
@@ -6632,19 +6664,20 @@ export class SessionManager {
     this.panel.post({ type: 'dismissNotice', key: 'idle-restore' });
 
     const spawnStart = Date.now();
-    // Open Previous still shows "Resuming uuid…". skipReplay is the
-    // first prompt after an idle restore — the user already sent a
-    // message; chat notices here stole the last-item slot, hid the
-    // working pill, and scrolled the You-bubble off screen.
-    const cancelNudge = skipReplay
-      ? () => {}
-      : this.postStartupNotice({
-          be,
-          text: `Resuming \`${id.slice(0, 8)}\` (${be})…`,
-          cwd: meta.cwd,
-          resumeId: earlyResumeId,
-          spawnStart
-        });
+    // skipReplay used to skip this notice (it stole the last-item slot).
+    // Notices are skipped by isAwaitingFirstToken, so the working pill
+    // stays; idle-resume still needs an explicit restoring state instead
+    // of a silent minute while session/load replays.
+    const cancelNudge = this.postStartupNotice({
+      be,
+      text: skipReplay
+        ? 'Restoring session…'
+        : `Resuming \`${id.slice(0, 8)}\` (${be})…`,
+      cwd: meta.cwd,
+      resumeId: earlyResumeId,
+      spawnStart,
+      key: skipReplay ? 'restoring-session' : undefined
+    });
     let firstEventAt = 0;
 
     this.session = createSession({ id, backend: be, binOverrides: overrides });

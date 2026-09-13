@@ -876,6 +876,17 @@ function applyUpdate(state: ChatState, u: SessionUpdate): ChatState {
       }
       return { ...state, items };
     }
+    case 'user_message_chunk': {
+      // Grok echoes the user prompt as user_message_chunk. Paint it so a
+      // resume whose JSONL tail has no type:'user' records still shows a
+      // You-bubble. Dedup against the optimistic appendUser / host
+      // appendUserText echo (same text → one row).
+      const text = blockText(u.content);
+      if (!text) return state;
+      if (items.some((it) => it.kind === 'user' && it.text === text)) return state;
+      items.push({ kind: 'user', id: nextId(), createdAt: now(), text });
+      return { ...state, items };
+    }
     case 'agent_thought_chunk': {
       const text = blockText(u.content);
       // Defense-in-depth: never create a thought item from an empty
