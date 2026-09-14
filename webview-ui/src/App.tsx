@@ -618,6 +618,7 @@ export function App() {
         follow={follow}
         onFollowChange={setFollow}
         checkpointIds={state.checkpointIds}
+        rewindEnabled={state.xaiRewind}
         hasOlder={state.hasOlder}
         olderSeq={state.olderSeq}
         olderLoading={olderLoading}

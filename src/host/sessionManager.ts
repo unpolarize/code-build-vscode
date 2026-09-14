@@ -37,7 +37,12 @@ import {
 } from './compact';
 import {
   decideCompactRoute,
-  nativeCompactSummaryPreview
+  EMPTY_XAI_CAPS,
+  nativeCompactSummaryPreview,
+  parseGitInfoBadge,
+  planRewindTranscript,
+  resolveRewindUserTurnIndex,
+  type GitBranchBadge
 } from '../shared/xaiAcpExtensions';
 import { cleanCommandText } from '../shared/cleanCommandText';
 import { NowLineTracker } from '../shared/nowLine';
@@ -434,6 +439,13 @@ export class SessionManager {
   private lastSandboxChipFromAgent: SandboxPostureChip | null = null;
   /** Last sandbox-posture chip signature posted (dedupe). */
   private sandboxPostureLastPosted: string | undefined;
+  /** Last x.ai rewind/git surface posted (re-hydrated on webview restore). */
+  private lastXaiExtensions: { rewind: boolean; gitBadge: GitBranchBadge | null } = {
+    rewind: false,
+    gitBadge: null
+  };
+  /** Bumped on teardown so a late git/info RPC cannot restamp the next session. */
+  private xaiPublishGen = 0;
   /** Last cache-miss chip signature posted (dedupe). */
   private cacheMissLastPosted: string | undefined;
   /** Pre/Post model-switch host hook (picker / explicit override). */
@@ -868,6 +880,9 @@ export class SessionManager {
         break;
       case 'restoreCheckpoint':
         await this.handleRestoreCheckpoint(msg.toolCallId);
+        break;
+      case 'rewindToTurn':
+        await this.handleRewindToTurn(msg.userTurnIndex, msg.paintedUserCount);
         break;
       case 'revealLocation':
         await this.editor.revealLocation(msg.path, msg.line);
@@ -1393,6 +1408,7 @@ export class SessionManager {
       this.sandboxPostureLastPosted = undefined;
       this.postSandboxPostureChip();
     }
+    this.postXaiExtensions(this.lastXaiExtensions);
   }
 
   private defaultBackend(): BackendId {
@@ -2937,6 +2953,7 @@ export class SessionManager {
     this.finishability.clear();
     this.finishabilityLastChip = null;
     this.panel.post({ type: 'finishabilityPreflight', chip: null });
+    void this.publishXaiExtensions();
   }
 
   /** Inspect each SessionUpdate as it streams from the backend and lift
@@ -4869,6 +4886,7 @@ export class SessionManager {
     this.lastSandboxChipFromAgent = null;
     this.sandboxPostureLastPosted = undefined;
     this.postSandboxPostureChip();
+    void this.publishXaiExtensions();
   }
 
   /** On the first user prompt: index the session in history and derive a title from it. */
@@ -4940,6 +4958,9 @@ export class SessionManager {
     this.lastSandboxChipFromAgent = null;
     this.sandboxPostureLastPosted = undefined;
     this.panel.post({ type: 'sandboxPosture', chip: null });
+    this.xaiPublishGen += 1;
+    this.lastXaiExtensions = { rewind: false, gitBadge: null };
+    this.postXaiExtensions(this.lastXaiExtensions);
     this.session?.dispose();
     this.session = undefined;
     // Cancel any pending "still waiting" notice — we don't want it
@@ -5424,6 +5445,141 @@ export class SessionManager {
       toolCallIds: this.checkpoints.listCheckpointIds()
     });
     return this.checkpoints;
+  }
+
+  private postXaiExtensions(payload: {
+    rewind: boolean;
+    gitBadge: GitBranchBadge | null;
+  }): void {
+    this.panel.post({
+      type: 'xaiExtensions',
+      rewind: payload.rewind,
+      gitBadge: payload.gitBadge
+    });
+  }
+
+  /**
+   * After ACP initialize: surface rewind chips + git badge when advertised.
+   * Claude/Codex omit the caps → false/null, no chips. Never throws.
+   */
+  private async publishXaiExtensions(): Promise<void> {
+    const gen = this.xaiPublishGen;
+    if (this.session) {
+      try {
+        await this.session.ready();
+      } catch {
+        /* handshake failed — treat as no extensions */
+      }
+    }
+    if (gen !== this.xaiPublishGen) return;
+    const caps = this.session?.xaiExtensionCaps?.() ?? EMPTY_XAI_CAPS;
+    let gitBadge: GitBranchBadge | null = null;
+    if (caps.gitInfo && this.session?.gitInfo) {
+      try {
+        const info = await this.session.gitInfo();
+        if (info.ok) gitBadge = parseGitInfoBadge(info.result);
+      } catch {
+        gitBadge = null;
+      }
+    }
+    if (gen !== this.xaiPublishGen) return;
+    this.lastXaiExtensions = { rewind: caps.rewind === true, gitBadge };
+    this.postXaiExtensions(this.lastXaiExtensions);
+  }
+
+  /**
+   * Native x.ai rewind chip: confirm → agent execute → truncate host JSONL.
+   * Capability-gated; missing cap is a one-line notice, never thrown.
+   */
+  private async handleRewindToTurn(
+    paintedIndex: number,
+    paintedUserCount: number
+  ): Promise<void> {
+    const meta = this.meta;
+    if (!meta) {
+      this.panel.post({ type: 'notice', text: 'No active session to rewind.' });
+      return;
+    }
+    const blocked = compactBlockReason({
+      turnActive: this.watchdog?.active ?? false,
+      openToolCalls: this.openToolCalls.size,
+      awaitingPermission:
+        this.awaitingPermission || (this.session?.hasPendingPermissions() ?? false),
+      pendingQuestions: this.pendingAskUserQuestions.size,
+      primerPending: this.primerPending,
+      queuedPrompt: this.queuedPromptBlocks !== undefined
+    });
+    if (blocked) {
+      this.panel.post({
+        type: 'notice',
+        text: `Can't rewind yet — ${blocked}. Let it finish (or hit Stop), then try again.`
+      });
+      return;
+    }
+    if (this.session) {
+      try {
+        await this.session.ready();
+      } catch {
+        /* proceed with whatever caps we have */
+      }
+    }
+    const caps = this.session?.xaiExtensionCaps?.() ?? EMPTY_XAI_CAPS;
+    this.store.flushSync(meta.id);
+    const loaded = this.store.load(meta.id);
+    const fullUserCount = loaded.records.filter((r) => r.type === 'user').length;
+    const fullIndex = resolveRewindUserTurnIndex({
+      fullUserCount,
+      paintedUserCount,
+      paintedIndex
+    });
+    if (fullIndex == null) {
+      this.panel.post({
+        type: 'notice',
+        text: 'No matching user turn to rewind to — no-op.'
+      });
+      return;
+    }
+    const plan = planRewindTranscript(loaded.records, fullIndex, caps);
+    if (plan.action === 'noop') {
+      this.panel.post({ type: 'notice', text: plan.notice });
+      return;
+    }
+    if (!this.session?.rewindToPrompt) {
+      this.panel.post({
+        type: 'notice',
+        text: 'x.ai/rewind/execute is not advertised by this agent — no-op.'
+      });
+      return;
+    }
+    const confirm = 'Rewind';
+    const pick = await vscode.window.showWarningMessage(
+      `Rewind this conversation to user turn ${fullIndex + 1}? Later turns will be dropped on the agent and in the transcript.`,
+      { modal: true },
+      confirm
+    );
+    if (pick !== confirm) return;
+    const native = await this.session.rewindToPrompt(fullIndex, true);
+    if (!native.ok) {
+      this.panel.post({
+        type: 'notice',
+        text: native.notice || 'Rewind failed — transcript unchanged.'
+      });
+      return;
+    }
+    this.store.replaceBody(meta.id, plan.truncated);
+    this.historyOlderFrom = 0;
+    this.panel.post({
+      type: 'historyLoaded',
+      meta,
+      records: plan.truncated as never,
+      hasOlder: false
+    });
+    this.postXaiExtensions(this.lastXaiExtensions);
+    this.postCheckpointIds();
+    this.panel.post({
+      type: 'notice',
+      text: `Rewound to user turn ${fullIndex + 1} via x.ai/rewind/execute — later turns dropped.`
+    });
   }
 
   /** "Restore code to here" from an edit ToolCard. Code-only: tracked files
@@ -6773,6 +6929,7 @@ export class SessionManager {
     this.lastSandboxChipFromAgent = null;
     this.sandboxPostureLastPosted = undefined;
     this.postSandboxPostureChip();
+    void this.publishXaiExtensions();
   }
 }
 

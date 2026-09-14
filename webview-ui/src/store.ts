@@ -384,6 +384,10 @@ export interface ChatState {
   hasOlder: boolean;
   /** Bumps when older messages are prepended (scroll-anchor). */
   olderSeq: number;
+  /** Native x.ai rewind chips on user turns (capability-gated). */
+  xaiRewind: boolean;
+  /** Read-only git/worktree badge from x.ai/git/info (null = hidden). */
+  xaiGitBadge: { branch: string; label: string; root?: string } | null;
 }
 
 export const initialState: ChatState = {
@@ -445,7 +449,9 @@ export const initialState: ChatState = {
   historyLoad: null,
   nowLine: null,
   hasOlder: false,
-  olderSeq: 0
+  olderSeq: 0,
+  xaiRewind: false,
+  xaiGitBadge: null
 };
 
 let seq = 0;
@@ -505,6 +511,8 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
         finishability: null,
         modelSwitch: null,
         permissionBallot: null,
+        xaiRewind: false,
+        xaiGitBadge: null,
         historyLoad: state.historyLoad,
         hasOlder: state.hasOlder,
         olderSeq: state.olderSeq
@@ -700,6 +708,12 @@ export function reduce(state: ChatState, msg: HostToWebview): ChatState {
     case 'checkpointAvailable':
       // Host sends the FULL restorable list each time (idempotent replace).
       return { ...state, checkpointIds: msg.toolCallIds };
+    case 'xaiExtensions':
+      return {
+        ...state,
+        xaiRewind: msg.rewind === true,
+        xaiGitBadge: msg.gitBadge
+      };
     case 'sessionMeta':
       return {
         ...state,
@@ -1250,7 +1264,10 @@ function replayRecords(
           // Investigate lock is live host state — cleared on switch; the
           // host re-posts investigateStatus on the next transition.
           investigate: null,
-          modeOptions: null
+          modeOptions: null,
+          // x.ai chips are live host state — host re-posts after start.
+          xaiRewind: false,
+          xaiGitBadge: null
         };
   for (const rec of records) {
     const at = replayTimestamp(rec, meta);

@@ -244,6 +244,19 @@ export function Header({
         </span>
       )}
 
+      {state.xaiGitBadge && (
+        <span
+          className="xai-git-badge"
+          title={
+            state.xaiGitBadge.root
+              ? `${state.xaiGitBadge.label}\n${state.xaiGitBadge.root}`
+              : state.xaiGitBadge.label
+          }
+        >
+          {state.xaiGitBadge.label}
+        </span>
+      )}
+
       {state.sandboxPosture?.available && (
         <button
           type="button"

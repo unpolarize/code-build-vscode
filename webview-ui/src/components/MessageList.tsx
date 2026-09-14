@@ -37,6 +37,8 @@ interface Props {
   onFollowChange?: (follow: boolean) => void;
   /** Tool call ids with a restorable host write-checkpoint. */
   checkpointIds?: string[];
+  /** Native x.ai rewind chips on user turns (capability-gated). */
+  rewindEnabled?: boolean;
   hasOlder?: boolean;
   olderSeq?: number;
   olderLoading?: boolean;
@@ -55,6 +57,7 @@ export function MessageList({
   follow = true,
   onFollowChange,
   checkpointIds,
+  rewindEnabled,
   hasOlder,
   olderSeq = 0,
   olderLoading,
@@ -74,6 +77,14 @@ export function MessageList({
   const inFlightRef = useRef(false);
   const itemCountAtRequestRef = useRef(0);
   const [autoPages, setAutoPages] = useState(0);
+  const userTurnIndexById = new Map<string, number>();
+  let paintedUserCount = 0;
+  for (const it of items) {
+    if (it.kind === 'user') {
+      userTurnIndexById.set(it.id, paintedUserCount);
+      paintedUserCount += 1;
+    }
+  }
   const last = items[items.length - 1];
   const lastId = last?.id ?? '';
   const lastLen =
@@ -257,6 +268,9 @@ export function MessageList({
             canRestore={
               item.kind === 'tool' && (checkpointIds?.includes(item.tool.toolCallId) ?? false)
             }
+            rewindEnabled={rewindEnabled === true && item.kind === 'user'}
+            rewindTurnIndex={item.kind === 'user' ? userTurnIndexById.get(item.id) : undefined}
+            paintedUserCount={paintedUserCount}
           />
         ))}
         {awaitingFirstToken && (
@@ -296,7 +310,10 @@ const Item = memo(function Item({
   item,
   onAskUserAnswer,
   streaming,
-  canRestore
+  canRestore,
+  rewindEnabled,
+  rewindTurnIndex,
+  paintedUserCount
 }: {
   item: ChatItem;
   onAskUserAnswer: (toolCallId: string, answers: Record<string, string>) => void;
@@ -304,6 +321,9 @@ const Item = memo(function Item({
   streaming?: boolean;
   /** Tool items only: a restorable write checkpoint exists for this call. */
   canRestore?: boolean;
+  rewindEnabled?: boolean;
+  rewindTurnIndex?: number;
+  paintedUserCount?: number;
 }) {
   switch (item.kind) {
     case 'user':
@@ -321,6 +341,22 @@ const Item = memo(function Item({
             You
             {item.interjected && <span className="msg-interjected-badge">↗ mid-turn</span>}
             <TimeChip createdAt={item.createdAt} updatedAt={item.updatedAt} />
+            {rewindEnabled && rewindTurnIndex != null && (
+              <button
+                type="button"
+                className="rewind-chip"
+                title="Rewind conversation to this user turn (drops later turns)"
+                onClick={() =>
+                  post({
+                    type: 'rewindToTurn',
+                    userTurnIndex: rewindTurnIndex,
+                    paintedUserCount: paintedUserCount ?? 0
+                  })
+                }
+              >
+                rewind
+              </button>
+            )}
             {item.labels && item.labels.length > 0 && (
               <span className="msg-labels">
                 {item.labels.map((l, i) => (

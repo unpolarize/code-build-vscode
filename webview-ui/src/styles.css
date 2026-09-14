@@ -191,6 +191,34 @@ body {
   opacity: 1;
 }
 /* Restricted/sandbox posture matrix — amber when unknown or restricted. */
+.xai-git-badge {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--vscode-editor-font-family, monospace);
+  font-size: 0.8em;
+  opacity: 0.85;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.14);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  cursor: help;
+  margin-right: 6px;
+  white-space: nowrap;
+}
+.rewind-chip {
+  font-size: 0.75em;
+  padding: 0 6px;
+  margin-left: 6px;
+  border-radius: 3px;
+  border: 1px solid var(--vscode-widget-border, rgba(128, 128, 128, 0.4));
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  cursor: pointer;
+}
+.rewind-chip:hover {
+  opacity: 1;
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.15));
+}
 .sandbox-posture-chip {
   font-variant-numeric: tabular-nums;
   font-family: var(--vscode-editor-font-family, monospace);

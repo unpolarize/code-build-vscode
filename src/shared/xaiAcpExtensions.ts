@@ -207,12 +207,60 @@ function unwrapGitPayload(raw: unknown): Record<string, unknown> | null {
 export function parseGitInfoBadge(raw: unknown): GitBranchBadge | null {
   const rec = unwrapGitPayload(raw);
   if (!rec) return null;
-  const branch = pickString(rec, 'currentBranch', 'current_branch', 'branch', 'head');
-  if (!branch) return null;
   const root = pickString(rec, 'root', 'repoRoot', 'repo_root', 'gitRoot');
   const detached = rec.currentBranch === null || rec.current_branch === null;
-  const label = detached && branch === 'HEAD' ? `git HEAD` : `git ${branch}`;
+  const branch = pickString(rec, 'currentBranch', 'current_branch', 'branch', 'head');
+  if (!branch) {
+    if (!detached) return null;
+    return { branch: 'HEAD', label: 'git HEAD (detached)', ...(root ? { root } : {}) };
+  }
+  const label =
+    detached && (branch === 'HEAD' || /^[0-9a-f]{7,40}$/i.test(branch))
+      ? `git HEAD (detached)`
+      : `git ${branch}`;
   return { branch, label, ...(root ? { root } : {}) };
+}
+
+/** Map a painted (possibly tailed) user-turn index onto the full JSONL. */
+export function resolveRewindUserTurnIndex(opts: {
+  fullUserCount: number;
+  paintedUserCount: number;
+  paintedIndex: number;
+}): number | null {
+  const { fullUserCount, paintedUserCount, paintedIndex } = opts;
+  if (!Number.isInteger(paintedIndex) || paintedIndex < 0) return null;
+  if (!Number.isInteger(paintedUserCount) || paintedUserCount < 1) return null;
+  if (paintedIndex >= paintedUserCount) return null;
+  if (!Number.isInteger(fullUserCount) || fullUserCount < paintedUserCount) return null;
+  const full = fullUserCount - paintedUserCount + paintedIndex;
+  if (full < 0 || full >= fullUserCount) return null;
+  return full;
+}
+
+export type RewindPlan<T> =
+  | { action: 'noop'; notice: string }
+  | { action: 'execute'; truncated: T[]; userTurnIndex: number };
+
+/**
+ * Capability-gated rewind plan. Missing cap / bad index → no-op notice,
+ * never an exception. Caller still confirms before the RPC.
+ */
+export function planRewindTranscript<T extends { type: string }>(
+  records: T[],
+  userTurnIndex: number,
+  caps: XaiExtensionCaps | null | undefined
+): RewindPlan<T> {
+  if (caps?.rewind !== true) {
+    return { action: 'noop', notice: unsupportedNotice(XAI_REWIND_EXECUTE) };
+  }
+  if (!Number.isInteger(userTurnIndex) || userTurnIndex < 0) {
+    return { action: 'noop', notice: 'Invalid rewind turn — no-op.' };
+  }
+  const truncated = truncateRecordsToUserTurn(records, userTurnIndex);
+  if (truncated === records) {
+    return { action: 'noop', notice: 'No matching user turn to rewind to — no-op.' };
+  }
+  return { action: 'execute', truncated, userTurnIndex };
 }
 
 /**

@@ -589,6 +589,30 @@ describe('permission FIFO queue', () => {
   });
 });
 
+describe('x.ai extension chips (rewind + git badge)', () => {
+  it('xaiExtensions lights rewind and git badge; false/null clears', () => {
+    const on = reduce(initialState, {
+      type: 'xaiExtensions',
+      rewind: true,
+      gitBadge: { branch: 'auto/night-build', label: 'git auto/night-build', root: '/repo' }
+    } as HostToWebview);
+    assert.equal(on.xaiRewind, true);
+    assert.equal(on.xaiGitBadge?.label, 'git auto/night-build');
+    const off = reduce(on, {
+      type: 'xaiExtensions',
+      rewind: false,
+      gitBadge: null
+    } as HostToWebview);
+    assert.equal(off.xaiRewind, false);
+    assert.equal(off.xaiGitBadge, null);
+  });
+
+  it('Claude-shaped session (no xaiExtensions) keeps chips off', () => {
+    assert.equal(initialState.xaiRewind, false);
+    assert.equal(initialState.xaiGitBadge, null);
+  });
+});
+
 describe('compact marker (divider plumbing)', () => {
   const marker = {
     at: 1_700_000_100_000,

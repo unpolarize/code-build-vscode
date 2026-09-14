@@ -264,6 +264,27 @@ export class SessionStore {
     this.enqueue(id, JSON.stringify({ type: 'compact', marker }) + '\n');
   }
 
+  /**
+   * Atomically replace the JSONL body (everything after the meta header).
+   * Used by native x.ai rewind after a confirmed execute. Does not touch
+   * index.json. Missing transcript → no-op.
+   */
+  replaceBody(id: string, body: Array<{ type: string; [k: string]: unknown }>): void {
+    this.flushSync(id);
+    const p = this.transcriptPath(id);
+    if (!fs.existsSync(p)) return;
+    const parsed = parseJsonlText(fs.readFileSync(p, 'utf8'));
+    const meta = this.findIndexRow(id) ?? parsed.jsonlMeta;
+    if (!meta) return;
+    const lines = [JSON.stringify({ type: 'meta', meta })];
+    for (const rec of body) {
+      if (!rec || rec.type === 'meta') continue;
+      lines.push(JSON.stringify(rec));
+    }
+    writeFileAtomic(p, lines.join('\n') + '\n');
+    this.pending.delete(id);
+  }
+
   /** Explicitly drop the persisted native backend id (post-/compact
    * respawn). Can't ride updateMeta: mergeSessionMeta skips undefined patch
    * values by design, so "clear" needs its own verb that deletes the key

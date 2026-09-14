@@ -11,6 +11,8 @@ import {
   nativeCompactSummaryPreview,
   parseGitInfoBadge,
   parseXaiExtensionCaps,
+  planRewindTranscript,
+  resolveRewindUserTurnIndex,
   rewindExecuteParams,
   truncateRecordsToUserTurn,
   unsupportedNotice
@@ -174,6 +176,13 @@ test('parseGitInfoBadge: missing branch → null (no badge)', () => {
   assert.equal(parseGitInfoBadge({ root: '/repo' }), null);
 });
 
+test('parseGitInfoBadge: detached HEAD (currentBranch null) still badges', () => {
+  const b = parseGitInfoBadge({ currentBranch: null, root: '/repo' });
+  assert.equal(b?.branch, 'HEAD');
+  assert.equal(b?.label, 'git HEAD (detached)');
+  assert.equal(b?.root, '/repo');
+});
+
 // ── rewind truncation ─────────────────────────────────────────────────────
 
 test('truncateRecordsToUserTurn: keeps target user row, drops later turns', () => {
@@ -222,4 +231,51 @@ test('v1 method constants match grok-build wire names', () => {
   assert.equal(XAI_COMPACT, 'x.ai/compact_conversation');
   assert.equal(XAI_REWIND_EXECUTE, 'x.ai/rewind/execute');
   assert.equal(XAI_GIT_INFO, 'x.ai/git/info');
+});
+
+test('resolveRewindUserTurnIndex: tail offset maps painted index onto full JSONL', () => {
+  assert.equal(
+    resolveRewindUserTurnIndex({ fullUserCount: 20, paintedUserCount: 8, paintedIndex: 1 }),
+    13
+  );
+  assert.equal(
+    resolveRewindUserTurnIndex({ fullUserCount: 3, paintedUserCount: 3, paintedIndex: 0 }),
+    0
+  );
+  assert.equal(
+    resolveRewindUserTurnIndex({ fullUserCount: 2, paintedUserCount: 8, paintedIndex: 1 }),
+    null
+  );
+  assert.equal(
+    resolveRewindUserTurnIndex({ fullUserCount: 5, paintedUserCount: 5, paintedIndex: 5 }),
+    null
+  );
+});
+
+test('planRewindTranscript: missing cap → no-op notice, never throws', () => {
+  const recs = [{ type: 'user' }, { type: 'update' }, { type: 'user' }];
+  const plan = planRewindTranscript(recs, 0, EMPTY_XAI_CAPS);
+  assert.equal(plan.action, 'noop');
+  if (plan.action === 'noop') assert.match(plan.notice, /not advertised/i);
+});
+
+test('planRewindTranscript: advertised rewind truncates to chosen user turn', () => {
+  const recs = [
+    { type: 'user', n: 0 },
+    { type: 'update', n: 1 },
+    { type: 'user', n: 2 },
+    { type: 'update', n: 3 }
+  ];
+  const plan = planRewindTranscript(recs, 0, {
+    compact: false,
+    rewind: true,
+    gitInfo: false
+  });
+  assert.equal(plan.action, 'execute');
+  if (plan.action === 'execute') {
+    assert.deepEqual(
+      plan.truncated.map((r) => r.n),
+      [0]
+    );
+  }
 });

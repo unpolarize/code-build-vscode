@@ -297,6 +297,12 @@ export type WebviewToHost =
    * their pre-images before this tool call (code-only; host shows a modal
    * confirm before touching disk). */
   | { type: 'restoreCheckpoint'; toolCallId: string }
+  /**
+   * Native x.ai rewind chip on a user turn. `userTurnIndex` is 0-based
+   * among currently painted user bubbles; `paintedUserCount` lets the host
+   * map a tailed history onto the full JSONL (full - painted + index).
+   */
+  | { type: 'rewindToTurn'; userTurnIndex: number; paintedUserCount: number }
   | { type: 'openInCodeSessions' }
   | { type: 'openInNewTab' }
   | { type: 'openInNewWindow' }
@@ -607,6 +613,15 @@ export type HostToWebview =
   /** Full list of tool call ids with a restorable write checkpoint (replaces
    * the previous list). ToolCards matching an id show "Restore code to here". */
   | { type: 'checkpointAvailable'; toolCallIds: string[] }
+  /**
+   * Selective x.ai ACP extension surface (v1). Live-only — not JSONL.
+   * `rewind: false` / `gitBadge: null` clears chips (Claude/Codex / teardown).
+   */
+  | {
+      type: 'xaiExtensions';
+      rewind: boolean;
+      gitBadge: { branch: string; label: string; root?: string } | null;
+    }
   /** Backend-swap primer Q&A. The webview shows a card picker above the
    * composer; the answer comes back as `primerDecision`. `sourceBackendId`
    * is the BackendId (not the human label) of the source — the host

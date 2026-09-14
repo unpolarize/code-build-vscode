@@ -30,6 +30,29 @@ const meta: SessionMeta = {
   createdAt: 1_700_000_000_000
 };
 
+test('replaceBody rewrites JSONL after the meta header (rewind truncate)', () => {
+  const store = new SessionStore(tmpRoot());
+  store.createSession(meta);
+  store.commitSession(meta);
+  store.appendUserText('sess-1', 'turn 0');
+  store.appendUpdate('sess-1', { kind: 'agent_message_chunk', content: { type: 'text', text: 'a' } });
+  store.appendUserText('sess-1', 'turn 1');
+  store.appendUpdate('sess-1', { kind: 'agent_message_chunk', content: { type: 'text', text: 'b' } });
+  store.flushSync('sess-1');
+  const before = store.load('sess-1');
+  assert.equal(before.records.length, 4);
+  store.replaceBody(
+    'sess-1',
+    before.records.filter((r, i) => i <= 1)
+  );
+  const after = store.load('sess-1');
+  assert.equal(after.meta?.id, 'sess-1');
+  assert.equal(after.records.length, 2);
+  assert.equal(after.records[0].type, 'user');
+  assert.equal((after.records[0] as { text: string }).text, 'turn 0');
+  assert.equal(after.records[1].type, 'update');
+});
+
 test('store persists meta, user text, and updates; loads them back', () => {
   const store = new SessionStore(tmpRoot());
   store.createSession(meta);
